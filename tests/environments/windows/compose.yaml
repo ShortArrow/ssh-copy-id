@@ -1,0 +1,29 @@
+services:
+  windows:
+    # dockurr/windows 6.05, linux/amd64 manifest.
+    image: dockurr/windows@sha256:32cc92715a6c5dc1f63142d3be11059279d64d0faa7519618a07290b3076f9f2
+    platform: linux/amd64
+    environment:
+      VERSION: "${WINDOWS_VERSION:-11e}"
+      RAM_SIZE: "4G"
+      CPU_CORES: "2"
+      HV: "${WINDOWS_HV:-Y}"
+      DISK_SIZE: "64G"
+      USERNAME: fixtureadmin
+      PASSWORD: "Fixture-Only_47!"
+    devices:
+      - /dev/kvm
+      - /dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "127.0.0.1:${WINDOWS_WEB_PORT:-8006}:8006"
+      - "127.0.0.1:${WINDOWS_SSH_PORT:-22222}:22"
+    volumes:
+      - windows-storage:/storage
+      - ./oem:/oem:ro
+    stop_grace_period: 2m
+    restart: "no"
+
+volumes:
+  windows-storage:
