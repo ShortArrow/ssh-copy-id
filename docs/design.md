@@ -336,9 +336,13 @@ The remote installation script prints result lines, and the CLI derives the
 outcome from them alone. Decision recorded on 2026-09-30 on their format: one
 line per key, `ssh-copy-id: key=<n> result=<added|skipped|failed> path=<file>`,
 then one summary line as the final output,
-`ssh-copy-id: result=<outcome> added=<n>`. `<n>` is the key's position in the
-input, starting at 1. In `<file>`, `%`, `=`, spaces, and control characters,
-including CR and LF, are written as `%XX` in uppercase hexadecimal. Per-key lines
+`ssh-copy-id: result=<unchanged|installed|partial> added=<n>`. `<n>` is the key's
+position in the input, starting at 1, without leading zeros. In `<file>`, every
+byte outside `0x21` to `0x7E`, and `%` and `=`, is written as `%XX` in uppercase
+hexadecimal (DL-39 adds bytes from `0x80`, so a console code page cannot alter a
+non-ASCII path). Lines without the `ssh-copy-id: ` prefix are ignored; a
+prefixed line that does not parse, including one that is not UTF-8, makes the
+outcome Unknown, as does any prefixed line after the summary. Per-key lines
 show which keys were written before a partial write. These lines are not shown
 to the user; the user sees upstream's messages (DL-26). The remote exit status is not used: a Windows default shell can
 replace it, as recorded in destination difference
@@ -407,6 +411,12 @@ Strict public key parsing is not adopted by this decision. Decision recorded on
 is neither empty, a `#` comment, nor a key entry is rejected before
 transmission, with the line number; no size limit is imposed beyond memory.
 Encoding is passed through as bytes; a leading byte order mark is handled below.
+Decision recorded on 2026-09-30 on what a key entry is: after leading spaces or
+tabs, `[options] keytype base64 [comment]`. The keytype starts with `ssh-`,
+`ecdsa-sha2-`, `sk-ssh-`, or `sk-ecdsa-sha2-`, which includes certificate types.
+The base64 field is one or more of `A-Z a-z 0-9 + /` followed by at most two `=`.
+Options are present only when the first field is not a keytype, and end at the
+first space or tab outside double quotes, where `\"` escapes a quote.
 Apparent intent of upstream, which appends such lines: input comes from
 `ssh-keygen` or `ssh-add` and is well formed. Reason to differ: a false success
 report, since sshd ignores a malformed line that upstream counts as added.
@@ -725,6 +735,7 @@ index. Commit messages name decisions by ID.
 | DL-36 | 2026-09-30 | Index D-09 to D-14, which DL-12, DL-18, DL-26, DL-27, DL-28, and DL-30 had introduced without rows | [Differences](compatibility.md) |
 | DL-37 | 2026-09-30 | Relative `-t` paths start at the home or profile directory; normal mode appends without a lock, as upstream | [Custom parent](#recorded-difference-existing-parent-directory-of-a-custom-target) |
 | DL-38 | 2026-09-30 | `--target-os` values `unix` and `windows`; probe outputs fixed by W09 measurements | [Remote operating systems](#remote-operating-systems-and-shells) |
+| DL-39 | 2026-09-30 | Key entry grammar; result-line values and encoding of bytes from `0x80` | [CRLF normalization](#crlf-normalization), [Installation outcome](#installation-outcome) |
 
 ## References
 
