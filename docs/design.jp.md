@@ -611,6 +611,8 @@ WindowsのSSHクライアントと対話認証は未検証で、Windows接続先
 実行して、共通の動作について標準出力と終了コードを比べる。
 
 CIは、変更ごとにGitHubホストのランナーで単体テストとLinux環境を実行する。
+併せてLinuxで `cargo fmt --check` と `cargo clippy -D warnings` を、LinuxとWindowsで
+`cargo test` を実行する。ワークフローは `.github/workflows/ci.yml` にある。
 Windows環境はKVMと数GBのゲストディスクが要るため、後日用意する自前ランナーで
 `workflow_dispatch` からだけ実行し、フォークからのプルリクエストは到達させない。
 準備済みディスクをホストランナーへ配布する案は、評価版イメージの再配布条件を

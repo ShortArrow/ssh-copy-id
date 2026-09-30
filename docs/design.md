@@ -678,7 +678,8 @@ against the same Linux fixture, and stdout and exit status are compared where
 behavior is shared.
 
 Continuous integration runs the unit tests and the Linux fixture on GitHub-hosted
-runners for every change. The Windows fixture needs KVM and a multi-gigabyte
+runners for every change, together with `cargo fmt --check` and `cargo clippy -D warnings` on Linux and
+`cargo test` on Linux and Windows; the workflow is `.github/workflows/ci.yml`. The Windows fixture needs KVM and a multi-gigabyte
 guest disk, so it runs on a self-hosted runner, to be provisioned later, from
 `workflow_dispatch` only; pull requests from forks never reach it. Distributing
 a prepared guest disk to hosted runners is deferred until the evaluation image's
