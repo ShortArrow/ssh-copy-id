@@ -262,10 +262,21 @@ key file it uploads. Links are followed as upstream follows them, and no link or
 reparse-point check is added; the trust boundary is the account's own home
 directory, and a concurrent link swap is outside it. The `-t` path is embedded in
 the Unix script with POSIX single-quote escaping and in the Windows script as a
-PowerShell single-quoted literal, so quotes in the path are data; upstream's
-script breaks on a quote. Test with a custom target in a shared
+PowerShell single-quoted literal, so quotes in the path are data. Upstream
+embeds the path inside a single-quoted `sh -c` argument, so a quote in the path
+ends the script text early and the rest of the path is read as shell syntax.
+Apparent intent: `-t` names a plain path relative to the home directory. Reason
+to differ: the run fails or executes text from the path in the account, which
+can damage data the user did not ask to change. Recorded as difference D-11.
+Test with a custom target in a shared
 directory and verify that its permissions are unchanged in both modes, including
 when installation fails due to insufficient access.
+
+Decision recorded on 2026-09-30: a relative `-t` path is relative to the home
+directory, as in upstream, which runs `cd` before writing; on Windows
+destinations it is relative to the profile directory. Concurrent installations
+in normal mode rely on appending, as upstream's `cat >>` does, and no lock is
+added. Neither is a difference.
 
 ### Remaining Compatibility Questions
 
@@ -274,7 +285,11 @@ including usage errors; the mapping is in [installation outcome](#installation-o
 Decision recorded on 2026-09-24 on the rest: messages match upstream's wording
 where the behavior is shared, and the golden tests compare them. `-x` prints
 each client command line and the remote script to stderr before running them,
-the closest equivalent of upstream's `set -x`. The upstream special cases stay:
+the closest equivalent of upstream's `set -x`. Apparent intent of upstream's
+`-x`: trace the shell script itself. Reason to differ: a compiled program has
+no shell trace, so the platform cannot perform the upstream behavior. Recorded
+as difference D-14; the output format differs, the purpose does not.
+The upstream special cases stay:
 OpenWrt as root installs into `/etc/dropbear/authorized_keys`, Haiku uses
 `config/settings/ssh/authorized_keys`, and NetScreen keys are installed one per
 command as upstream does. Never report a failed write as success.
@@ -317,9 +332,15 @@ upstream's two exit statuses.
 | Partial write | Some data was written, then the run failed at a known point | 1 |
 | Unknown | The connection ended without a result line | 1 |
 
-The remote installation script prints one result line as its final output,
-`ssh-copy-id: result=<outcome> path=<file>`, and the CLI derives the outcome from
-that line alone. The remote exit status is not used: a Windows default shell can
+The remote installation script prints result lines, and the CLI derives the
+outcome from them alone. Decision recorded on 2026-09-30 on their format: one
+line per key, `ssh-copy-id: key=<n> result=<added|skipped|failed> path=<file>`,
+then one summary line as the final output,
+`ssh-copy-id: result=<outcome> added=<n>`. `<n>` is the key's position in the
+input, starting at 1. In `<file>`, `%`, `=`, spaces, and control characters,
+including CR and LF, are written as `%XX` in uppercase hexadecimal. Per-key lines
+show which keys were written before a partial write. These lines are not shown
+to the user; the user sees upstream's messages (DL-26). The remote exit status is not used: a Windows default shell can
 replace it, as recorded in destination difference
 [O-04](compatibility.md#destination-differences) and the
 [W05 measurement](validation.md#command-delivery-and-exit-codes). A missing
@@ -386,6 +407,16 @@ Strict public key parsing is not adopted by this decision. Decision recorded on
 is neither empty, a `#` comment, nor a key entry is rejected before
 transmission, with the line number; no size limit is imposed beyond memory.
 Encoding is passed through as bytes; a leading byte order mark is handled below.
+Apparent intent of upstream, which appends such lines: input comes from
+`ssh-keygen` or `ssh-add` and is well formed. Reason to differ: a false success
+report, since sshd ignores a malformed line that upstream counts as added.
+Recorded as difference D-10.
+
+Decision recorded on 2026-09-30 on certificates: certificate lines, whose type
+ends in `-cert-v01@openssh.com`, and `cert-authority` lines are passed through as
+upstream does. sshd does not accept a certificate line in an authorized-keys file
+for login, so the installed-key check and the post-installation verification
+report such a line as Inconclusive with that reason. No difference is recorded.
 
 #### Leading BOM Removal
 
@@ -423,7 +454,7 @@ shell that executes the installation script. For example:
 - Use Windows PowerShell as the initial candidate for Windows scripts, and verify compatibility with `pwsh`.
 - Test launching through `cmd`. This does not necessarily require implementing all installation logic in batch syntax.
 - Do not infer the OS from the shell name; `pwsh`, for example, also runs on Linux.
-- Decision recorded on 2026-09-24: in normal mode, detect the destination shell family before writing with one command whose output differs between POSIX `sh`, `cmd.exe`, and PowerShell, and stop with an error before any write when the output matches none. `--target-os` overrides detection. `-s` cannot run the probe and assumes a Unix-like destination unless `--target-os` says otherwise. `--remote-shell` is not adopted.
+- Decision recorded on 2026-09-24: in normal mode, detect the destination shell family before writing with one command whose output differs between POSIX `sh`, `cmd.exe`, and PowerShell, and stop with an error before any write when the output matches none. `--target-os` overrides detection. `-s` cannot run the probe and assumes a Unix-like destination unless `--target-os` says otherwise. `--remote-shell` is not adopted. Apparent intent of upstream, which sends its `sh` script without checking: destinations run a POSIX shell. Reason to differ: Windows destinations cannot run that script. Recorded as difference D-12: normal mode makes one more connection, and `--target-os` is a new option. Decision recorded on 2026-09-30: `--target-os` takes `unix` or `windows`. The probe command and its expected outputs are fixed from measurements under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` (validation scenario W09); `echo %OS%:$0` is the starting candidate.
 
 ### Windows Remote Command
 
@@ -512,7 +543,7 @@ not specify `TRUNC`, which discards existing contents. OpenSSH `sftp`'s `put -a`
 resumes a transfer; it does not append a file containing only the new data.
 Upstream `-s` downloads the file, edits it locally, and uploads it again.
 
-- Distinguish a missing file from permission and communication failures. Decision recorded on 2026-09-24: run `ls -l` on the target before `get`; upstream's `-get` ignores every error and cannot make that distinction. A "No such file" answer means missing; any other error stops the run before writing.
+- Distinguish a missing file from permission and communication failures. Decision recorded on 2026-09-24: run `ls -l` on the target before `get`; upstream's `-get` ignores every error and cannot make that distinction. A "No such file" answer means missing; any other error stops the run before writing. Apparent intent of the leading `-`: tolerate the missing file of a first installation. Reason to differ: when `get` fails for another reason, upstream continues and uploads a file that holds only the new keys, which can replace the existing file. That is damage to data the user did not ask to change. Recorded as difference D-09.
 - Decision recorded on 2026-09-24: `-s` downloads, edits locally, and uploads the whole file, as upstream does, because `sftp.exe` cannot append (DL-12).
 - Rewriting the entire file can lose concurrent updates. Direct appending also does not guarantee atomicity across duplicate checks and newline handling. Test and define the scope of concurrency support.
 - SFTP v3 Unix permission attributes alone cannot configure Windows ACLs adequately. Limit Windows SFTP support and document prerequisites such as existing ACLs.
@@ -567,6 +598,16 @@ tested against every supported OpenSSH client version, and the supported version
 are listed with each release; a client outside that list gets a stated error, not
 a guess. A Rust SFTP implementation is re-evaluated only for appending in `-s`
 mode. Implementing the SSH protocol from scratch is not the plan.
+
+Decision recorded on 2026-09-30: the initial supported clients are
+`OpenSSH_for_Windows_9.5p2` and OpenSSH `9.6p1` as packaged in Ubuntu 24.04.
+The fixtures already exercise both. The initial patterns cover `Permission
+denied`, host key verification failure, and connection failure. A version is
+added after the fixtures pass with it. Apparent intent of upstream, which runs
+with any client: it classifies only by exit status and one `Permission denied`
+match, so it needs no version list. Reason to differ: a stderr pattern that was
+never tested against a client can misclassify, which is a false success or
+false failure report. Recorded as difference D-13.
 Compare the full build and runtime dependency footprint, including packaging
 costs, alongside compatibility and authentication behavior before making that choice.
 
@@ -678,6 +719,12 @@ index. Commit messages name decisions by ID.
 | DL-30 | 2026-09-24 | `-s` checks the target with `ls -l` first and rewrites the whole file | [SFTP mode](#sftp-mode) |
 | DL-31 | 2026-09-24 | D-07: remove a leading byte order mark from the input | [Leading BOM removal](#leading-bom-removal) |
 | DL-32 | 2026-09-24 | D-08: `-s` stops before `put` when the target changed since `get` | [Change check before upload](#recorded-difference-change-check-before-upload) |
+| DL-33 | 2026-09-30 | Result lines: one per key, then a summary line; path characters encoded as `%XX` | [Installation outcome](#installation-outcome) |
+| DL-34 | 2026-09-30 | Initial supported clients: Windows 9.5p2 and Ubuntu 24.04 9.6p1; three stderr patterns | [Connection backend](#connection-backend-evaluation) |
+| DL-35 | 2026-09-30 | Certificate and `cert-authority` lines pass through; checks report them as Inconclusive | [CRLF normalization](#crlf-normalization) |
+| DL-36 | 2026-09-30 | Index D-09 to D-14, which DL-12, DL-18, DL-26, DL-27, DL-28, and DL-30 had introduced without rows | [Differences](compatibility.md) |
+| DL-37 | 2026-09-30 | Relative `-t` paths start at the home or profile directory; normal mode appends without a lock, as upstream | [Custom parent](#recorded-difference-existing-parent-directory-of-a-custom-target) |
+| DL-38 | 2026-09-30 | `--target-os` values `unix` and `windows`; probe outputs fixed by W09 measurements | [Remote operating systems](#remote-operating-systems-and-shells) |
 
 ## References
 

@@ -2,7 +2,7 @@
 
 [日本語](compatibility.jp.md) | [Design](design.md)
 
-Updated: 2026-09-24. This is an index of accepted design differences, not a claim
+Updated: 2026-09-30. This is an index of accepted design differences, not a claim
 that they have been implemented or tested. Differences are not classified as
 upstream defects or bug fixes, and no claim is made about the original author's intent.
 
@@ -18,7 +18,7 @@ details here.
 
 | ID | Reviewed upstream behavior | This project's decision | Details |
 | --- | --- | --- | --- |
-| D-01 | A successful probe skips the selected key; another configured identity may have authenticated. | Authentication with another key does not establish that the selected key is installed. | [Selected identity](design.md#recorded-difference-identity-used-for-the-installed-key-check) |
+| D-01 | A successful probe skips the selected key; another configured identity may have authenticated. | Authentication with another key does not establish that the selected key is installed. When other candidates make the check inconclusive, install with a warning; duplicates are possible. | [Selected identity](design.md#recorded-difference-identity-used-for-the-installed-key-check) |
 | D-02 | In `-s` mode, attempts `exit` and accepts a specific SFTP-only error message as success. | Check by establishing an SFTP session, without remote commands or that message shortcut. | [SFTP check](design.md#recorded-difference-sftp-installed-key-check) |
 | D-03 | SFTP mode sets the target's parent directory to 700; normal mode does not unconditionally chmod it. | Preserve the existing parent directory's permissions for `-t` in both modes; report insufficient access. | [Custom parent permissions](design.md#recorded-difference-existing-parent-directory-of-a-custom-target) |
 | D-04 | No explicit private-key-content rejection in installation input; `-f` may transmit it. | Reject private key input before transmission, including with `-f`. | [Private key input](design.md#private-key-input-rejection) |
@@ -26,6 +26,12 @@ details here.
 | D-06 | After writing, prints a suggested login command and does not verify. | Repeat the installed-key check for each written key unless `-f`; report installed-but-unverified keys with the reason. | [Post-installation verification](design.md#recorded-difference-post-installation-verification) |
 | D-07 | Writes a leading UTF-8 byte order mark as part of the first key line. | Remove a leading byte order mark from the installation input before transmission. | [Leading BOM removal](design.md#leading-bom-removal) |
 | D-08 | `-s` uploads the edited file without checking for changes since the download. | Repeat `ls -l` before `put` and stop without writing when the size or modification time changed. | [Change check before upload](design.md#recorded-difference-change-check-before-upload) |
+| D-09 | `-s` ignores every `get` error and continues; a failed read can lead to uploading a file with only the new keys. | Check the target with `ls -l` first; stop before writing on any error except a missing file. | [SFTP mode](design.md#sftp-mode) |
+| D-10 | Appends malformed lines, a standalone CR, or a NUL byte as given. | Reject such input before transmission, with the line number. | [CRLF normalization](design.md#crlf-normalization) |
+| D-11 | A quote in the `-t` path breaks the remote `sh -c` script. | Quote the path as data on Unix and Windows destinations. | [Custom parent](design.md#recorded-difference-existing-parent-directory-of-a-custom-target) |
+| D-12 | Sends the `sh` script without checking the destination; has no OS option. | In normal mode, detect the shell family with one more connection before writing; `--target-os` overrides. | [Remote operating systems](design.md#remote-operating-systems-and-shells) |
+| D-13 | Runs with any OpenSSH client. | Runs only with client versions whose stderr patterns were tested; others get an error. | [Connection backend](design.md#connection-backend-evaluation) |
+| D-14 | `-x` enables the shell's `set -x` trace. | `-x` prints each client command and the remote script before running them. | [Remaining questions](design.md#remaining-compatibility-questions) |
 
 ## Destination Differences
 
