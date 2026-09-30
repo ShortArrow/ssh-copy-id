@@ -2,11 +2,14 @@
 param(
     [string]$IdentityFile = 'work/windows-fixture/smoke_key',
     [string]$KnownHostsFile = 'work/windows-fixture/known_hosts',
-    [int]$Port = 22222
+    [int]$Port = 22222,
+    [string]$ExpectedShellProcess = 'cmd.exe',
+    [int]$ExpectedCmdExitCode = 37,
+    [string]$EvidenceRoot = 'work/windows-fixture'
 )
 $ErrorActionPreference = 'Stop'
 $run = [Guid]::NewGuid().ToString('N')
-$directory = Join-Path (Get-Location) "work/windows-fixture/standard-$run"
+$directory = Join-Path (Get-Location) "$EvidenceRoot/standard-$run"
 New-Item -ItemType Directory -Path $directory | Out-Null
 $key = Join-Path $directory 'identity'
 $checks = [Collections.Generic.List[string]]::new()
@@ -109,19 +112,31 @@ $ErrorActionPreference = 'Stop'
 $text = [Console]::In.ReadToEnd()
 if ($text -ne "line one`r`nline two`n") { throw 'stdin bytes changed' }
 if ((& whoami) -notmatch '\\fixtureuser$') { throw 'Unexpected identity' }
+Add-Type -Namespace Fixture -Name Native -MemberDefinition @"
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct BasicInformation { public System.IntPtr Reserved1, PebBaseAddress, Reserved2a, Reserved2b, UniqueProcessId, ParentProcessId; }
+[System.Runtime.InteropServices.DllImport("ntdll.dll")]
+public static extern int NtQueryInformationProcess(System.IntPtr process, int informationClass, ref BasicInformation information, int length, out int returned);
+"@
+$information = New-Object Fixture.Native+BasicInformation
+$returned = 0
+$status = [Fixture.Native]::NtQueryInformationProcess([Diagnostics.Process]::GetCurrentProcess().Handle, 0, [ref]$information, [Runtime.InteropServices.Marshal]::SizeOf($information), [ref]$returned)
+if ($status -ne 0) { throw "NtQueryInformationProcess failed: $status" }
+$shell = [IO.Path]::GetFileName((Get-Process -Id $information.ParentProcessId.ToInt64()).Path)
+if ($shell -ne '__SHELL__') { throw "Unexpected default shell process: $shell" }
 Write-Output 'standard-user-stdin-ok'
 '@
-    $result = Invoke-Guest fixtureuser $key $probe "line one`r`nline two`n"
+    $result = Invoke-Guest fixtureuser $key ($probe.Replace('__SHELL__', $ExpectedShellProcess)) "line one`r`nline two`n"
     if ($result.Code -ne 0) {
         $diagnostic = Invoke-Guest fixtureadmin $IdentityFile 'Get-Content C:\Users\fixtureuser\.ssh\authorized_keys; icacls C:\Users\fixtureuser\.ssh; icacls C:\Users\fixtureuser\.ssh\authorized_keys; Get-Acl C:\Users\fixtureuser\.ssh\authorized_keys | Format-List Owner; Get-LocalUser fixtureuser | Select-Object SID | ConvertTo-Json'
         Write-Host $diagnostic.Out
     }
     Assert-Success $result
     if ($result.Out.Trim() -ne 'standard-user-stdin-ok') { throw 'Unexpected probe output' }
-    $checks.Add('standard-user authentication and mixed-newline stdin preserved')
+    $checks.Add("standard-user authentication and mixed-newline stdin preserved under $ExpectedShellProcess")
     $exitResult = Invoke-Client ssh.exe ((Get-Options $key) + @('-T', '-p', "$Port", 'fixtureuser@127.0.0.1', 'cmd.exe /d /c exit 37'))
-    if ($exitResult.Code -ne 37) { throw "Expected remote exit 37, got $($exitResult.Code)" }
-    $checks.Add('cmd remote exit code 37 preserved')
+    if ($exitResult.Code -ne $ExpectedCmdExitCode) { throw "Expected remote exit $ExpectedCmdExitCode, got $($exitResult.Code)" }
+    $checks.Add("remote 'cmd.exe /d /c exit 37' returned $ExpectedCmdExitCode under $ExpectedShellProcess")
 
     $source = Join-Path $directory 'source.txt'
     $received = Join-Path $directory 'received.txt'

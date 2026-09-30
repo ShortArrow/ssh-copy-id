@@ -25,8 +25,8 @@ placeholder. Behavioral differences remain indexed in [compatibility](compatibil
 | W02 | Standard-user key absent / installed / removed | Passed | [Test-StandardUser.ps1](../tests/environments/windows/Test-StandardUser.ps1), initialized profile. |
 | W03 | Standard-user CRLF/LF stdin and explicit cmd exit 37 | Passed | Same script; default shell remains cmd. |
 | W04 | Standard-user SFTP binary upload, download, byte comparison, deletion | Passed | Same script; not an append or atomic-replacement test. |
-| W05 | Windows PowerShell as the sshd default shell | Pending | Separate fixture; repeat both account tests. Explicit PowerShell invocation under cmd does not cover this. |
-| W06 | pwsh as the sshd default shell | Pending | Separate fixture with a recorded pwsh version; repeat both account tests. |
+| W05 | Windows PowerShell as the sshd default shell | Passed | [Cloned fixture](#windows-powershell-default-shell-2026-09-23), both account tests; a native child command's nonzero exit code reaches the client as 1. |
+| W06 | pwsh as the sshd default shell | Pending | Clone a fixture, install pwsh, run `Set-DefaultShell.ps1 -Shell pwsh`, record the pwsh version, and repeat both account tests. |
 | W07 | Default administrator shared key-file scope and invalid ACL rejection | Pending | Add positive/negative ACL cases and a second administrator. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | A01 | Password/passphrase prompts and agent-selected identities | Pending | Interactive client tests; current automation disables agent use. |
@@ -74,6 +74,75 @@ key files. This is a fixture prerequisite and an observed setup issue, not a new
 product design difference. Test first-login behavior separately if it becomes a
 supported product scenario. Windows OpenSSH documents relative key paths against
 the [user's profile directory](https://github.com/PowerShell/Win32-OpenSSH/wiki/sshd_config).
+
+## Windows PowerShell Default Shell: 2026-09-23
+
+Environment: a second dockur project, `ssh-copy-id-win11-ps`, created from a
+copy of the validated baseline disk while both guests were stopped. Same guest
+build `26200.6584` and guest OpenSSH `9.5.5.1`; host client
+`OpenSSH_for_Windows_9.5p2`. Default shell:
+`C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`, file version
+`10.0.26100.5074`, set through `Set-DefaultShell.ps1`. Host bindings: web `8007`,
+SSH `22223`. Evidence remains under ignored `work/windows-fixture-ps/`.
+
+Commands from the repository root (PowerShell 7). The smoke test had first run
+against the copy with its default `cmd.exe` shell to record the host key:
+
+```powershell
+$fixture = @{ Port = 22223; IdentityFile = 'work/windows-fixture-ps/smoke_key'; KnownHostsFile = 'work/windows-fixture-ps/known_hosts' }
+./tests/environments/windows/Set-DefaultShell.ps1 -Shell WindowsPowerShell @fixture
+./tests/environments/windows/Test-Smoke.ps1 -ExpectedShellProcess powershell.exe @fixture
+./tests/environments/windows/Test-StandardUser.ps1 -ExpectedShellProcess powershell.exe -ExpectedCmdExitCode 1 -EvidenceRoot work/windows-fixture-ps @fixture
+```
+
+Both tests now assert the name of the process that sshd started to interpret
+the SSH command. The administrator smoke test passed and recorded that process's
+command line. The standard-user test passed five assertions: unregistered-key
+rejection, authentication with exact mixed-newline stdin under `powershell.exe`,
+remote `cmd.exe /d /c exit 37` reported as exit 1, binary SFTP round trip with
+deletion, and removed-key rejection.
+
+### Command Delivery and Exit Codes
+
+sshd wraps the SSH command in the default shell's command option:
+
+| Default shell | Observed shell command line |
+| --- | --- |
+| `cmd.exe` | `"c:\windows\system32\cmd.exe" /c "<command>"` |
+| Windows PowerShell | `"c:\windows\system32\windowspowershell\v1.0\powershell.exe" -c "<command>"` |
+
+Under Windows PowerShell the SSH command is parsed as a PowerShell statement.
+Administrator probes on the same fixture, recorded in
+`work/windows-fixture-ps/exit-code-probes.json`:
+
+| SSH command | Exit status |
+| --- | --- |
+| `exit 37` | 37 |
+| `cmd.exe /d /c exit 37` | 1 |
+| `cmd.exe /d /c exit 0` | 0 |
+| `powershell.exe -NoProfile -Command "exit 37"` | 1 |
+| `cmd.exe /d /c exit 37; exit $LASTEXITCODE` | 37 |
+| `$host.SetShouldExit(37)` | 37 |
+| `nonexistent-command-xyz` | 1 |
+
+Success and failure remain distinguishable. A specific nonzero exit code of a
+native child command reaches the client only when the command is PowerShell
+syntax that exits explicitly. SFTP is unaffected because the subsystem does not
+start the default shell. How the product forwards the installation script's
+exit code without assuming the default shell is tracked in the design.
+
+### Setup Findings
+
+- The baseline guest had hung since 2026-09-20 21:51 JST: the QEMU framebuffer
+  no longer changed after keyboard and mouse input, the guest IP had no ARP
+  reply inside the container, one core stayed busy, and `data.img` was last
+  written at that time. The graceful stop timed out, the container was killed
+  after its grace period, and the guest booted normally afterwards. The cause is
+  not identified; the fixture runs with `HV=N`.
+- The earlier control key files were created by a different sandbox account, and
+  their ACLs deny the current account. `Install-ControlKey.ps1` installed a new
+  control key through the documented fixture password. This is a host-side
+  setup issue, not a guest or product finding.
 
 ## Linux Recheck: 2026-09-20
 

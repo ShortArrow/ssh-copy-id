@@ -445,7 +445,12 @@ session check. Initial setup required recovery; see the fixture's validation
 record for the workaround, exact versions, and remaining scenarios.
 The initialized standard-user profile also passed absent/installed/removed-key
 authentication checks, mixed-newline stdin, remote exit-code preservation, and a
-binary SFTP round trip. Track tested and pending scenarios in the
+binary SFTP round trip. A copied fixture with Windows PowerShell as the sshd
+default shell passed the same account tests; there sshd passes the command with
+`powershell.exe -c`, and a native child command's nonzero exit code reaches the
+client as 1. Forwarding the installation script's exit code without assuming the
+default shell remains an open implementation question.
+Track tested and pending scenarios in the
 [validation matrix](validation.md); these are fixture tests, not Rust CLI conformance.
 These are development/test tools, not product runtime dependencies.
 For Windows

@@ -1,7 +1,8 @@
 param(
     [string]$IdentityFile = 'work/windows-fixture/smoke_key',
     [string]$KnownHostsFile = 'work/windows-fixture/known_hosts',
-    [int]$Port = 22222
+    [int]$Port = 22222,
+    [string]$ExpectedShellProcess = 'cmd.exe'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,6 +23,8 @@ $ssh = Join-Path $env:WINDIR 'System32\OpenSSH\ssh.exe'
 $sshVersion = (Get-Item -LiteralPath $ssh).VersionInfo.FileVersion
 $registry = Get-ItemProperty 'HKLM:\SOFTWARE\OpenSSH'
 $defaultShell = if ($registry.PSObject.Properties.Name -contains 'DefaultShell') { $registry.DefaultShell } else { 'cmd.exe (default)' }
+$self = Get-CimInstance Win32_Process -Filter "ProcessId = $PID"
+$shell = Get-CimInstance Win32_Process -Filter "ProcessId = $($self.ParentProcessId)"
 [ordered]@{
     user = (& whoami)
     build = $version.CurrentBuild
@@ -33,6 +36,8 @@ $defaultShell = if ($registry.PSObject.Properties.Name -contains 'DefaultShell')
     standardUserEnabled = $standard.Enabled
     standardUserIsAdmin = $isAdmin
     defaultShell = $defaultShell
+    shellProcess = $shell.Name
+    shellCommandLine = $shell.CommandLine
     stdinRoundTrip = $true
 } | ConvertTo-Json -Compress
 '@
@@ -66,6 +71,7 @@ try {
     if ($errorText) { Write-Verbose $errorText }
     $result = $stdout.GetAwaiter().GetResult() | ConvertFrom-Json
     if (-not $result.stdinRoundTrip) { throw 'Guest result is missing stdin verification' }
+    if ($result.shellProcess -ne $ExpectedShellProcess) { throw "Expected default shell process $ExpectedShellProcess, got $($result.shellProcess)" }
     $result | ConvertTo-Json
 } finally {
     $process.Dispose()
