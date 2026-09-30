@@ -30,7 +30,7 @@ details here.
 | D-10 | Appends malformed lines, a standalone CR, or a NUL byte as given. | Reject such input before transmission, with the line number. | [CRLF normalization](design.md#crlf-normalization) |
 | D-11 | A quote in the `-t` path breaks the remote `sh -c` script. | Quote the path as data on Unix and Windows destinations. | [Custom parent](design.md#recorded-difference-existing-parent-directory-of-a-custom-target) |
 | D-12 | Sends the `sh` script without checking the destination; has no OS option. | In normal mode, detect the shell family with one more connection before writing; `--target-os` overrides. | [Remote operating systems](design.md#remote-operating-systems-and-shells) |
-| D-13 | Runs with any OpenSSH client. | Runs only with client versions whose stderr patterns were tested; others get an error. | [Connection backend](design.md#connection-backend-evaluation) |
+| D-13 | Runs with any OpenSSH client. | Warns on client versions whose stderr patterns were not tested; output it cannot classify makes the check inconclusive. | [Connection backend](design.md#connection-backend-evaluation) |
 | D-14 | `-x` enables the shell's `set -x` trace. | `-x` prints each client command and the remote script before running them. | [Remaining questions](design.md#remaining-compatibility-questions) |
 
 ## Destination Differences

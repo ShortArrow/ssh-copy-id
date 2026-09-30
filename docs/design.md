@@ -4,8 +4,10 @@
 
 [Differences from upstream](compatibility.md)
 
-Status: pre-implementation design. Records decisions and open questions as of 2026-09-18;
-decisions through 2026-09-24 are indexed in the [decision log](#decision-log).
+Status: implementation started on 2026-09-30 with the pure core modules; nothing
+is released. Decisions through 2026-09-30 are indexed in the
+[decision log](#decision-log), and the [delivery plan](#delivery-plan) orders the
+remaining work.
 
 See the [2026-09-20 adversarial review](design-review.md) for unresolved failure
 cases and proposed decisions. Recommendations are not accepted requirements unless
@@ -80,12 +82,26 @@ administrator accounts. See [Windows administrator scope](#windows-administrator
 | SFTP-only remote access | In scope for `-s`, subject to accessible paths and permission capabilities |
 | Other local operating systems or specialized SSH appliances | No support commitment in the initial scope; evaluate separately |
 
-These are implementation targets, not current support claims. The first
-milestone remains Windows to a Unix-like host with one explicitly selected key.
-Decision recorded on 2026-09-24: the second milestone is one explicitly selected
-key for one standard user on a Windows destination, in normal mode. Broader CLI
-compatibility, SFTP, administrator destinations, and Linux distribution follow as
-separate increments; none is a prerequisite for the first two milestones.
+These are implementation targets, not current support claims. The order of the
+work is the delivery plan below.
+
+### Delivery Plan
+
+Decision recorded on 2026-09-30. Each stage ends when its checks pass; the IDs
+are rows of the [validation matrix](validation.md).
+
+| Stage | Release | Content | Done when |
+| --- | --- | --- | --- |
+| 0. Feasibility | none | Prototype of `ssh.exe` on Windows with authentication prompts while public keys go to stdin; a Linux sshd fixture for CLI integration tests | A01 passes for a password, an encrypted key's passphrase, cancellation, and no terminal; L02 passes and runs in CI |
+| 1. Unix destination, one key | v0.0.1 | `[user@]host`, `-i file`, `-p`, `-o`, `-F`; the installed-key check with three results; the `sh` installation script with result lines; post-installation verification; exit statuses | Initial requirements 1, 2, 3, 7, and 8 pass as tests against L02 |
+| 1.5. CLI compatibility | v0.0.2 | `-n`, `-f`, `-i` without a file, default key selection, agent keys, `-x`, upstream messages | Requirements 4 and 5 pass; golden tests against the pinned script (P01) pass for the shared behavior |
+| 2. Windows standard user | v0.1.0 | Destination detection, the PowerShell installation script, ACLs on new objects | W06, W07, and W09 pass before the implementation; requirements 1, 2, 3, 7, and 8 pass against the dockur fixture |
+| 3. Later increments | 0.1.x or later | Shared administrator file, `-s` (requirement 6), Linux packages | Decided per increment |
+
+Stage 0 comes first because a failed prototype would invalidate the backend
+decision (DL-12) that stages 1 to 3 build on. The Windows evaluation guest
+reported a grace period of 114,769 minutes on 2026-09-30, so it expires around
+2026-12-19; the stage 2 fixture scenarios run before then or on a rebuilt guest.
 
 ### Out of Scope
 
@@ -138,6 +154,18 @@ Packages must not add this alias or modify the user's shell configuration
 automatically. Package names remain undecided and need not match executable
 names. This policy does not imply that an APT or pacman package or Linux client
 support is already available.
+
+### Versioning and Release
+
+Decision recorded on 2026-09-30, following the owner's runex and gitreant
+repositories.
+
+- Versions follow Semantic Versioning. Releases start at 0.0.1 with stage 1, stage 1.5 is 0.0.2, and Windows destination support in stage 2 is 0.1.0. From 0.1.0 until 1.0.0, a breaking change to the command line bumps the minor version and anything else bumps the patch.
+- The branching model is trunk-based. `main` is always releasable, and changes reach it through pull requests from short-lived branches named after their issue (`feat/`, `fix/`, `docs/`, `ci/`). The version bump commit is the one commit pushed to `main` directly. The owner's general rule of GitFlow for versioned packages is not applied, for the reason runex retired its `develop` branch: every change already lands as a self-contained pull request, so an integration branch only delays fixes.
+- Releases are annotated `vX.Y.Z` tags on `main`. A tag containing `-`, such as `v0.0.1-pre`, is published as a prerelease and rehearses the pipeline.
+- `CHANGELOG.md` follows Keep a Changelog. Every user-visible change adds an entry under `[Unreleased]`, which a release renames to the version and date. An entry names the difference IDs it adds or changes.
+- `release.yml` is written before v0.0.1, modeled on runex and gitreant: tests on Linux, Windows, and macOS gate the release, then builds, a GitHub release, and publishing to crates.io through trusted publishing with OIDC. The crate name is `ssh-copy-id`; it and `ssh-copy-id-rs` were both unused on crates.io on 2026-09-30.
+- Open: `cargo install` on Linux installs a binary named `ssh-copy-id`, which can shadow OpenSSH's command in `PATH`, unlike the `ssh-copy-id-rs` name chosen for Linux packages.
 
 ## Compatibility with the Linux Version
 
@@ -609,15 +637,19 @@ are listed with each release; a client outside that list gets a stated error, no
 a guess. A Rust SFTP implementation is re-evaluated only for appending in `-s`
 mode. Implementing the SSH protocol from scratch is not the plan.
 
-Decision recorded on 2026-09-30: the initial supported clients are
-`OpenSSH_for_Windows_9.5p2` and OpenSSH `9.6p1` as packaged in Ubuntu 24.04.
-The fixtures already exercise both. The initial patterns cover `Permission
-denied`, host key verification failure, and connection failure. A version is
-added after the fixtures pass with it. Apparent intent of upstream, which runs
-with any client: it classifies only by exit status and one `Permission denied`
-match, so it needs no version list. Reason to differ: a stderr pattern that was
-never tested against a client can misclassify, which is a false success or
-false failure report. Recorded as difference D-13.
+Decision recorded on 2026-09-30 and revised the same day (DL-44): the tested
+clients are `OpenSSH_for_Windows_9.5p2` and OpenSSH `9.6p1` as packaged in
+Ubuntu 24.04, which the fixtures already exercise. The initial patterns cover
+`Permission denied`, host key verification failure, and connection failure. With
+any other client version the tool prints a warning and continues. Output that
+matches no known pattern makes the check Inconclusive, so the key is installed
+with a warning and the post-installation verification reports the result. A
+version is listed as tested after the fixtures pass with it. Apparent intent of
+upstream, which runs with any client: it classifies only by exit status and one
+`Permission denied` match, so it needs no version list. Reason to differ: an
+untested pattern can misclassify, which is a false success or false failure
+report. The warning and the Inconclusive result prevent that report without
+refusing clients such as the one in Git for Windows. Recorded as difference D-13.
 Compare the full build and runtime dependency footprint, including packaging
 costs, alongside compatibility and authentication behavior before making that choice.
 
@@ -656,7 +688,10 @@ its container and generated keys.
 
 The first implementation milestone is to install one explicitly selected key on
 a Unix-like destination without adding it again on a subsequent run.
-Turn the following requirements into behavioral tests.
+Turn the following requirements into behavioral tests. Decision recorded on
+2026-09-30: the first milestone covers requirements 1, 2, 3, 7, and 8;
+requirements 4 and 5 belong to stage 1.5 and requirement 6 to stage 3 of the
+[delivery plan](#delivery-plan).
 
 1. Do not append a key that can already authenticate, and do not mistake success with another key for success with the selected key.
 2. Correctly append to an empty file, a missing file, and a file without a trailing newline.
@@ -737,6 +772,12 @@ index. Commit messages name decisions by ID.
 | DL-37 | 2026-09-30 | Relative `-t` paths start at the home or profile directory; normal mode appends without a lock, as upstream | [Custom parent](#recorded-difference-existing-parent-directory-of-a-custom-target) |
 | DL-38 | 2026-09-30 | `--target-os` values `unix` and `windows`; probe outputs fixed by W09 measurements | [Remote operating systems](#remote-operating-systems-and-shells) |
 | DL-39 | 2026-09-30 | Key entry grammar; result-line values and encoding of bytes from `0x80` | [CRLF normalization](#crlf-normalization), [Installation outcome](#installation-outcome) |
+| DL-40 | 2026-09-30 | Delivery plan with stage 0 first and completion checks per stage | [Delivery plan](#delivery-plan) |
+| DL-41 | 2026-09-30 | The first milestone covers requirements 1, 2, 3, 7, and 8 | [Initial validation](#initial-validation) |
+| DL-42 | 2026-09-30 | Semantic Versioning from 0.0.1; stage 1 is 0.0.1, stage 1.5 is 0.0.2, stage 2 is 0.1.0 | [Versioning and release](#versioning-and-release) |
+| DL-43 | 2026-09-30 | Trunk-based branches, annotated `vX.Y.Z` tags, prerelease tags with `-`, Keep a Changelog, `release.yml` before v0.0.1 | [Versioning and release](#versioning-and-release) |
+| DL-44 | 2026-09-30 | D-13 revised: untested client versions warn and continue; unclassifiable output is Inconclusive | [Connection backend](#connection-backend-evaluation) |
+| DL-45 | 2026-09-30 | README marks unpublished install channels as unpublished and shows a source build | [README](../README.md) |
 
 ## References
 

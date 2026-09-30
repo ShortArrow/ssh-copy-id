@@ -21,6 +21,7 @@ placeholder. Behavioral differences remain indexed in [compatibility](compatibil
 | ID | Scenario | Status | Evidence / next action |
 | --- | --- | --- | --- |
 | L01 | Selected B versus authorized A, direct and one jump | Passed | [Linux prototype](../tests/prototypes/identity-isolation/README.md): 14 checks; fixed configuration only. |
+| L02 | Linux sshd fixture for Rust CLI integration tests | Pending | Stage 0 of the delivery plan (DL-40): a disposable sshd with key-only and password accounts, run by the CI `linux-fixture` job. |
 | W01 | Administrator login, remote execution, stdin, guest metadata | Passed | [Test-Smoke.ps1](../tests/environments/windows/Test-Smoke.ps1). |
 | W02 | Standard-user key absent / installed / removed | Passed | [Test-StandardUser.ps1](../tests/environments/windows/Test-StandardUser.ps1), initialized profile. |
 | W03 | Standard-user CRLF/LF stdin and explicit cmd exit 37 | Passed | Same script; default shell remains cmd. |
@@ -30,7 +31,7 @@ placeholder. Behavioral differences remain indexed in [compatibility](compatibil
 | W07 | Default administrator shared key-file scope and invalid ACL rejection | Pending | First check whether an inherited profile ACL alone passes sshd's check (DL-19); then positive/negative ACL cases, an extra read-only and an extra writable ACE, and a second administrator. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for DL-38; include a login shell that prints a banner. |
-| A01 | Password/passphrase prompts and agent-selected identities | Pending | Interactive client tests; current automation disables agent use. |
+| A01 | Password/passphrase prompts and agent-selected identities | Pending | Stage 0 (DL-40): prototype Windows `ssh.exe` with a password, an encrypted key's passphrase, cancellation, and no terminal while public keys go to stdin. Agent-selected identities follow in stage 1.5. |
 | F01 | Interrupted writes and uncertain remote state | Pending | Inject disconnects and record actual file state and exit status. |
 | P01 | Rust CLI behavior versus pinned upstream | Pending | Implement the CLI before claiming product conformance. |
 
