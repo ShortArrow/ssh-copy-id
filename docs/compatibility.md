@@ -2,7 +2,7 @@
 
 [日本語](compatibility.jp.md) | [Design](design.md)
 
-Updated: 2026-09-20. This is an index of accepted design differences, not a claim
+Updated: 2026-09-24. This is an index of accepted design differences, not a claim
 that they have been implemented or tested. Differences are not classified as
 upstream defects or bug fixes, and no claim is made about the original author's intent.
 
@@ -23,6 +23,24 @@ details here.
 | D-03 | SFTP mode sets the target's parent directory to 700; normal mode does not unconditionally chmod it. | Preserve the existing parent directory's permissions for `-t` in both modes; report insufficient access. | [Custom parent permissions](design.md#recorded-difference-existing-parent-directory-of-a-custom-target) |
 | D-04 | No explicit private-key-content rejection in installation input; `-f` may transmit it. | Reject private key input before transmission, including with `-f`. | [Private key input](design.md#private-key-input-rejection) |
 | D-05 | No explicit CR removal from CRLF installation input. | Normalize incoming CRLF line endings to LF for transmission; preserve existing remote contents. | [CRLF normalization](design.md#crlf-normalization) |
+| D-06 | After writing, prints a suggested login command and does not verify. | Repeat the installed-key check for each written key unless `-f`; report installed-but-unverified keys with the reason. | [Post-installation verification](design.md#recorded-difference-post-installation-verification) |
+| D-07 | Writes a leading UTF-8 byte order mark as part of the first key line. | Remove a leading byte order mark from the installation input before transmission. | [Leading BOM removal](design.md#leading-bom-removal) |
+| D-08 | `-s` uploads the edited file without checking for changes since the download. | Repeat `ls -l` before `put` and stop without writing when the size or modification time changed. | [Change check before upload](design.md#recorded-difference-change-check-before-upload) |
+
+## Destination Differences
+
+Unix-like and Windows destinations behave the same wherever the platform allows
+([design stance](design.md#design-stance)). This table lists where they cannot,
+with links to the decisions.
+
+| ID | Unix-like destination | Windows destination | Details |
+| --- | --- | --- | --- |
+| O-01 | Every account's keys go to `.ssh/authorized_keys`. | Administrators' keys go to the shared `administrators_authorized_keys` under the default server configuration. | [Administrator scope](design.md#windows-administrator-scope) |
+| O-02 | New directories and files get modes 700 and 600 through `umask`. | New directories and files get the minimal ACL for the account, SYSTEM, and Administrators through `icacls.exe`. Existing objects are untouched on both. | [Permissions](design.md#permissions-and-service-boundaries) |
+| O-03 | The account's POSIX shell runs an `sh` script. | The default shell (`cmd.exe`, Windows PowerShell, or `pwsh`) wraps the command; only an `EncodedCommand` line is sent. | [Windows remote command](design.md#windows-remote-command) |
+| O-04 | The remote exit status reaches the client. | A PowerShell default shell reports a child's nonzero status as 1. Both destinations therefore report the outcome on a result line. | [Installation outcome](design.md#installation-outcome) |
+| O-05 | `-s` sets file mode 600; the parent is unchanged (D-03). | `-s` cannot set ACLs; a directory with a correct ACL is a prerequisite. | [SFTP mode](design.md#sftp-mode) |
+| O-06 | Remote runtime requirement: POSIX `sh`. | Remote runtime requirements: `powershell.exe`, and `icacls.exe` when ACLs are set. | [Windows remote command](design.md#windows-remote-command) |
 
 ## Distribution Naming
 
@@ -36,6 +54,8 @@ This is a distribution decision, separate from the behavioral differences above.
 ## Maintaining This List
 
 Add accepted differences here and in the Japanese version with a stable ID and
-a link to the detailed design decision. Keep unaccepted proposals in the
-[design review](design-review.md). Update detailed implementation and verification
-status in the design document; acceptance of a design is not evidence of implementation.
+a link to the detailed design decision: `D-xx` for differences from upstream and
+`O-xx` for destination differences. Keep unaccepted proposals in the
+[design review](design-review.md). Record verification status in the
+[validation record](validation.md); acceptance of a design is not evidence of
+implementation.

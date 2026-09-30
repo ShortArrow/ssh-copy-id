@@ -1,6 +1,7 @@
 # Adversarial Design Review
 
 Date: 2026-09-20. Scope: [design.md](design.md), before implementation.
+A second round on 2026-09-24 is dispositioned [at the end](#second-round-2026-09-24).
 
 Accepted differences are indexed in [Differences from Upstream](compatibility.md).
 
@@ -277,3 +278,27 @@ and completions agree on the chosen binary names or document channel differences
 Keep the first implementation milestone small. Windows ACL and Linux packaging
 decisions can follow their respective milestones, but the Unix installation path
 already needs the authentication, input, and failure contracts above.
+
+## Second Round: 2026-09-24
+
+The second round covered the whole design, the pinned upstream script and
+manual, the Linux experiment, and fixture results W01 to W05. Its proposals were
+decided one at a time on 2026-09-24 and recorded as DL-11 to DL-23 in the
+[decision log](design.md#decision-log). Dispositions of the first round's items:
+
+| Item | Disposition |
+| --- | --- |
+| P1-1 mechanism | DL-14: three check results; an inconclusive check installs with a warning; configuration generation deferred |
+| P1-2 failure classification | DL-12: exit status plus stderr patterns tested per supported client version |
+| P1-3 partial results | DL-13: four outcomes on a result line; the concurrency contract is still open |
+| P1-4 remaining path decisions | DL-17 for Windows command quoting; Unix path quoting and link handling are still open |
+| P1-5 remaining ACL decisions | DL-19 and DL-15; custom `AuthorizedKeysFile` handling is still open |
+| P2-1 precedence table | Still open |
+| P2-2 `-n -f` | DL-22: no connection |
+| P2-3 input grammar | Still open beyond D-04 and D-05 |
+| P2-4 backend gate | DL-12; the Windows prompt prototype is still required before the first milestone |
+| P2-5 compatibility contract | DL-21: golden tests against the pinned script |
+
+Items new in the second round: DL-11 (design stance), DL-15 (D-06), DL-16
+(second milestone), DL-18 (destination detection), DL-20 (`-s` on Windows),
+and DL-23 (document roles).

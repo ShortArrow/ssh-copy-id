@@ -4,7 +4,8 @@
 
 [Differences from upstream](compatibility.md)
 
-Status: pre-implementation design. Records decisions and open questions as of 2026-09-18.
+Status: pre-implementation design. Records decisions and open questions as of 2026-09-18;
+decisions through 2026-09-24 are indexed in the [decision log](#decision-log).
 
 See the [2026-09-20 adversarial review](design-review.md) for unresolved failure
 cases and proposed decisions. Recommendations are not accepted requirements unless
@@ -23,6 +24,28 @@ implementation and validation targets, not a list of implemented features.
 - Respect host key verification and existing SSH connection settings.
 - Perform the file operations and permission changes needed to install keys. Do not start, stop, or restart services.
 - Minimize runtime and build dependencies to support future distribution through APT and other package managers.
+
+### Design Stance
+
+Decisions in this document follow four commitments, recorded on 2026-09-24.
+
+1. Read the pinned upstream script and manual first, and record what its behavior
+   appears to intend, before deciding whether to differ. No difference is recorded
+   without that reading.
+2. Differ from upstream only for a reason on this list: a false success or false
+   failure report, damage to data the user did not ask to change, transmission of
+   private material, or an operation that a supported platform cannot perform.
+   The reason is written next to the difference.
+3. Give Unix-like and Windows destinations the same observable behavior wherever
+   the platform allows: the same options, outcome states, exit statuses, and
+   messages. Where the platform forbids parity, the difference is a destination
+   difference, not a compatibility difference.
+4. Index every accepted difference. Differences from upstream are `D-xx` rows and
+   destination differences are `O-xx` rows in [compatibility.md](compatibility.md);
+   each row links to the decision here.
+
+Upstream behavior is described neutrally. Recording a difference does not classify
+upstream as defective.
 
 ## Project Scope
 
@@ -53,14 +76,16 @@ administrator accounts. See [Windows administrator scope](#windows-administrator
 | Local Windows client | Primary platform and initial implementation target |
 | Local Linux client | Planned extension for distribution through APT, pacman, and similar systems; use `ssh-copy-id-rs` |
 | Unix-like remote hosts | First implementation target, using the shell and file layout described below |
-| Windows OpenSSH remote hosts | Planned extension covering user and administrator key files and their ACL requirements |
+| Windows OpenSSH remote hosts | Second milestone: one standard user's key file. Administrator key files and their ACL requirements follow |
 | SFTP-only remote access | In scope for `-s`, subject to accessible paths and permission capabilities |
 | Other local operating systems or specialized SSH appliances | No support commitment in the initial scope; evaluate separately |
 
 These are implementation targets, not current support claims. The first
 milestone remains Windows to a Unix-like host with one explicitly selected key.
-Broader CLI compatibility, SFTP, Windows destinations, and Linux distribution
-follow as separate increments; they are not prerequisites for that first milestone.
+Decision recorded on 2026-09-24: the second milestone is one explicitly selected
+key for one standard user on a Windows destination, in normal mode. Broader CLI
+compatibility, SFTP, administrator destinations, and Linux distribution follow as
+separate increments; none is a prerequisite for the first two milestones.
 
 ### Out of Scope
 
@@ -160,7 +185,13 @@ errors as evidence that a key is not installed.
 
 Decision recorded on 2026-09-20: describe this as a behavioral difference from
 upstream, without classifying upstream behavior as a defect or this change as a
-bug fix. The original author's intent has not been established.
+bug fix. The original author's intent is not confirmed.
+
+Apparent intent (recorded 2026-09-24): the upstream probe reads as a cheap "can
+this key log in" test that assumes `-i` names the only identity the client will
+offer; `IdentitiesOnly=yes` in the probe supports that reading. The assumption
+breaks because configured `IdentityFile` entries are additive. Reason to differ:
+a false success report.
 
 In the upstream source reviewed, a successful probe causes the selected key to
 be skipped; the script does not independently verify which identity authenticated.
@@ -168,9 +199,18 @@ Another configured identity may remain a candidate. This project will not use
 authentication with another key as evidence that the selected key is installed.
 Using an existing key to authenticate the actual installation remains valid.
 
-The implementation mechanism and handling of inconclusive probes remain open.
-Record any additional compatibility impact of the chosen mechanism separately.
-The scenario has been reproduced in Docker; see the
+Decision recorded on 2026-09-24: the check has three results.
+
+| Result | Condition | Consequence |
+| --- | --- | --- |
+| Installed | The selected key was the only candidate the client could offer, and the probe succeeded | Skip the key |
+| Not installed | The selected key was the only candidate, and the server answered `Permission denied` | Install the key |
+| Inconclusive | Another identity or certificate was a candidate, the session failed after authentication, or the client reported another error | Install the key and print the reason; duplicates are possible, as with `-f` |
+
+Whether other candidates exist is read from `ssh -G`. Generating a configuration
+that isolates the selected key, as the Linux experiment did, is a later
+optimization that turns Inconclusive into a conclusive result; the first two
+milestones do not require it. The scenario has been reproduced in Docker; see the
 [selected-identity experiment](#selected-identity-experiment-results).
 
 ### Recorded Difference: SFTP Installed-Key Check
@@ -184,6 +224,11 @@ The reviewed upstream implementation attempts `exit` even for `-s` and also
 treats the message `allows sftp connections only` as a successful check.
 This project will not use that message as a substitute for an SFTP session.
 Record this as a design difference, without classifying it as a bug fix.
+
+Apparent intent (recorded 2026-09-24): the message shortcut reads as support
+for servers that permit only SFTP, where `exit` cannot succeed. Reason to
+differ: a false success report, since the message shows only that a shell was
+refused, not that the key opened an SFTP session.
 
 The selected-identity rule above applies to both modes. `-f` skips the check.
 Failure to establish SFTP must not automatically mean that the key is absent;
@@ -203,18 +248,36 @@ creation without an unconditional chmod of the existing parent. SFTP mode sets
 the parent directory to mode 700. Preserving that directory in this project's
 SFTP mode is recorded as a design difference, not a bug fix.
 
+Apparent intent (recorded 2026-09-24): the SFTP chmod reads as a substitute for
+`umask 077`, which SFTP cannot express, aimed at a freshly created `~/.ssh`.
+Reason to differ: damage to data the user did not ask to change, when `-t`
+points into a shared directory.
+
 This decision covers an existing parent directory selected through `-t`.
-Permissions for newly created directories, the destination key file, and the
-default destination, as well as symbolic link and reparse point handling, remain
-separate implementation decisions. Test with a custom target in a shared
+Decision recorded on 2026-09-24 for the rest: newly created directories and key
+files follow upstream, `umask 077` in normal mode and `chmod 700` on a directory
+this tool created and `chmod 600` on the key file in `-s` mode; existing files
+keep their modes in normal mode, and `-s` keeps upstream's `chmod 600` on the
+key file it uploads. Links are followed as upstream follows them, and no link or
+reparse-point check is added; the trust boundary is the account's own home
+directory, and a concurrent link swap is outside it. The `-t` path is embedded in
+the Unix script with POSIX single-quote escaping and in the Windows script as a
+PowerShell single-quoted literal, so quotes in the path are data; upstream's
+script breaks on a quote. Test with a custom target in a shared
 directory and verify that its permissions are unchanged in both modes, including
 when installation fails due to insufficient access.
 
 ### Remaining Compatibility Questions
 
-Exact exit codes, diagnostic output, handling of `-x`, and support for specialized
-remote systems remain open. At minimum, exit successfully when all keys are
-already installed, and never report a failed write as success.
+Decision recorded on 2026-09-24: exit statuses are 0 and 1 as in upstream,
+including usage errors; the mapping is in [installation outcome](#installation-outcome).
+Decision recorded on 2026-09-24 on the rest: messages match upstream's wording
+where the behavior is shared, and the golden tests compare them. `-x` prints
+each client command line and the remote script to stderr before running them,
+the closest equivalent of upstream's `set -x`. The upstream special cases stay:
+OpenWrt as root installs into `/etc/dropbear/authorized_keys`, Haiku uses
+`config/settings/ssh/authorized_keys`, and NetScreen keys are installed one per
+command as upstream does. Never report a failed write as success.
 
 ### Dry-Run Behavior
 
@@ -227,17 +290,59 @@ Authentication logs, login hooks, host key handling, and user-configured
 Describe `-n` in help as "Display the keys that would be installed without
 performing installation operations," not as an offline or side-effect-free mode.
 This clarifies the upstream dry-run boundary and adds no new behavioral difference;
-the separately recorded SFTP check difference still applies. Whether `-n -f`
-performs any other connection remains an implementation question.
+the separately recorded SFTP check difference still applies. Decision recorded
+on 2026-09-24: `-n -f` makes no connection, as in upstream, where `-f` bypasses
+the probe loop.
 
 ## Execution Flow
 
 1. Parse arguments and select keys and connection settings.
 2. Unless `-f` is set, check authentication for each key and exclude installed keys.
 3. Exit successfully if all keys are installed. For `-n`, display the planned keys and exit.
-4. Determine the destination and required permission handling.
-5. Preserve existing contents, add a trailing newline if necessary, and append the public keys.
-6. Check required permission changes and the results of writes and closes, then report the outcome.
+4. In normal mode, detect the destination shell family unless `--target-os` is given; stop before writing when it is unknown.
+5. Determine the destination and required permission handling.
+6. Preserve existing contents, add a trailing newline if necessary, and append the public keys.
+7. Read the result line and report the outcome.
+8. Unless `-f` is set, verify that each written key authenticates, and report keys that are installed but not verified.
+
+### Installation Outcome
+
+Decision recorded on 2026-09-24: each run reports one of four outcomes, mapped to
+upstream's two exit statuses.
+
+| Outcome | Meaning | Exit status |
+| --- | --- | --- |
+| No change | Nothing was written: all keys were already installed, the dry run ended, or the run stopped before the first write | 0 for installed keys and dry runs; 1 when an error stopped the run |
+| Installed | Every selected key was appended and the file was closed | 0 |
+| Partial write | Some data was written, then the run failed at a known point | 1 |
+| Unknown | The connection ended without a result line | 1 |
+
+The remote installation script prints one result line as its final output,
+`ssh-copy-id: result=<outcome> path=<file>`, and the CLI derives the outcome from
+that line alone. The remote exit status is not used: a Windows default shell can
+replace it, as recorded in destination difference
+[O-04](compatibility.md#destination-differences) and the
+[W05 measurement](validation.md#command-delivery-and-exit-codes). A missing
+result line is Unknown. Usage errors exit 1, as in upstream.
+
+### Recorded Difference: Post-Installation Verification
+
+Decision recorded on 2026-09-24: after the keys are written, in both normal and
+`-s` modes, repeat the installed-key check for each written key unless `-f` was
+given. Report each key as installed and verified, or as installed but not
+verified with the reason. A rejected verification does not change the exit
+status: the file was written, and the message names what to check next, such as
+the shared administrator file or the file's ACL.
+
+The reviewed upstream script does not verify after writing; it prints a suggested
+login command. Apparent intent: leave verification to the user's next login,
+which on Unix usually succeeds because `umask 077` satisfies `StrictModes`.
+Reason to differ: a false success report. Windows destinations reject keys silently when the file's ACL is
+wrong, when the account has no initialized profile, or when an administrator's
+per-user file is ignored under the default configuration, so this project
+verifies. Recorded as difference D-06, not as a bug fix. The verification uses
+the three results of the selected-identity check; an inconclusive result is
+reported as not verified.
 
 ### Public Key Input
 
@@ -254,9 +359,15 @@ private key content supplied as public key installation input before transmittin
 any of that input, and report an error. `-f` skips installed-key checks, not this
 input check. This does not prohibit SSH from using a local private key for authentication.
 
-The detection method and supported private key formats remain implementation
-questions. Test representative OpenSSH and PEM private key inputs, including
-mixed public/private content and forced mode, without sending their contents.
+Apparent intent (recorded 2026-09-24): upstream assumes the caller passes `.pub`
+files or `ssh-add -L` output, and `-f` exists so that a public key alone
+suffices. Reason to differ: transmission of private material.
+
+Decision recorded on 2026-09-24 on detection: any input line matching
+`-----BEGIN` followed by `PRIVATE KEY` (OpenSSH, PKCS#8, PKCS#1 RSA, EC, DSA,
+and encrypted variants share that armor) rejects the whole input. Test
+representative OpenSSH and PEM private key inputs, including mixed
+public/private content and forced mode, without sending their contents.
 
 #### CRLF Normalization
 
@@ -266,9 +377,27 @@ transmission. Preserve options and comments; do not rewrite existing remote
 file contents or modify the local source file. Test LF and CRLF inputs with
 restricted entries and comments through both transports and forced mode.
 
-Strict public key parsing is not adopted by this decision. Encoding, BOMs,
-standalone CR characters, other malformed input, and input size limits remain
-open questions.
+Apparent intent (recorded 2026-09-24): the upstream script was written for
+inputs produced on the same Unix host, where CRLF does not occur. Reason to
+differ: a false success report, since a line ending in CR is not a usable key.
+
+Strict public key parsing is not adopted by this decision. Decision recorded on
+2026-09-24 on malformed input: a standalone CR, a NUL byte, or a line that
+is neither empty, a `#` comment, nor a key entry is rejected before
+transmission, with the line number; no size limit is imposed beyond memory.
+Encoding is passed through as bytes; a leading byte order mark is handled below.
+
+#### Leading BOM Removal
+
+Decision recorded on 2026-09-24: remove a UTF-8 byte order mark at the start of
+the installation input before transmission. Only the first three bytes of the
+input are affected; existing remote contents and the local source file are not
+modified. Apparent intent: upstream expects input written by `ssh-keygen` or
+`ssh-add`, which never emit a byte order mark. Reason to differ: a false success
+report, because a line that begins with one is not recognized as a key. Windows
+editors and PowerShell 5 redirection produce such files. Recorded as difference
+D-07, not as a bug fix. Test a prefixed `.pub` file through both transports and
+forced mode.
 
 ## Remote Operating Systems and Shells
 
@@ -294,7 +423,19 @@ shell that executes the installation script. For example:
 - Use Windows PowerShell as the initial candidate for Windows scripts, and verify compatibility with `pwsh`.
 - Test launching through `cmd`. This does not necessarily require implementing all installation logic in batch syntax.
 - Do not infer the OS from the shell name; `pwsh`, for example, also runs on Linux.
-- `--target-os` and `--remote-shell` are proposed names. Their semantics, values, and any automatic detection remain undecided.
+- Decision recorded on 2026-09-24: in normal mode, detect the destination shell family before writing with one command whose output differs between POSIX `sh`, `cmd.exe`, and PowerShell, and stop with an error before any write when the output matches none. `--target-os` overrides detection. `-s` cannot run the probe and assumes a Unix-like destination unless `--target-os` says otherwise. `--remote-shell` is not adopted.
+
+### Windows Remote Command
+
+Decision recorded on 2026-09-24: the command sent to a Windows destination is
+exactly `powershell.exe -NoProfile -NonInteractive -EncodedCommand <base64>`. It
+contains only letters, digits, and base64, so `cmd.exe /c`, `powershell.exe -c`,
+and `pwsh -c` interpret it identically. Every parameter, including the target
+path, is inside the encoded script; public keys arrive on stdin. `powershell.exe`
+and, when ACLs are set, `icacls.exe` are remote runtime requirements to document.
+Whether `pwsh`-only destinations are supported is decided by the W06 result.
+The measured command line for each default shell is in the
+[validation record](validation.md#command-delivery-and-exit-codes).
 
 ## Windows Permissions and Services
 
@@ -307,8 +448,13 @@ the installation as granting access exclusively to the named account.
 
 Do not modify server configuration to separate administrator accounts' key files.
 This is a Windows destination specification, not a behavioral difference from
-the Linux implementation. Selection of the effective destination under custom
-server settings and the exact ACL update procedure remain open.
+the Linux implementation. Decision recorded on 2026-09-24: in normal mode the
+tool asks the destination whether the account is in the Administrators group
+(by SID `S-1-5-32-544`) and selects the shared file when it is; it never reads
+`sshd_config`, as upstream never does. A custom `AuthorizedKeysFile` is honored
+only through `-t`, and a mismatch is reported by the post-installation
+verification (D-06). The ACL procedure is in
+[permissions](#permissions-and-service-boundaries).
 
 Validate that shared-file installations display the path and shared scope before
 mutation, leave server configuration unchanged, and are distinguished from
@@ -316,9 +462,16 @@ installations into a standard user's key file.
 
 ### Permissions and Service Boundaries
 
-In the default mode, use the remote host's `icacls.exe` when necessary.
-Consider using SIDs to avoid localized group names, and check exit codes.
-Define which existing ACL entries to remove or preserve before implementation.
+Decision recorded on 2026-09-24: follow the upstream Unix rule, where `umask 077`
+restricts only newly created objects. A directory or key file that this tool
+creates receives the minimal ACL that Windows OpenSSH accepts: inheritance
+removed, owner set to the account, and full control for the account, SYSTEM, and
+Administrators, applied with `icacls.exe` by SID with its exit code checked.
+Existing directories and files keep their ACLs, including extra entries. A key
+that the server then rejects is reported by the post-installation verification
+(D-06) with the file's entries listed, and the user decides what to remove. W07
+first checks whether inherited ACLs alone pass the server's check, which would
+make the explicit ACL unnecessary under profile directories.
 Explain permission failures without automatically elevating privileges or
 managing services.
 
@@ -336,8 +489,21 @@ This preserves the reviewed upstream behavior and is not a recorded difference.
 Agent services are not started, stopped, or restarted by this tool.
 
 Verify that the configured `AddKeysToAgent` behavior is preserved and that the
-CLI itself issues no key-addition or service-management commands. Other SSH
-option precedence rules and agent-selection details remain separate decisions.
+CLI itself issues no key-addition or service-management commands.
+
+Decision recorded on 2026-09-24 on option precedence: the same three phases as
+upstream, with upstream's overrides and nothing more.
+
+| Phase | Options this tool sets | User options |
+| --- | --- | --- |
+| Installed-key check | `ControlPath=none`, `LogLevel=INFO`, `PreferredAuthentications=publickey`, `IdentitiesOnly=yes`, and `-i` with the selected key | `-o`, `-F`, `-p`, and the user's configuration are passed through after the overrides |
+| Installation | none | passed through unchanged |
+| `-s` transfer | a control master shared by the `sftp` sessions, as upstream | passed through unchanged |
+
+The agent is whichever one the SSH client selects through `SSH_AUTH_SOCK` and
+`IdentityAgent`; `ssh-add -L` reads `SSH_AUTH_SOCK` only, so a host-specific
+`IdentityAgent` can list different keys. This matches upstream and is documented,
+not corrected.
 
 ## SFTP Mode
 
@@ -346,11 +512,24 @@ not specify `TRUNC`, which discards existing contents. OpenSSH `sftp`'s `put -a`
 resumes a transfer; it does not append a file containing only the new data.
 Upstream `-s` downloads the file, edits it locally, and uploads it again.
 
-- Distinguish a missing file from permission and communication failures.
-- The choice between downloading and uploading the entire file or appending directly remains open.
+- Distinguish a missing file from permission and communication failures. Decision recorded on 2026-09-24: run `ls -l` on the target before `get`; upstream's `-get` ignores every error and cannot make that distinction. A "No such file" answer means missing; any other error stops the run before writing.
+- Decision recorded on 2026-09-24: `-s` downloads, edits locally, and uploads the whole file, as upstream does, because `sftp.exe` cannot append (DL-12).
 - Rewriting the entire file can lose concurrent updates. Direct appending also does not guarantee atomicity across duplicate checks and newline handling. Test and define the scope of concurrency support.
 - SFTP v3 Unix permission attributes alone cannot configure Windows ACLs adequately. Limit Windows SFTP support and document prerequisites such as existing ACLs.
 - Do not automatically fall back to remote commands when `-s` cannot establish the required permissions.
+
+### Recorded Difference: Change Check Before Upload
+
+Decision recorded on 2026-09-24: in `-s` mode, run `ls -l` on the target again
+immediately before `put`, and stop without writing, with the No change outcome
+and exit status 1, when the size or modification time differs from the value
+read before `get`. Apparent intent: upstream's download, edit, and upload
+sequence assumes a single writer. Reason to differ: damage to data the user did
+not ask to change, since a concurrent append between `get` and `put` is
+overwritten. This is a check, not a lock: a change between the second `ls -l`
+and `put` is still overwritten. Recorded as difference D-08, not as a bug fix.
+Test with an append injected between the two transfers.
+- Decision recorded on 2026-09-24: on Windows destinations, `-s` writes to `.ssh/authorized_keys` under the profile, the same default as Unix. It cannot set ACLs or learn whether the account is an administrator, so an existing directory with a correct ACL is a prerequisite. A key rejected afterwards is reported by the post-installation verification (D-06), with the suggestion to pass `-t` for the shared administrator file or to use normal mode.
 
 ## Implementation Boundaries and Open Questions
 
@@ -381,9 +560,13 @@ starting with the system OpenSSH client under the dependency policy above.
 | Use a Rust SSH/SFTP library | Reconsider only if it can satisfy the accepted authentication delegation policy without collecting credentials in this CLI; also check SSH config, agents, jump hosts, and host key verification |
 | Combine the SFTP subsystem through `ssh.exe` with an SFTP implementation in Rust | Check whether SFTP operations can be handled while preserving SSH compatibility |
 
-Implementing the SSH protocol from scratch is not the plan. Library and external
-command choices remain open. Record dependencies and supported environments
-once the connection approach is selected.
+Decision recorded on 2026-09-24: the first two milestones invoke the system
+`ssh.exe`, and `sftp.exe` for `-s`. Authentication results are classified from
+the client's exit status and a short list of stderr patterns. Each pattern is
+tested against every supported OpenSSH client version, and the supported versions
+are listed with each release; a client outside that list gets a stated error, not
+a guess. A Rust SFTP implementation is re-evaluated only for appending in `-s`
+mode. Implementing the SSH protocol from scratch is not the plan.
 Compare the full build and runtime dependency footprint, including packaging
 costs, alongside compatibility and authentication behavior before making that choice.
 
@@ -433,30 +616,68 @@ Turn the following requirements into behavioral tests.
 7. Treat paths and key comments containing spaces, Japanese characters, or quotes as data.
 8. Do not report authentication failures, host key mismatches, write failures, or permission configuration failures as success.
 
-Use unit tests for argument parsing and key selection, and integration tests
-against isolated SSH servers for authentication and file updates. Use Docker for
-Linux destination fixtures. For Windows destinations, evaluate the
-[dockur fixture](../tests/environments/windows/README.md) where KVM is available;
-use Hyper-V virtual machines as the fallback. The current Docker Desktop WSL2
-environment passed the KVM API and VM-creation checks. Compose and guest script
-syntax are validated. The Windows 11 Enterprise Evaluation 25H2 guest passed
-administrator SSH authentication, remote execution, stdin delivery, and an SFTP
-session check. Initial setup required recovery; see the fixture's validation
-record for the workaround, exact versions, and remaining scenarios.
-The initialized standard-user profile also passed absent/installed/removed-key
-authentication checks, mixed-newline stdin, remote exit-code preservation, and a
-binary SFTP round trip. A copied fixture with Windows PowerShell as the sshd
-default shell passed the same account tests; there sshd passes the command with
-`powershell.exe -c`, and a native child command's nonzero exit code reaches the
-client as 1. Forwarding the installation script's exit code without assuming the
-default shell remains an open implementation question.
-Track tested and pending scenarios in the
-[validation matrix](validation.md); these are fixture tests, not Rust CLI conformance.
-These are development/test tools, not product runtime dependencies.
-For Windows
-support, test standard users and administrators, as well as startup and ACL
-handling with `cmd`, Windows PowerShell, and `pwsh` as the default shell.
-Test SFTP-only servers separately.
+Decision recorded on 2026-09-24 on test structure: argument parsing, key input
+validation (D-04, D-05), the installation plan, and the outcome states are pure
+functions with unit tests. The `ssh.exe` and `sftp.exe` invocations sit behind a
+backend trait with a fake for CLI-level tests. Integration tests run the real
+backend against the [Linux Docker fixture](../tests/prototypes/identity-isolation/README.md)
+and the [Windows dockur fixture](../tests/environments/windows/README.md).
+Compatibility is a golden test: the pinned upstream script and this CLI run
+against the same Linux fixture, and stdout and exit status are compared where
+behavior is shared.
+
+Continuous integration runs the unit tests and the Linux fixture on GitHub-hosted
+runners for every change. The Windows fixture needs KVM and a multi-gigabyte
+guest disk, so it runs on a self-hosted runner, to be provisioned later, from
+`workflow_dispatch` only; pull requests from forks never reach it. Distributing
+a prepared guest disk to hosted runners is deferred until the evaluation image's
+redistribution terms are checked.
+
+Fixture results and pending scenarios are in the [validation record](validation.md).
+Fixture tests demonstrate OpenSSH behavior, not Rust CLI conformance, and the
+fixtures are development tools, not product runtime dependencies. Windows support
+is tested with standard users and administrators under `cmd`, Windows PowerShell,
+and `pwsh` default shells; SFTP-only servers are tested separately.
+
+## Decision Log
+
+Each decision is recorded once, in the section it affects; this table is the
+index. Commit messages name decisions by ID.
+
+| ID | Date | Decision | Section |
+| --- | --- | --- | --- |
+| DL-01 | 2026-09-20 | Pin upstream commit `eabf198` as the compatibility baseline | [Pinned reference](#pinned-upstream-reference) |
+| DL-02 | 2026-09-20 | D-01: another key's success does not show that the selected key is installed | [Selected identity](#recorded-difference-identity-used-for-the-installed-key-check) |
+| DL-03 | 2026-09-20 | D-02: `-s` checks by SFTP session, without remote commands | [SFTP check](#recorded-difference-sftp-installed-key-check) |
+| DL-04 | 2026-09-20 | D-03: preserve the existing parent directory of a `-t` target | [Custom parent](#recorded-difference-existing-parent-directory-of-a-custom-target) |
+| DL-05 | 2026-09-20 | D-04: reject private key input before transmission | [Private key input](#private-key-input-rejection) |
+| DL-06 | 2026-09-20 | D-05: normalize CRLF input to LF | [CRLF normalization](#crlf-normalization) |
+| DL-07 | 2026-09-20 | Dry run connects for checks and writes nothing | [Dry-run behavior](#dry-run-behavior) |
+| DL-08 | 2026-09-20 | Shared administrator file: display path and scope; never change server configuration | [Windows administrator scope](#windows-administrator-scope) |
+| DL-09 | 2026-09-20 | Respect `AddKeysToAgent`; never invoke `ssh-add` to add keys | [Agent use](#agent-use-and-user-configuration) |
+| DL-10 | 2026-09-20 | Delegate password and passphrase prompts to the SSH client | [Authentication interaction](#authentication-interaction) |
+| DL-11 | 2026-09-24 | Design stance: four commitments and the difference procedure | [Design stance](#design-stance) |
+| DL-12 | 2026-09-24 | Backend: `ssh.exe` and `sftp.exe`; classification by exit status and tested stderr patterns | [Connection backend](#connection-backend-evaluation) |
+| DL-13 | 2026-09-24 | Four outcomes on a result line; exit statuses 0 and 1 | [Installation outcome](#installation-outcome) |
+| DL-14 | 2026-09-24 | D-01 has three results; an inconclusive check installs with a warning | [Selected identity](#recorded-difference-identity-used-for-the-installed-key-check) |
+| DL-15 | 2026-09-24 | D-06: verify each written key after installation | [Post-installation verification](#recorded-difference-post-installation-verification) |
+| DL-16 | 2026-09-24 | Second milestone: one standard user on a Windows destination | [Platform boundaries](#platform-and-delivery-boundaries) |
+| DL-17 | 2026-09-24 | Windows remote command is an `EncodedCommand` line only | [Windows remote command](#windows-remote-command) |
+| DL-18 | 2026-09-24 | Detect the destination shell family; `--target-os` overrides | [Remote operating systems](#remote-operating-systems-and-shells) |
+| DL-19 | 2026-09-24 | ACLs: minimal ACL on new objects only; existing objects untouched | [Permissions](#permissions-and-service-boundaries) |
+| DL-20 | 2026-09-24 | `-s` on Windows writes under the profile; D-06 reports rejection | [SFTP mode](#sftp-mode) |
+| DL-21 | 2026-09-24 | Test structure and CI placement | [Initial validation](#initial-validation) |
+| DL-22 | 2026-09-24 | `-n -f` makes no connection; exit statuses match upstream | [Dry-run behavior](#dry-run-behavior), [Remaining questions](#remaining-compatibility-questions) |
+| DL-23 | 2026-09-24 | Verification narratives live in the validation record; this document keeps the index | [Documentation roles](README.md) |
+| DL-24 | 2026-09-24 | Every recorded difference states the apparent upstream intent and its reason from the design stance | [Design stance](#design-stance) |
+| DL-25 | 2026-09-24 | Option precedence per phase matches upstream's overrides; agent selection as upstream | [Agent use](#agent-use-and-user-configuration) |
+| DL-26 | 2026-09-24 | Messages match upstream where shared; `-x` prints commands; OpenWrt, Haiku, and NetScreen cases kept | [Remaining questions](#remaining-compatibility-questions) |
+| DL-27 | 2026-09-24 | Private key detection by PEM armor; malformed lines rejected before transmission | [Private key input](#private-key-input-rejection), [CRLF normalization](#crlf-normalization) |
+| DL-28 | 2026-09-24 | New-object modes as upstream; links followed; target paths quoted as data | [Custom parent](#recorded-difference-existing-parent-directory-of-a-custom-target) |
+| DL-29 | 2026-09-24 | Administrators detected by SID in normal mode; `sshd_config` never read | [Windows administrator scope](#windows-administrator-scope) |
+| DL-30 | 2026-09-24 | `-s` checks the target with `ls -l` first and rewrites the whole file | [SFTP mode](#sftp-mode) |
+| DL-31 | 2026-09-24 | D-07: remove a leading byte order mark from the input | [Leading BOM removal](#leading-bom-removal) |
+| DL-32 | 2026-09-24 | D-08: `-s` stops before `put` when the target changed since `get` | [Change check before upload](#recorded-difference-change-check-before-upload) |
 
 ## References
 
