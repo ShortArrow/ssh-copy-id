@@ -284,12 +284,14 @@ already needs the authentication, input, and failure contracts above.
 The second round covered the whole design, the pinned upstream script and
 manual, the Linux experiment, and fixture results W01 to W05. Its proposals were
 decided one at a time on 2026-09-24 and recorded as DL-11 to DL-23 in the
-[decision log](design.md#decision-log). Dispositions of the first round's items:
+decision log that [design.md](design.md) carried at the time; the design now
+states the current decisions without IDs, and the commits that made them name
+the IDs. Dispositions of the first round's items:
 
 | Item | Disposition |
 | --- | --- |
 | P1-1 mechanism | DL-14: three check results; an inconclusive check installs with a warning; configuration generation deferred |
-| P1-2 failure classification | DL-12: exit status plus stderr patterns tested per supported client version |
+| P1-2 failure classification | DL-12: exit status plus stderr patterns tested per client version; DL-44: untested clients warn and unclassifiable output is Inconclusive |
 | P1-3 partial results | DL-13 and DL-32: four outcomes on a result line; `-s` change check; normal-mode concurrent appends still open |
 | P1-4 remaining path decisions | DL-17 and DL-28: target paths quoted as data on both destinations; links followed as upstream does |
 | P1-5 remaining ACL decisions | DL-19, DL-15, and DL-29: custom `AuthorizedKeysFile` honored only through `-t` |

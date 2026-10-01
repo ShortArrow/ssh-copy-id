@@ -2,7 +2,7 @@
 
 [日本語](compatibility.jp.md) | [Design](design.md)
 
-Updated: 2026-09-30. This is an index of accepted design differences, not a claim
+This is an index of accepted design differences, not a claim
 that they have been implemented or tested. Differences are not classified as
 upstream defects or bug fixes, and no claim is made about the original author's intent.
 
@@ -11,10 +11,10 @@ Its revision and update policy are maintained in the design document.
 
 ## Accepted Behavioral Differences
 
-This list contains concise comparisons and links only. The design document is
-the authoritative location for rationale, scope, implementation details, open
-questions, and implementation or verification status; do not duplicate those
-details here.
+This list contains concise comparisons and links only. The design document
+states each difference and its reason; do not duplicate them here. Open
+questions are in [open-questions.md](open-questions.md) and verification status
+is in the [validation matrix](validation.md#matrix).
 
 | ID | Reviewed upstream behavior | This project's decision | Details |
 | --- | --- | --- | --- |
@@ -30,8 +30,8 @@ details here.
 | D-10 | Appends malformed lines, a standalone CR, or a NUL byte as given. | Reject such input before transmission, with the line number. | [CRLF normalization](design.md#crlf-normalization) |
 | D-11 | A quote in the `-t` path breaks the remote `sh -c` script. | Quote the path as data on Unix and Windows destinations. | [Custom parent](design.md#recorded-difference-existing-parent-directory-of-a-custom-target) |
 | D-12 | Sends the `sh` script without checking the destination; has no OS option. | In normal mode, detect the shell family with one more connection before writing; `--target-os` overrides. | [Remote operating systems](design.md#remote-operating-systems-and-shells) |
-| D-13 | Runs with any OpenSSH client. | Runs only with client versions whose stderr patterns were tested; others get an error. | [Connection backend](design.md#connection-backend-evaluation) |
-| D-14 | `-x` enables the shell's `set -x` trace. | `-x` prints each client command and the remote script before running them. | [Remaining questions](design.md#remaining-compatibility-questions) |
+| D-13 | Runs with any OpenSSH client. | Warns on client versions whose stderr patterns were not tested; output it cannot classify makes the check inconclusive. | [Connection backend](design.md#connection-backend-evaluation) |
+| D-14 | `-x` enables the shell's `set -x` trace. | `-x` prints each client command and the remote script before running them. | [Exit statuses and messages](design.md#exit-statuses-messages-and-special-destinations) |
 
 ## Destination Differences
 
@@ -60,8 +60,7 @@ This is a distribution decision, separate from the behavioral differences above.
 ## Maintaining This List
 
 Add accepted differences here and in the Japanese version with a stable ID and
-a link to the detailed design decision: `D-xx` for differences from upstream and
-`O-xx` for destination differences. Keep unaccepted proposals in the
-[design review](design-review.md). Record verification status in the
-[validation record](validation.md); acceptance of a design is not evidence of
-implementation.
+a link to the design section that states them: `D-xx` for differences from
+upstream and `O-xx` for destination differences. When a difference changes,
+edit its row so it describes the current design; the change history is in git.
+Acceptance of a design is not evidence of implementation.
