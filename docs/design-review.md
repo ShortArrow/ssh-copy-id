@@ -284,7 +284,9 @@ already needs the authentication, input, and failure contracts above.
 The second round covered the whole design, the pinned upstream script and
 manual, the Linux experiment, and fixture results W01 to W05. Its proposals were
 decided one at a time on 2026-09-24 and recorded as DL-11 to DL-23 in the
-[decision log](design.md#decision-log). Dispositions of the first round's items:
+decision log that [design.md](design.md) carried at the time; the design now
+states the current decisions without IDs, and the commits that made them name
+the IDs. Dispositions of the first round's items:
 
 | Item | Disposition |
 | --- | --- |

@@ -21,17 +21,17 @@ placeholder. Behavioral differences remain indexed in [compatibility](compatibil
 | ID | Scenario | Status | Evidence / next action |
 | --- | --- | --- | --- |
 | L01 | Selected B versus authorized A, direct and one jump | Passed | [Linux prototype](../tests/prototypes/identity-isolation/README.md): 14 checks; fixed configuration only. |
-| L02 | Linux sshd fixture for Rust CLI integration tests | Pending | Stage 0 of the delivery plan (DL-40): a disposable sshd with key-only and password accounts, to be added to the CI `linux-fixture` job, which today runs only L01. |
+| L02 | Linux sshd fixture for Rust CLI integration tests | Pending | Stage 0 of the delivery plan: a disposable sshd with key-only and password accounts, to be added to the CI `linux-fixture` job, which today runs only L01. |
 | W01 | Administrator login, remote execution, stdin, guest metadata | Passed | [Test-Smoke.ps1](../tests/environments/windows/Test-Smoke.ps1). |
 | W02 | Standard-user key absent / installed / removed | Passed | [Test-StandardUser.ps1](../tests/environments/windows/Test-StandardUser.ps1), initialized profile. |
 | W03 | Standard-user CRLF/LF stdin and explicit cmd exit 37 | Passed | Same script; default shell remains cmd. |
 | W04 | Standard-user SFTP binary upload, download, byte comparison, deletion | Passed | Same script; not an append or atomic-replacement test. |
 | W05 | Windows PowerShell as the sshd default shell | Passed | [Cloned fixture](#windows-powershell-default-shell-2026-09-23), both account tests; a native child command's nonzero exit code reaches the client as 1. |
 | W06 | pwsh as the sshd default shell | Pending | Clone a fixture, install pwsh, run `Set-DefaultShell.ps1 -Shell pwsh`, record the pwsh version, and repeat both account tests. |
-| W07 | Default administrator shared key-file scope and invalid ACL rejection | Pending | First check whether an inherited profile ACL alone passes sshd's check (DL-19); then positive/negative ACL cases, an extra read-only and an extra writable ACE, and a second administrator. |
+| W07 | Default administrator shared key-file scope and invalid ACL rejection | Pending | First check whether an inherited profile ACL alone passes sshd's check (needed for stage 2); then positive/negative ACL cases, an extra read-only and an extra writable ACE, and a second administrator. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for DL-38; include a login shell that prints a banner. |
-| A01 | Password/passphrase prompts and agent-selected identities | Pending | Stage 0 (DL-40): prototype Windows `ssh.exe` with a password, an encrypted key's passphrase, agent confirmation, cancellation, and no terminal while public keys go to stdin. Agent-selected identities follow in stage 1.5. |
+| A01 | Password/passphrase prompts and agent-selected identities | Pending | Stage 0: prototype Windows `ssh.exe` with a password, an encrypted key's passphrase, agent confirmation, cancellation, and no terminal while public keys go to stdin. Agent-selected identities follow in stage 1.5. |
 | F01 | Interrupted writes and uncertain remote state | Pending | Inject disconnects and record actual file state and exit status. |
 | P01 | Rust CLI behavior versus pinned upstream | Pending | Implement the CLI before claiming product conformance. |
 
@@ -164,6 +164,30 @@ The grace period ends on 2026-12-18 at about 22:08 guest time, which matches the
 install date plus 90 days. The baseline guest shares the install,
 because the second guest is a copy of its disk. Rerun the query before relying on
 this date; activation state can change after a rebuild.
+
+## Linux Selected-Identity Experiment: 2026-09-20
+
+The [Docker experiment](../tests/prototypes/identity-isolation/README.md) (L01)
+ran the pinned upstream script, SHA-256
+`a331afd275d386fd1a699e42fa1514699cf86c744ef62df3e5240d89e1443650`, with Ubuntu
+24.04 and OpenSSH `9.6p1 Ubuntu-3ubuntu13.19`, and passed 14 checks. It tests the
+fixed script with Ubuntu's SSH binaries, not a build of the OpenSSH source tree
+at the reference commit.
+
+| Scenario | Observed result, both direct and through one jump host |
+| --- | --- |
+| Only A is authorized, B is selected, client config contains A | Upstream exits 0, reports all keys skipped, and leaves B uninstalled |
+| Generated configuration contains only B; B is absent | Probe is rejected with exit 255 and `Permission denied` |
+| B is added to the target's authorized keys | The same isolated probe succeeds |
+| Target host key is removed from the known-hosts fixture; jump host remains trusted | Connection is rejected by host key verification |
+
+The experiment evaluated settings with `ssh -G`, removed additive identity and
+certificate lists, and wrote a temporary `-F` configuration containing only B.
+For the jump fixture it replaced ProxyJump with a separate `ssh -W` process
+reading the original configuration, so the jump kept its own key. Server logs
+confirmed successful A and B authentication in the respective sequence.
+Target-agent use was disabled in this experiment only. Windows SSH client
+behavior and interactive authentication were not tested.
 
 ## Linux Recheck: 2026-09-20
 

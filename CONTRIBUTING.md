@@ -9,8 +9,10 @@ and `ci/`. The one commit pushed to `main` directly is the version bump that
 cuts a release. The reasons are recorded in the
 [versioning decision](docs/design.md#versioning-and-release).
 
-Commits are signed. A commit message names the decision (`DL-xx`) or difference
-(`D-xx`, `O-xx`) it implements, as described in [docs/README.md](docs/README.md).
+Commits are signed. A commit message states why the change was made in one or
+two sentences and names any difference (`D-xx`, `O-xx`) it adds or changes. The
+design documents state only the current design; see
+[docs/README.md](docs/README.md).
 
 ## Checks
 
