@@ -2,7 +2,7 @@
 
 use crate::cli_args::{Invocation, SshOption};
 use crate::installed_check::{CheckResult, classify, is_tested_client, other_candidates_matching};
-use crate::key_input::{InputError, key_lines, prepare};
+use crate::key_input::{InputError, prepare};
 use crate::remote_script::{install_command, sh_quote};
 use crate::result_line::{Outcome, parse_report};
 use std::io::{self, Write};
@@ -38,6 +38,8 @@ pub struct Environment<'a> {
     pub home: PathBuf,
     pub read_file: &'a dyn Fn(&Path) -> io::Result<Vec<u8>>,
     pub exists: &'a dyn Fn(&Path) -> bool,
+    /// Whether a path names a regular file this process can open for reading.
+    pub readable_file: &'a dyn Fn(&Path) -> bool,
     /// Whether two paths name the same file.
     pub same_file: &'a dyn Fn(&Path, &Path) -> bool,
 }
@@ -81,7 +83,7 @@ fn install(
             prepared.key_count
         ));
     }
-    if !(env.exists)(&private_path) {
+    if !(env.readable_file)(&private_path) {
         return Err(format!("failed to open ID file '{identity}'"));
     }
     info(
@@ -149,10 +151,6 @@ fn install(
                 err,
                 "All keys were skipped because they already exist on the remote system.",
             );
-            let _ = writeln!(
-                err,
-                "\t\t(if you think this is a mistake, you may want to use -f option)"
-            );
             return Ok(());
         }
         CheckResult::Failed(message) => return Err(message),
@@ -174,7 +172,7 @@ fn install(
     install_args.extend(common.iter().cloned());
     install_args.push(invocation.destination.clone());
     install_args.push(install_command(None));
-    let installed = run_ssh(ssh, &install_args, &key_lines(&prepared), false)?;
+    let installed = run_ssh(ssh, &install_args, &prepared.text, false)?;
     if installed.status == Some(255) && !has_report_line(&installed.stdout) {
         return Err(
             "ssh exited with status 255 before the installation script reported \
@@ -239,7 +237,11 @@ fn install(
 }
 
 fn common_args(invocation: &Invocation, env: &Environment) -> Vec<String> {
-    let mut args = Vec::new();
+    let mut args = vec!["-a".to_string(), "-x".to_string()];
+    if batch_mode(env) {
+        args.push("-o".to_string());
+        args.push("BatchMode=yes".to_string());
+    }
     if let Some(port) = &invocation.port {
         args.push("-p".to_string());
         args.push(port.clone());
@@ -251,10 +253,6 @@ fn common_args(invocation: &Invocation, env: &Environment) -> Vec<String> {
         };
         args.push(flag.to_string());
         args.push(value.clone());
-    }
-    if batch_mode(env) {
-        args.push("-o".to_string());
-        args.push("BatchMode=yes".to_string());
     }
     args
 }
@@ -366,7 +364,7 @@ fn warn(err: &mut dyn Write, message: &str) {
 mod tests {
     use super::*;
     use crate::remote_script::install_command;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== me@here";
     const DENIED: &str = "u@h: Permission denied (publickey).\r\n";
@@ -488,6 +486,24 @@ mod tests {
         files: HashMap<PathBuf, Vec<u8>>,
         has_console: bool,
         askpass_set: bool,
+        ssh: FakeSsh,
+    ) -> Run {
+        execute_in(
+            invocation,
+            files,
+            HashSet::new(),
+            has_console,
+            askpass_set,
+            ssh,
+        )
+    }
+
+    fn execute_in(
+        invocation: &Invocation,
+        files: HashMap<PathBuf, Vec<u8>>,
+        unreadable: HashSet<PathBuf>,
+        has_console: bool,
+        askpass_set: bool,
         mut ssh: FakeSsh,
     ) -> Run {
         let read_file = |p: &Path| {
@@ -497,6 +513,7 @@ mod tests {
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))
         };
         let exists = |p: &Path| files.contains_key(p);
+        let readable_file = |p: &Path| files.contains_key(p) && !unreadable.contains(p);
         let same_file = |a: &Path, b: &Path| a == b;
         let env = Environment {
             has_console,
@@ -504,6 +521,7 @@ mod tests {
             home: PathBuf::from("C:/home"),
             read_file: &read_file,
             exists: &exists,
+            readable_file: &readable_file,
             same_file: &same_file,
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -526,6 +544,7 @@ mod tests {
         assert_eq!(run.status, 0);
         assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
         assert!(run.err.contains("All keys were skipped"), "{}", run.err);
+        assert!(!run.err.contains("-f"), "{}", run.err);
     }
 
     #[test]
@@ -684,7 +703,7 @@ mod tests {
         let run = execute_with(
             &invocation,
             files(),
-            true,
+            false,
             false,
             FakeSsh::new().probe(0, ACCEPTED),
         );
@@ -700,6 +719,10 @@ mod tests {
             "PreferredAuthentications=publickey",
             "-o",
             "IdentitiesOnly=yes",
+            "-a",
+            "-x",
+            "-o",
+            "BatchMode=yes",
             "-p",
             "2222",
             "-o",
@@ -793,14 +816,16 @@ mod tests {
         let expected: Vec<String> = [
             "-o",
             "RequestTTY=no",
+            "-a",
+            "-x",
+            "-o",
+            "BatchMode=yes",
             "-p",
             "2222",
             "-o",
             "User=x",
             "-F",
             "cfg",
-            "-o",
-            "BatchMode=yes",
             "u@h",
         ]
         .iter()
@@ -841,6 +866,104 @@ mod tests {
         assert_eq!(run.status, 1);
         assert!(run.err.contains("status 255"), "{}", run.err);
         assert!(run.err.contains("nothing was written"), "{}", run.err);
+    }
+
+    #[test]
+    fn a24_verification_probe_also_disables_forwarding() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(0, ACCEPTED),
+        );
+        let probes: Vec<&Vec<String>> = run
+            .ssh
+            .calls
+            .iter()
+            .filter(|(args, _, _)| kind(args) == "probe")
+            .map(|(args, _, _)| args)
+            .collect();
+        assert_eq!(probes.len(), 2);
+        for args in probes {
+            assert!(args.contains(&"-a".to_string()), "{args:?}");
+            assert!(args.contains(&"-x".to_string()), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a25_comment_and_blank_lines_are_sent_but_only_keys_are_counted() {
+        let mut files = files();
+        let text = format!("# laptop\n\n{KEY}\n");
+        files.insert(PathBuf::from("C:/k/id.pub"), text.clone().into_bytes());
+        let run = execute_with(
+            &invocation(),
+            files,
+            true,
+            false,
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(0, ACCEPTED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        let (_, stdin, _) = run.ssh.call("install");
+        assert_eq!(stdin, &text.into_bytes());
+        assert!(
+            run.out.contains("Number of key(s) added: 1\n"),
+            "{}",
+            run.out
+        );
+    }
+
+    #[test]
+    fn a26_unreadable_private_key_stops_before_any_connection() {
+        let run = execute_in(
+            &invocation(),
+            files(),
+            HashSet::from([PathBuf::from("C:/k/id")]),
+            true,
+            false,
+            FakeSsh::new(),
+        );
+        assert_eq!(run.status, 1);
+        assert!(
+            run.err.contains("failed to open ID file 'C:/k/id'"),
+            "{}",
+            run.err
+        );
+        assert!(run.ssh.calls.is_empty());
+    }
+
+    #[test]
+    fn a27_install_exit_255_after_a_report_does_not_say_nothing_was_written() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs_with(255, INSTALLED)
+                .probe(0, ACCEPTED),
+        );
+        assert!(!run.err.contains("nothing was written"), "{}", run.err);
+    }
+
+    #[test]
+    fn a28_inconclusive_verification_is_not_reported_as_verified() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(1, ""),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(!run.err.contains("installed and verified"), "{}", run.err);
+        assert!(run.err.contains("could not be verified"), "{}", run.err);
+    }
+
+    #[test]
+    fn a29_unconfirmed_rollback_exits_1_and_asks_to_check_the_file() {
+        let uncertain = "ssh-copy-id: key=1 result=uncertain path=.ssh/authorized_keys\nssh-copy-id: result=uncertain added=0\n";
+        let run = execute(FakeSsh::new().probe(255, DENIED).installs(uncertain));
+        assert_eq!(run.status, 1);
+        assert!(run.err.contains("could not be removed"), "{}", run.err);
     }
 
     #[test]

@@ -53,18 +53,6 @@ pub fn prepare(input: &[u8]) -> Result<PreparedInput, InputError> {
     Ok(PreparedInput { text, key_count })
 }
 
-/// Returns the key entry lines of `prepared.text`, each followed by LF, in order.
-///
-/// Blank lines and comment lines, indented or not, are dropped. A key line keeps
-/// its leading separators.
-pub fn key_lines(prepared: &PreparedInput) -> Vec<u8> {
-    split_lines(&prepared.text)
-        .into_iter()
-        .filter(|line| matches!(classify(line), Some(LineKind::Key)))
-        .flat_map(|line| [line, b"\n"].concat())
-        .collect()
-}
-
 enum LineKind {
     BlankOrComment,
     Key,
@@ -369,17 +357,5 @@ mod tests {
 ",
         );
         assert_eq!(prepare(&given), Err(InputError::Malformed { line: 1 }));
-    }
-
-    #[test]
-    fn kl01_key_lines_drop_blank_and_comment_lines() {
-        let prepared = prepare(&input("# c\n\n  # indented\n\t\nssh-ed25519 {K}\n")).unwrap();
-        assert_eq!(key_lines(&prepared), input("ssh-ed25519 {K}\n"));
-    }
-
-    #[test]
-    fn kl02_key_lines_keep_leading_spaces() {
-        let prepared = prepare(&input("  ssh-ed25519 {K} x\n")).unwrap();
-        assert_eq!(key_lines(&prepared), input("  ssh-ed25519 {K} x\n"));
     }
 }

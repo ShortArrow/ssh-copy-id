@@ -39,6 +39,11 @@ fn main() -> ExitCode {
     platform::outlive_interrupts();
     let read_file = |path: &std::path::Path| std::fs::read(path);
     let exists = |path: &std::path::Path| path.exists();
+    let readable_file = |path: &std::path::Path| {
+        std::fs::File::open(path)
+            .and_then(|file| file.metadata())
+            .is_ok_and(|metadata| metadata.is_file())
+    };
     let same_file = |a: &std::path::Path, b: &std::path::Path| match (
         std::fs::canonicalize(a),
         std::fs::canonicalize(b),
@@ -52,6 +57,7 @@ fn main() -> ExitCode {
         home: platform::home_dir(),
         read_file: &read_file,
         exists: &exists,
+        readable_file: &readable_file,
         same_file: &same_file,
     };
     let status = app::run(
