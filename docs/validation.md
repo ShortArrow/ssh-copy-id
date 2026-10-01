@@ -21,7 +21,7 @@ placeholder. Behavioral differences remain indexed in [compatibility](compatibil
 | ID | Scenario | Status | Evidence / next action |
 | --- | --- | --- | --- |
 | L01 | Selected B versus authorized A, direct and one jump | Passed | [Linux prototype](../tests/prototypes/identity-isolation/README.md): 14 checks; fixed configuration only. |
-| L02 | Linux sshd fixture for Rust CLI integration tests | Pending | Stage 0 of the delivery plan: a disposable sshd with key-only and password accounts, to be added to the CI `linux-fixture` job, which today runs only L01. |
+| L02 | Linux sshd fixture for Rust CLI integration tests | Passed | [smoke.sh](../tests/environments/linux/smoke.sh): key-only and password accounts, run by the CI `linux-fixture` job. |
 | W01 | Administrator login, remote execution, stdin, guest metadata | Passed | [Test-Smoke.ps1](../tests/environments/windows/Test-Smoke.ps1). |
 | W02 | Standard-user key absent / installed / removed | Passed | [Test-StandardUser.ps1](../tests/environments/windows/Test-StandardUser.ps1), initialized profile. |
 | W03 | Standard-user CRLF/LF stdin and explicit cmd exit 37 | Passed | Same script; default shell remains cmd. |
@@ -31,7 +31,8 @@ placeholder. Behavioral differences remain indexed in [compatibility](compatibil
 | W07 | Default administrator shared key-file scope and invalid ACL rejection | Pending | First check whether an inherited profile ACL alone passes sshd's check (needed for stage 2); then positive/negative ACL cases, an extra read-only and an extra writable ACE, and a second administrator. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for destination detection (D-12); include a login shell that prints a banner. |
-| A01 | Password/passphrase prompts and agent-selected identities | Pending | Stage 0: prototype Windows `ssh.exe` with a password, an encrypted key's passphrase, agent confirmation, cancellation, and no terminal while public keys go to stdin. Agent-selected identities follow in stage 1.5. |
+| A01 | Password and passphrase prompts with public keys on stdin, cancellation, no terminal, agent confirmation | Passed | [Prompt experiment](../tests/prototypes/ssh-prompt/README.md): prompts and cancellation pass with both tested Windows clients; no-terminal behavior differs by client; the Windows agent refuses keys with confirmation. |
+| A02 | Agent-selected identities | Pending | Stage 1.5: default key selection from the agent and the selected-identity check with agent keys. |
 | F01 | Interrupted writes and uncertain remote state | Pending | Inject disconnects and record actual file state and exit status. |
 | P01 | Rust CLI behavior versus pinned upstream | Pending | Implement the CLI before claiming product conformance. |
 
@@ -164,6 +165,34 @@ The grace period ends on 2026-12-18 at about 22:08 guest time, which matches the
 install date plus 90 days. The baseline guest shares the install,
 because the second guest is a copy of its disk. Rerun the query before relying on
 this date; activation state can change after a rebuild.
+
+## Authentication Prompts on Windows: 2026-10-01
+
+Host: Windows 11 Pro 26200, the CLI stand-in under Python 3.12.11 in a ConPTY
+pseudo console created by pywinpty 3.0.5. Destination: the L02 fixture image,
+Ubuntu 24.04 with OpenSSH 9.6p1. The stdin payload was 66 bytes with LF and CRLF
+lines; the remote side returned its SHA-256 and the account name.
+
+| Case | `OpenSSH_for_Windows_9.5p2` | Git for Windows `OpenSSH_10.0p2` |
+| --- | --- | --- |
+| Password typed at the console prompt while stdin is a pipe | Exit 0, payload hash matched | Exit 0, payload hash matched |
+| Passphrase of an encrypted key typed at the console prompt | Exit 0, payload hash matched | Exit 0, payload hash matched |
+| Ctrl-C at the password prompt | `ssh` exited 255; the parent survived and saw 255 | The parent also received Ctrl-C and died with `KeyboardInterrupt` |
+| No console, password authentication | `ssh` did not exit within 20 s and was killed | Exit 255 after 0.5 s |
+| No console, password authentication, `BatchMode=yes` | Exit 255 after 0.5 s | Exit 255 after 0.6 s |
+
+Prompts are read from the console, not from stdin, by both clients, so public
+key data on stdin and interactive authentication coexist. Two consequences for
+the CLI: with Git's client, console Ctrl-C reaches the CLI as well as `ssh`; and
+without a console, Windows OpenSSH waits indefinitely at a password prompt.
+
+Agent confirmation, measured the same day against the Windows OpenSSH agent
+service: `ssh-add -c` with a disposable unencrypted Ed25519 key exited 1 with
+`agent refused operation`, and the key was not listed. The same key without `-c`
+was added and listed, then removed with `ssh-add -d`. The agent's key list
+before and after the experiment was identical. The Windows agent therefore
+never asks for confirmation; agents that support `-c`, such as one run under Git
+for Windows, were not measured.
 
 ## Linux Selected-Identity Experiment: 2026-09-20
 
