@@ -31,7 +31,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W07 | Default administrator shared key-file scope and invalid ACL rejection | Pending | First check whether an inherited profile ACL alone passes sshd's check (needed for stage 2); then positive/negative ACL cases, an extra read-only and an extra writable ACE, and a second administrator. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for destination detection (D-12); include a login shell that prints a banner. |
-| U01 | Stage 1: CLI installs one key on a Unix-like destination; requirements 1, 2, 3, 7, and 8 | Passed | [Stage 1 run](#stage-1-on-a-unix-like-destination-2026-10-01): 14 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, also run in CI. |
+| U01 | Stage 1: CLI installs one key on a Unix-like destination; requirements 1, 2, 3, 7, and 8 | Passed | [Stage 1 run](#stage-1-on-a-unix-like-destination-2026-10-01): 17 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, also run in CI. |
 | A01 | Password and passphrase prompts with public keys on stdin, cancellation, no terminal, agent confirmation | Passed | [Prompt experiment](../tests/prototypes/ssh-prompt/README.md): prompts and cancellation pass with both tested Windows clients; no-terminal behavior differs by client; the Windows agent refuses keys with confirmation. |
 | A02 | Agent-selected identities | Pending | Stage 1.5: default key selection from the agent and the selected-identity check with agent keys. |
 | F01 | Interrupted writes and uncertain remote state | Pending | Inject disconnects and record actual file state and exit status. |
@@ -171,7 +171,8 @@ this date; activation state can change after a rebuild.
 
 Host: Windows 11 Pro 26200, rustc 1.97.1, Docker Engine 28.5.1. Destination: the
 L02 fixture image, Ubuntu 24.04 with OpenSSH 9.6p1, with key-only, password,
-tcsh, and empty-password accounts. Command:
+tcsh, and empty-password accounts; the empty-password account's banner contains
+`using "publickey"`. Command:
 
 ```sh
 cargo test --test unix_destination -- --ignored --test-threads=1
@@ -179,15 +180,17 @@ cargo test --test unix_destination -- --ignored --test-threads=1
 
 | Client first on `PATH` | Result |
 | --- | --- |
-| Git for Windows `OpenSSH_10.0p2` | 14 passed |
-| `OpenSSH_for_Windows_9.5p2` | 14 passed |
+| Git for Windows `OpenSSH_10.0p2` | 17 passed |
+| `OpenSSH_for_Windows_9.5p2` | 17 passed |
 
-Removing the rule behind i2, i3, i4, i5, i7, i8, i9, i10, i11, i12, i13, or i14
-makes that test fail; i1 and i6 were not mutation-checked. i11 asserts that a
-wrong password writes nothing and exits 1, but not the message for an `ssh`
-exit 255 without a report; that message is covered by the unit tests only. i12
-covers spaces, a single quote, and Japanese in the key path, and asserts that
-the key authenticates after installation.
+Removing the rule behind any of the 17 tests makes that test fail. i1 checks
+the modes 700 and 600; i6 a key comment with `%s` and a backslash; i12 logs in
+with the installed key; i14 a `none` login after a banner naming `publickey`
+(D-01); i15 comment and blank lines that are appended but not counted (D-18);
+i16 a FIFO target (D-16); i17 a write cut short on a full tmpfs, which leaves the
+file byte-identical (D-17). i11 asserts that a wrong password writes nothing and
+exits 1, but not the message for an `ssh` exit 255 without a report; that message
+is covered by the unit tests only.
 
 ## Authentication Prompts on Windows: 2026-10-01
 
