@@ -2,4 +2,5 @@
 
 pub mod cli_args;
 pub mod key_input;
+pub mod remote_script;
 pub mod result_line;
