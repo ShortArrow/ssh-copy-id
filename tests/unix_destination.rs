@@ -1,5 +1,6 @@
 //! Stage 1 behavior against the L02 Linux fixture: requirements 1, 2, 3, 7, and 8,
-//! and design D-01, D-15, D-16, D-17, and D-18.
+//! and design D-01, D-15, D-16, D-17, and D-18. Every run of the CLI must leave
+//! no `ssh-copy-id.*` scratch directory in the local `~/.ssh`.
 //!
 //! Each test starts its own container from the `ssh-copy-id-l02:local` image on a
 //! free loopback port. Build the image first and run these tests explicitly:
@@ -148,8 +149,24 @@ impl Fixture {
     }
 
     /// Runs the CLI with an askpass program that answers `password`, and fails the
-    /// test when the run takes longer than `COPY_ID_TIMEOUT`.
+    /// test when the run takes longer than `COPY_ID_TIMEOUT` or leaves a scratch
+    /// directory behind in the local `~/.ssh`.
     fn copy_id_answering(&self, password: &str, key: &Path, user: &str, extra: &[&str]) -> Output {
+        let before = scratch_entries();
+        let output = self.run_copy_id(password, key, user, extra);
+        let left: Vec<String> = scratch_entries()
+            .into_iter()
+            .filter(|name| !before.contains(name))
+            .collect();
+        assert!(
+            left.is_empty(),
+            "scratch directories left in {}: {left:?}",
+            local_ssh_directory().display()
+        );
+        output
+    }
+
+    fn run_copy_id(&self, password: &str, key: &Path, user: &str, extra: &[&str]) -> Output {
         let mut args: Vec<String> = vec![
             "-i".into(),
             key.display().to_string(),
@@ -309,6 +326,24 @@ fn keygen(dir: &Path, name: &str, comment: &str) -> PathBuf {
         .unwrap();
     assert!(made.status.success(), "ssh-keygen: {}", text(&made.stderr));
     path
+}
+
+/// The local `~/.ssh`, from the variable the CLI reads its home directory from.
+fn local_ssh_directory() -> PathBuf {
+    let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    PathBuf::from(std::env::var_os(variable).unwrap()).join(".ssh")
+}
+
+/// The names in the local `~/.ssh` that start with `ssh-copy-id.`.
+fn scratch_entries() -> Vec<String> {
+    fs::read_dir(local_ssh_directory())
+        .map(|entries| {
+            entries
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with("ssh-copy-id."))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn public_line(key: &Path) -> String {
@@ -556,20 +591,22 @@ fn i14_d01_a_banner_forging_publickey_authentication_is_not_taken_as_installed()
 
 #[test]
 #[ignore = "needs the L02 fixture image"]
-fn i15_d18_comment_and_blank_lines_are_appended_and_only_the_key_is_counted() {
+fn i15_d18_lines_are_trimmed_trailing_blanks_dropped_and_only_the_key_is_counted() {
     let fixture = Fixture::start();
     let key = keygen(&fixture.work, "new", "new@test");
-    let lines = format!("# laptop\n\n  # indented\n\t\n{}\n", public_line(&key));
-    fs::write(key.with_extension("pub"), &lines).unwrap();
+    let line = public_line(&key);
+    fs::write(
+        key.with_extension("pub"),
+        format!("# laptop\n\n  # indented\n\t\n{line}  \n\n\t\n"),
+    )
+    .unwrap();
     let run = fixture.copy_id(&key, "pwuser", &[]);
-    let stderr = text(&run.stderr);
-    assert_eq!(run.status.code(), Some(0), "{stderr}");
-    assert!(
-        stderr.contains("1 key(s) remain to be installed"),
-        "{stderr}"
-    );
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
     assert!(text(&run.stdout).contains("Number of key(s) added: 1\n"));
-    assert_eq!(fixture.authorized_keys("pwuser"), lines);
+    assert_eq!(
+        fixture.authorized_keys("pwuser"),
+        format!("# laptop\n\n# indented\n\n{line}\n")
+    );
 }
 
 #[test]
@@ -630,4 +667,23 @@ fn i18_d17_a_comment_line_is_rolled_back_with_the_key_that_failed() {
         fixture.read_as_root("/home/pwuser/.ssh/authorized_keys"),
         before
     );
+}
+
+/// The key's options make every session it opens exit 1, so the check that finds
+/// it installed sees ssh fail after authenticating with it.
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i19_d01_a_key_whose_command_exits_nonzero_is_found_installed() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let line = format!("command=\"exit 1\" {}", public_line(&key));
+    fs::write(key.with_extension("pub"), format!("{line}\n")).unwrap();
+    let first = fixture.copy_id(&key, "pwuser", &[]);
+    assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));
+    assert!(text(&first.stdout).contains("Number of key(s) added: 1\n"));
+    let again = fixture.copy_id(&key, "pwuser", &[]);
+    let stderr = text(&again.stderr);
+    assert_eq!(again.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("All keys were skipped"), "{stderr}");
+    assert_eq!(fixture.authorized_keys("pwuser"), format!("{line}\n"));
 }
