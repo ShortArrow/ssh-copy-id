@@ -27,8 +27,9 @@ pub fn sh_quote(text: &str) -> String {
 ///
 /// The script prints one result line per key and a summary line last, in the
 /// format `result_line::parse_report` reads; `path=` names the target actually
-/// used. A target that exists and is not a regular file, or a non-empty target
-/// that cannot be read, is not written: every key is reported failed.
+/// used. When the home directory cannot be entered, a target that exists and is
+/// not a regular file, or a non-empty target that cannot be read, nothing is
+/// written: every key is reported failed.
 ///
 /// Lines are written in groups: the comment and blank lines since the last
 /// written key plus the next key, the added newline belonging to the first
@@ -36,11 +37,12 @@ pub fn sh_quote(text: &str) -> String {
 /// When a write fails, the target is truncated back to its size before the
 /// group, or removed when it did not exist before the group; no later line is
 /// written, and the group's key and every later key are reported failed. The
-/// truncation is skipped when the target has grown beyond its size before the
-/// group plus the bytes this run tried to write in the group, since another
-/// writer appended to it. When the truncation is skipped or cannot be
-/// confirmed, the group's key is reported `uncertain` and the summary is
-/// `uncertain`, whatever was added before.
+/// truncation happens only when the bytes after that size are a prefix of the
+/// bytes this run tried to write in the group, the added newline included;
+/// anything else, such as a line another writer appended, is left in place.
+/// When the truncation is skipped or cannot be confirmed, the group's key is
+/// reported `uncertain` and the summary is `uncertain`, whatever was added
+/// before.
 pub fn install_command(target: Option<&str>) -> String {
     let script = format!("{} {}", target_selection(target), one_line(INSTALL_SCRIPT));
     format!("exec sh -c {}", sh_quote(&script))
@@ -94,12 +96,15 @@ size_of() {
 is_comment_or_blank() {
     expr "x$1" : "x[ $t]*#" >/dev/null || expr "x$1" : "x[ $t]*\$" >/dev/null;
 };
+hex() {
+    od -v -An -tx1 | tr -d ' \t\n';
+};
 append() {
     if [ "$wrote" -eq 0 ] && [ -s "$f" ]; then
-        last=$(tail -c 1 -- "$f" | od -An -tx1 | tr -d ' ');
-        case $last in 0a) ;; *) tried=$((tried + 1)); printf '\n' >> "$f" || return 1 ;; esac;
+        last=$(tail -c 1 -- "$f" | hex);
+        case $last in 0a) ;; *) tried=${tried}0a; printf '\n' >> "$f" || return 1 ;; esac;
     fi;
-    tried=$((tried + $(printf '%s\n' "$1" | wc -c)));
+    tried=$tried$(printf '%s\n' "$1" | hex);
     printf '%s\n' "$1" >> "$f";
 };
 roll_back() {
@@ -109,13 +114,15 @@ roll_back() {
 restore_group() {
     now=$(size_of);
     if [ -z "$now" ]; then [ -z "$base" ]; return; fi;
-    [ "$now" -le $((${base:-0} + tried)) ] && roll_back "$base";
+    [ "$now" -ge "${base:-0}" ] || return 1;
+    since=$(tail -c +$((${base:-0} + 1)) -- "$f" | hex);
+    case $tried in "$since"*) roll_back "$base" ;; *) return 1 ;; esac;
 };
 n=0;
 added=0;
 wrote=0;
 uncertain=0;
-tried=0;
+tried=;
 base=;
 after_failure=failed;
 [ "$failed" -ne 0 ] || base=$(size_of);
@@ -123,7 +130,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     if is_comment_or_blank "$line"; then key=0; else key=1; n=$((n + 1)); fi;
     if [ "$failed" -eq 0 ]; then
         if append "$line"; then
-            [ "$key" -eq 0 ] || { base=$(size_of); tried=0; };
+            [ "$key" -eq 0 ] || { base=$(size_of); tried=; };
         else
             failed=1;
             restore_group || { after_failure=uncertain; uncertain=1; };
@@ -781,6 +788,24 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn append_once_before(home: &Home, tool: &str, first_arg: &str, printf_args: &str) {
+        let target = home.file(".ssh/authorized_keys");
+        executable(
+            home,
+            &format!("bin/{tool}"),
+            &format!(
+                "#!/bin/sh\ncase $1 in {first_arg}) [ -e \"$0.done\" ] || {{ ulimit -S -f unlimited; printf {printf_args} >> {}; : > \"$0.done\"; }} ;; esac\nPATH=${{PATH#*:}}\nexport PATH\nexec {tool} \"$@\"\n",
+                sh_quote(&target.to_string_lossy())
+            ),
+        );
+    }
+
+    #[cfg(unix)]
+    fn line_of(text: &str) -> String {
+        format!("'%s\\n' {}", sh_quote(text))
+    }
+
+    #[cfg(unix)]
     #[test]
     fn s28_concurrent_append_is_not_truncated() {
         let home = Home::new();
@@ -788,15 +813,7 @@ mod tests {
         let target = home.file(".ssh/authorized_keys");
         fs::create_dir_all(home.file(".ssh")).unwrap();
         fs::write(&target, "e\n").unwrap();
-        executable(
-            &home,
-            "bin/tail",
-            &format!(
-                "#!/bin/sh\nulimit -S -f unlimited\nprintf '%s\n' {} >> {}\nPATH=${{PATH#*:}}\nexport PATH\nexec tail \"$@\"\n",
-                sh_quote(&other),
-                sh_quote(&target.to_string_lossy())
-            ),
-        );
+        append_once_before(&home, "tail", "*", &line_of(&other));
         let setup = with_bin_on_path(&home, "trap '' XFSZ; ulimit -S -f 2;");
         let (report, _) = home.run_after(&setup, None, &format!("{KEY_A}\n"));
         assert_eq!(
@@ -810,6 +827,96 @@ mod tests {
             fs::read_to_string(&target).unwrap(),
             format!("e\n{other}\n")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s32_small_concurrent_append_before_a_partly_written_key_is_not_truncated() {
+        let home = Home::new();
+        let (_, long_key) = existing_and_long_line();
+        let other = "o".repeat(10);
+        let target = home.file(".ssh/authorized_keys");
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        fs::write(&target, "e\n").unwrap();
+        append_once_before(&home, "tail", "*", &line_of(&other));
+        let setup = with_bin_on_path(&home, "trap '' XFSZ; ulimit -S -f 2;");
+        let (report, _) = home.run_after(&setup, None, &format!("{long_key}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Uncertain,
+                keys: vec![uncertain(1, b".ssh/authorized_keys")],
+            }
+        );
+        let content = fs::read_to_string(&target).unwrap();
+        assert!(content.starts_with(&format!("e\n{other}\n")), "{content}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s33_small_concurrent_append_before_a_partly_written_trailing_comment_is_not_truncated() {
+        let home = Home::new();
+        let long_comment = format!("# {}", "c".repeat(2000));
+        let other = "o".repeat(10);
+        let target = home.file(".ssh/authorized_keys");
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        append_once_before(&home, "expr", "x#*", &line_of(&other));
+        let setup = with_bin_on_path(&home, "trap '' XFSZ; ulimit -S -f 2;");
+        let (report, _) = home.run_after(&setup, None, &format!("{KEY_A}\n{long_comment}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Uncertain,
+                keys: vec![added(1, b".ssh/authorized_keys")],
+            }
+        );
+        let content = fs::read_to_string(&target).unwrap();
+        assert!(
+            content.starts_with(&format!("{KEY_A}\n{other}\n")),
+            "{content}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s34_concurrent_nul_byte_before_a_partly_written_key_is_not_truncated() {
+        let home = Home::new();
+        let (_, long_key) = existing_and_long_line();
+        let target = home.file(".ssh/authorized_keys");
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        fs::write(&target, "e\n").unwrap();
+        append_once_before(&home, "tail", "*", r"'\000'");
+        let setup = with_bin_on_path(&home, "trap '' XFSZ; ulimit -S -f 2;");
+        let (report, _) = home.run_after(&setup, None, &format!("{long_key}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Uncertain,
+                keys: vec![uncertain(1, b".ssh/authorized_keys")],
+            }
+        );
+        assert!(fs::read(&target).unwrap().starts_with(b"e\n\0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s35_home_that_cannot_be_entered_gets_nothing_written() {
+        let home = Home::new();
+        let setup = format!(
+            "cd {}; HOME={}; export HOME;",
+            sh_quote(&home.0.to_string_lossy()),
+            sh_quote(&home.file("missing").to_string_lossy())
+        );
+        let (report, _) = home.run_after(&setup, None, &format!("{KEY_A}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Unchanged,
+                keys: vec![failed(1, b".ssh/authorized_keys")],
+            }
+        );
+        assert!(!home.file(".ssh").exists());
+        assert!(!home.file("missing").exists());
     }
 
     #[cfg(unix)]
@@ -852,7 +959,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn s31_rollback_bound_counts_bytes_not_characters() {
+    fn s31_rollback_compares_bytes_not_characters() {
         let home = Home::new();
         let wide_key = format!("{KEY_A} {}", "あ".repeat(500));
         let (report, _) = home.run_after(
