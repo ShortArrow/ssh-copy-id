@@ -100,10 +100,11 @@ const NO_AUTHENTICATION_FAILURES: [&str; 12] = [
 
 /// Classifies a probe from its exit status and stderr, given the other candidates.
 ///
-/// Exit 0 is `Installed` only when no other candidate exists and stderr shows
-/// authentication `using "publickey"` (the probe runs with `LogLevel=VERBOSE`);
-/// a server accepting another method, such as `none`, lets the probe succeed
-/// without the key. Exit 255 is `NotInstalled` on `Permission denied (`,
+/// Exit 0 is `Installed` only when no other candidate exists and the
+/// `Authenticated to ... using "<method>"` line of stderr names `publickey`
+/// (the probe runs with `LogLevel=VERBOSE`); `using "publickey"` elsewhere, such
+/// as in a banner, is not evidence. A server accepting another method, such as
+/// `none`, lets the probe succeed without the key. Exit 255 is `NotInstalled` on `Permission denied (`,
 /// `Failed` on a recognised host key or connection failure, and `Inconclusive`
 /// otherwise.
 pub fn classify(exit: Option<i32>, stderr: &str, others: &[String]) -> CheckResult {
@@ -112,7 +113,7 @@ pub fn classify(exit: Option<i32>, stderr: &str, others: &[String]) -> CheckResu
             "another identity could have authenticated: {}",
             others.join(", ")
         )),
-        Some(0) if stderr.contains("using \"publickey\"") => CheckResult::Installed,
+        Some(0) if authenticated_method(stderr) == Some("publickey") => CheckResult::Installed,
         Some(0) => CheckResult::Inconclusive(without_selected_key(stderr)),
         Some(255) if stderr.contains("Permission denied (") => CheckResult::NotInstalled,
         Some(255) => match last_line(stderr) {
@@ -297,7 +298,7 @@ mod tests {
 
     #[test]
     fn c07_keys_are_matched_case_insensitively_and_values_keep_spaces() {
-        let config = format!("IdentityFile {SELECTED}\nidentityfile ~/my keys/k\n");
+        let config = format!("identityfile {SELECTED}\nIdentityFile ~/my keys/k\n");
         assert_eq!(
             other_candidates_matching(
                 &config,
@@ -419,6 +420,57 @@ mod tests {
             classify(Some(255), "something unexpected", &[]),
             CheckResult::Inconclusive(reason) if reason.contains("something unexpected")
         ));
+    }
+
+    #[test]
+    fn k13_publickey_outside_the_authenticated_line_is_not_installed() {
+        let stderr = "Welcome. Last login using \"publickey\".
+Authenticated to h ([10.0.0.1]:22) using \"none\".
+";
+        assert!(matches!(
+            classify(Some(0), stderr, &[]),
+            CheckResult::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn k14_publickey_in_a_banner_without_an_authenticated_line_is_inconclusive() {
+        let stderr = "Welcome. Last login using \"publickey\".
+";
+        assert!(matches!(
+            classify(Some(0), stderr, &[]),
+            CheckResult::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn k15_every_recognised_no_authentication_failure_stops_the_run() {
+        let fragments = [
+            "Host key verification failed",
+            "REMOTE HOST IDENTIFICATION HAS CHANGED",
+            "Connection refused",
+            "Connection timed out",
+            "Operation timed out",
+            "Could not resolve hostname",
+            "No route to host",
+            "Network is unreachable",
+            "Connection closed by",
+            "Connection reset",
+            "kex_exchange_identification",
+            "connect to host",
+        ];
+        for fragment in fragments {
+            let stderr = format!(
+                "debug noise
+ssh: {fragment}
+"
+            );
+            assert_eq!(
+                classify(Some(255), &stderr, &[]),
+                CheckResult::Failed(format!("ssh: {fragment}")),
+                "{fragment}"
+            );
+        }
     }
 
     #[test]
