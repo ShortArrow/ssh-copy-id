@@ -61,7 +61,7 @@ mod tests {
     use super::*;
     use crate::result_line::{KeyResult, KeyStatus, Outcome, Report, parse_report};
     use std::fs;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn walk(root: &Path) -> Vec<PathBuf> {
+    fn walk(root: &std::path::Path) -> Vec<PathBuf> {
         let mut found = vec![root.to_path_buf()];
         if let Ok(entries) = fs::read_dir(root) {
             for entry in entries.flatten() {
