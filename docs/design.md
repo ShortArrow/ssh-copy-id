@@ -4,8 +4,7 @@
 
 [Differences from upstream](compatibility.md)
 
-Status: the pure core modules are implemented; nothing is released, and the
-command does not install keys yet. The [delivery plan](#delivery-plan) orders
+Status: nothing is released, and the command does not install keys yet. The [delivery plan](#delivery-plan) orders
 the remaining work, and [open questions](open-questions.md) lists what is not
 decided. This document states the current design and the reasons that still
 hold; the history of a change is in its commit message.
@@ -149,7 +148,7 @@ manual pages and shell completions as well, so their paths do not collide.
 
 Do not declare a conflict with or replacement of `openssh-client` or `openssh`
 merely to take over the command name, or claim to provide those complete packages.
-Declare the OpenSSH client as a runtime dependency.
+Declare the OpenSSH client as a runtime dependency while it is the connection backend.
 
 Users who want the familiar command name in their shell can explicitly opt in:
 
@@ -241,9 +240,7 @@ The check has three results.
 | Not installed | The selected key was the only candidate, and the server answered `Permission denied` | Install the key |
 | Inconclusive | Another identity or certificate was a candidate, the session failed after authentication, or the client reported another error | Install the key and print the reason; duplicates are possible, as with `-f` |
 
-Whether other candidates exist is read from `ssh -G`. An Inconclusive result
-installs rather than refuses, because refusing would make every user with a
-configured `IdentityFile` pass `-f`. Generating a configuration that isolates the
+Whether other candidates exist is read from `ssh -G`. Generating a configuration that isolates the
 selected key would turn Inconclusive into a conclusive result; it is not needed
 for the first two milestones, and it has limits stated in
 [selected-key isolation](#selected-identity-experiment-results).
@@ -406,7 +403,6 @@ configuration. This is difference D-06, not a bug fix.
 Preserve key options such as `restrict` and `command=`, and comments. Do not
 reconstruct installation entries from only the key type and key blob. The
 following differences apply to both installation transports, including `-f`.
-The input checks are implemented in `src/key_input.rs`.
 
 #### Private Key Input Rejection
 
@@ -421,21 +417,27 @@ Apparent intent: upstream assumes the caller passes `.pub` files or `ssh-add -L`
 output, and `-f` exists so that a public key alone suffices. Reason to differ:
 transmission of private material.
 
-Any input line containing `-----BEGIN` and `PRIVATE KEY` rejects the whole input;
-OpenSSH, PKCS#8, PKCS#1 RSA, EC, DSA, and encrypted variants share that armor.
+Any input line containing both `-----BEGIN` and `PRIVATE KEY` rejects the whole
+input; OpenSSH, PKCS#8, PKCS#1 RSA, EC, DSA, and encrypted variants share that
+armor. Test representative OpenSSH and PEM private key inputs, including mixed
+public/private content and forced mode, without sending their contents.
 
 #### CRLF Normalization
 
 The reviewed upstream script does not explicitly strip CR from CRLF input.
 Normalize CRLF line endings in the public key installation input to LF for
 transmission. Preserve options and comments; do not rewrite existing remote
-file contents or modify the local source file. This is difference D-05.
+file contents or modify the local source file. This is difference D-05. Test LF
+and CRLF inputs with restricted entries and comments through both transports and
+forced mode.
 
 Apparent intent: the upstream script was written for inputs produced on the same
 Unix host, where CRLF does not occur. Reason to differ: a false success report,
 since a line ending in CR is not a usable key.
 
-Strict public key parsing is not adopted. A standalone CR, a NUL byte, or a line
+Strict public key parsing, beyond the checks in this section, is not adopted.
+Input with no key entry is rejected, as upstream reports "No identities found".
+A standalone CR, a NUL byte, or a line
 that is neither empty, a `#` comment, nor a key entry is rejected before
 transmission, with the line number; no size limit is imposed beyond memory.
 Encoding is passed through as bytes; a leading byte order mark is handled below.
@@ -463,7 +465,8 @@ remote contents and the local source file are not modified. Apparent intent:
 upstream expects input written by `ssh-keygen` or `ssh-add`, which never emit a
 byte order mark. Reason to differ: a false success report, because a line that
 begins with one is not recognized as a key. Windows editors and PowerShell 5
-redirection produce such files. This is difference D-07, not a bug fix.
+redirection produce such files. This is difference D-07, not a bug fix. Test a
+prefixed `.pub` file through both transports and forced mode.
 
 ## Remote Operating Systems and Shells
 
@@ -472,7 +475,7 @@ Windows destinations. Do not require an OS option for normal use.
 
 | Destination | Usual key file | Permission handling |
 | --- | --- | --- |
-| Unix-like system | `.ssh/authorized_keys` | New directory 700 and new file 600 through `umask 077`; existing permissions unchanged |
+| Unix-like system | `.ssh/authorized_keys` | Normal mode: new directory 700 and new file 600 through `umask 077`, existing permissions unchanged. `-s`: `chmod 700` on a directory it created and `chmod 600` on the key file it uploads |
 | Standard Windows user | `.ssh/authorized_keys` in the user profile | Minimal ACL on new objects; existing ACLs unchanged |
 | Windows user in the Administrators group | `%ProgramData%/ssh/administrators_authorized_keys` under the default configuration | Restrict access to SYSTEM and Administrators |
 
@@ -494,8 +497,8 @@ command whose output differs between POSIX `sh`, `cmd.exe`, and PowerShell, and
 stop with an error before any write when the output matches none.
 `--target-os unix|windows` overrides detection. `-s` cannot run the probe and
 assumes a Unix-like destination unless `--target-os` says otherwise. The probe
-command and its expected outputs are fixed from measurements under `cmd.exe`,
-Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` (validation row W09);
+command and its expected outputs come from measurements under `cmd.exe`, Windows
+PowerShell, `pwsh`, `sh`, `bash`, and `dash` (validation row W09, not yet run);
 `echo %OS%:$0` is the starting candidate. Apparent intent of upstream, which sends
 its `sh` script without checking: destinations run a POSIX shell. Reason to
 differ: Windows destinations cannot run that script. This is difference D-12:
@@ -543,9 +546,9 @@ full control for the account, SYSTEM, and Administrators, applied with
 `icacls.exe` by SID with its exit code checked. Existing directories and files
 keep their ACLs, including extra entries. A key that the server then rejects is
 reported by the post-installation verification (D-06) with the file's entries
-listed, and the user decides what to remove. If an inherited profile ACL alone
-passes the server's check (validation row W07), the explicit ACL is unnecessary
-under profile directories. Explain permission failures without automatically
+listed, and the user decides what to remove. Whether an inherited profile ACL
+alone passes the server's check, which would make the explicit ACL unnecessary
+under profile directories, is an open question settled by validation row W07. Explain permission failures without automatically
 elevating privileges or managing services.
 
 `ssh-agent` is a helper service for private keys. Installing public keys on the
@@ -580,10 +583,13 @@ not corrected.
 
 ## SFTP Mode
 
-SFTP v3 provides `SSH_FXF_APPEND`, but OpenSSH `sftp`'s `put -a` resumes a
-transfer; it does not append a file containing only the new data. `-s` therefore
-downloads the file, edits it locally, and uploads it again, as upstream does,
-because `sftp.exe` cannot append.
+SFTP v3 provides `SSH_FXF_APPEND`. When using an API that supports appending, do
+not specify `TRUNC`, which discards existing contents. OpenSSH `sftp`'s `put -a`
+resumes a transfer; it does not append a file containing only the new data. `-s`
+therefore downloads the file, edits it locally, and uploads it again, as upstream
+does, because `sftp.exe` cannot append. Rewriting the whole file can lose
+concurrent updates; direct appending would not guarantee atomicity across
+duplicate checks and newline handling either.
 
 - Run `ls -l` on the target before `get`. A "No such file" answer means the file is missing; any other error stops the run before writing. Upstream's `-get` ignores every error and cannot make that distinction. Apparent intent of the leading `-`: tolerate the missing file of a first installation. Reason to differ: when `get` fails for another reason, upstream continues and uploads a file that holds only the new keys, which can replace the existing file. That is damage to data the user did not ask to change. This is difference D-09.
 - SFTP v3 Unix permission attributes alone cannot configure Windows ACLs. On Windows destinations, `-s` writes to `.ssh/authorized_keys` under the profile, the same default as Unix. It cannot set ACLs or learn whether the account is an administrator, so an existing directory with a correct ACL is a prerequisite (destination difference O-05). A key rejected afterwards is reported by the post-installation verification (D-06), with the suggestion to pass `-t` for the shared administrator file or to use normal mode.
@@ -624,17 +630,21 @@ policy, and file updates.
 
 The backend for the first two milestones is the system `ssh.exe`, and `sftp.exe`
 for `-s`. It reuses the user's SSH configuration, agent, jump hosts, and host key
-verification, and leaves authentication prompts to the client. A Rust SSH library
-is not used: it would have to reimplement those settings and collect credentials
-in this CLI, which the authentication policy above refuses. A Rust SFTP
+verification, and leaves authentication prompts to the client. A Rust SSH/SFTP
+library is reconsidered only if it can satisfy the authentication delegation
+policy above without collecting credentials in this CLI, and handle SSH
+configuration, agents, jump hosts, and host key verification. A Rust SFTP
 implementation over the `ssh.exe` subsystem is reconsidered only for appending in
-`-s` mode. Implementing the SSH protocol from scratch is not the plan.
+`-s` mode. Any reconsideration compares the full build and runtime dependency
+footprint, including packaging costs, alongside compatibility and authentication
+behavior. Implementing the SSH protocol from scratch is not the plan.
 
 Authentication results are classified from the client's exit status and a short
 list of stderr patterns: `Permission denied`, host key verification failure, and
 connection failure. The tested clients are `OpenSSH_for_Windows_9.5p2` and
-OpenSSH `9.6p1` as packaged in Ubuntu 24.04, which the fixtures exercise; a
-version is listed as tested after the fixtures pass with it. With any other
+OpenSSH `9.6p1` as packaged in Ubuntu 24.04, which the fixtures exercise. Each
+release lists its tested client versions, and a version is added after the
+fixtures pass with it; every pattern is checked against every listed version. With any other
 client version the tool prints a warning and continues. Output that matches no
 known pattern makes the check Inconclusive, so the key is installed with a
 warning and the post-installation verification reports the result. Apparent

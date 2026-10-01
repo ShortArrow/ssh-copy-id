@@ -24,5 +24,5 @@ and [Windows dockur fixture](../tests/environments/windows/README.md).
 - The design and the differences list are living documents: when a decision changes, edit the section so it states the current design. Do not add decision dates, "superseded" notes, or former behavior; the history is in git.
 - The reason for a change goes in its commit message, in one or two sentences, together with any difference ID (`D-xx`, `O-xx`) the change adds or changes.
 - What is not decided goes in [open-questions.md](open-questions.md), not in the design. When an item is decided, remove it there and state the result in the design.
-- Living documents do not link to dated records such as validation results or the review; records may link to living documents.
+- Living documents do not link to dated records such as validation result sections or the review; records may link to living documents. The validation matrix states current status and may be linked.
 - Check relative links and section anchors when moving or renaming documents or headings.

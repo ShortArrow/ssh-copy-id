@@ -30,7 +30,7 @@ placeholder. Behavioral differences remain indexed in [compatibility](compatibil
 | W06 | pwsh as the sshd default shell | Pending | Clone a fixture, install pwsh, run `Set-DefaultShell.ps1 -Shell pwsh`, record the pwsh version, and repeat both account tests. |
 | W07 | Default administrator shared key-file scope and invalid ACL rejection | Pending | First check whether an inherited profile ACL alone passes sshd's check (needed for stage 2); then positive/negative ACL cases, an extra read-only and an extra writable ACE, and a second administrator. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
-| W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for DL-38; include a login shell that prints a banner. |
+| W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for destination detection (D-12); include a login shell that prints a banner. |
 | A01 | Password/passphrase prompts and agent-selected identities | Pending | Stage 0: prototype Windows `ssh.exe` with a password, an encrypted key's passphrase, agent confirmation, cancellation, and no terminal while public keys go to stdin. Agent-selected identities follow in stage 1.5. |
 | F01 | Interrupted writes and uncertain remote state | Pending | Inject disconnects and record actual file state and exit status. |
 | P01 | Rust CLI behavior versus pinned upstream | Pending | Implement the CLI before claiming product conformance. |
@@ -187,7 +187,8 @@ For the jump fixture it replaced ProxyJump with a separate `ssh -W` process
 reading the original configuration, so the jump kept its own key. Server logs
 confirmed successful A and B authentication in the respective sequence.
 Target-agent use was disabled in this experiment only. Windows SSH client
-behavior and interactive authentication were not tested.
+behavior and interactive authentication were not tested. The Docker image stays
+a local test artifact; each run removes its container and generated keys.
 
 ## Linux Recheck: 2026-09-20
 
