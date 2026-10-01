@@ -19,10 +19,19 @@ pub fn sh_quote(text: &str) -> String {
 /// without `!`, as csh and tcsh require, provided `target` contains neither a
 /// line break nor `!`.
 ///
+/// Every line of stdin is appended, `#` comment lines and blank lines included;
+/// only the other lines are keys. A newline is added first when the target is
+/// non-empty and does not end with one.
+///
 /// The script prints one result line per key and a summary line last, in the
 /// format `result_line::parse_report` reads; `path=` names the target actually
-/// used. A non-empty target that cannot be read is not written: every key is
-/// reported failed.
+/// used. A target that exists and is not a regular file, or a non-empty target
+/// that cannot be read, is not written: every key is reported failed.
+///
+/// When a line's write fails, the target is truncated back to its size before
+/// that write, or removed when it did not exist; that line and every later key
+/// are reported failed. When the rollback cannot be confirmed, that key is
+/// reported `uncertain` and the summary is `uncertain`.
 pub fn install_command(target: Option<&str>) -> String {
     let script = format!("{} {}", target_selection(target), one_line(INSTALL_SCRIPT));
     format!("exec sh -c {}", sh_quote(&script))
@@ -66,27 +75,51 @@ d=$(dirname -- "$f");
 if [ "$failed" -eq 0 ] && [ -s "$f" ]; then
     [ -r "$f" ] || failed=1;
 fi;
+if [ "$failed" -eq 0 ] && [ -e "$f" ]; then
+    [ -f "$f" ] || failed=1;
+fi;
+size_of() {
+    if [ -s "$f" ]; then wc -c < "$f" | tr -d ' '; elif [ -e "$f" ]; then echo 0; fi;
+};
+append() {
+    if [ "$wrote" -eq 0 ] && [ -s "$f" ]; then
+        last=$(tail -c 1 -- "$f" | od -An -tx1 | tr -d ' ');
+        case $last in 0a) ;; *) printf '\n' >> "$f" || return 1 ;; esac;
+    fi;
+    printf '%s\n' "$1" >> "$f";
+};
+roll_back() {
+    if [ -z "$1" ]; then rm -f -- "$f"; else dd if=/dev/null of="$f" bs=1 seek="$1" 2>/dev/null; fi;
+    [ "$(size_of)" = "$1" ];
+};
 n=0;
 added=0;
+wrote=0;
+uncertain=0;
 while IFS= read -r line || [ -n "$line" ]; do
-    case $line in ''|'#'*) continue ;; esac;
-    n=$((n + 1));
-    if [ "$failed" -eq 0 ] && [ "$n" -eq 1 ] && [ -s "$f" ]; then
-        last=$(tail -c 1 -- "$f" | od -An -tx1 | tr -d ' ');
-        case $last in 0a) ;; *) printf '\n' >> "$f" || failed=1 ;; esac;
+    case $line in ''|'#'*) key=0 ;; *) key=1; n=$((n + 1)) ;; esac;
+    status=failed;
+    if [ "$failed" -eq 0 ]; then
+        size=$(size_of);
+        if append "$line"; then
+            status=added;
+        else
+            failed=1;
+            roll_back "$size" || { status=uncertain; uncertain=1; };
+        fi;
+        wrote=1;
     fi;
-    if [ "$failed" -eq 0 ] && printf '%s\n' "$line" >> "$f"; then
-        added=$((added + 1));
-        printf 'ssh-copy-id: key=%s result=added path=%s\n' "$n" "$p";
-    else
-        failed=1;
-        printf 'ssh-copy-id: key=%s result=failed path=%s\n' "$n" "$p";
+    if [ "$key" -eq 1 ]; then
+        case $status in added) added=$((added + 1)) ;; esac;
+        printf 'ssh-copy-id: key=%s result=%s path=%s\n' "$n" "$status" "$p";
     fi;
 done;
 if [ "$added" -gt 0 ] && command -v restorecon >/dev/null 2>&1; then
     restorecon -F "$d" "$f" >/dev/null 2>&1;
 fi;
-if [ "$failed" -ne 0 ] && [ "$added" -gt 0 ]; then
+if [ "$uncertain" -ne 0 ]; then
+    r=uncertain;
+elif [ "$failed" -ne 0 ] && [ "$added" -gt 0 ]; then
     r=partial;
 elif [ "$added" -gt 0 ]; then
     r=installed;
@@ -104,6 +137,7 @@ mod tests {
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     const KEY_A: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== a@host";
     const KEY_B: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB== b@host";
@@ -127,9 +161,13 @@ mod tests {
         }
 
         fn run(&self, target: Option<&str>, stdin: &str) -> (Report, String) {
+            self.run_after("", target, stdin)
+        }
+
+        fn run_after(&self, setup: &str, target: Option<&str>, stdin: &str) -> (Report, String) {
             let mut child = Command::new("sh")
                 .arg("-c")
-                .arg(install_command(target))
+                .arg(format!("{setup} {}", install_command(target)))
                 .env("HOME", &self.0)
                 .current_dir(std::env::temp_dir())
                 .stdin(Stdio::piped())
@@ -144,6 +182,14 @@ mod tests {
                 .unwrap()
                 .write_all(stdin.as_bytes())
                 .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while child.try_wait().unwrap().is_none() {
+                if Instant::now() > deadline {
+                    let _ = child.kill();
+                    panic!("the script did not finish within 20 s");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
             let output = child.wait_with_output().unwrap();
             (
                 parse_report(&output.stdout),
@@ -180,6 +226,15 @@ mod tests {
         KeyResult {
             index,
             status: KeyStatus::Added,
+            path: path.to_vec(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn failed(index: usize, path: &[u8]) -> KeyResult {
+        KeyResult {
+            index,
+            status: KeyStatus::Failed,
             path: path.to_vec(),
         }
     }
@@ -413,5 +468,167 @@ mod tests {
         for unexpected in ["/etc/openwrt_release", "Haiku"] {
             assert!(!command.contains(unexpected), "{unexpected} in {command}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s16_fifo_target_is_not_opened() {
+        use std::os::unix::fs::FileTypeExt;
+        let home = Home::new();
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        let made = Command::new("mkfifo")
+            .arg(home.file(".ssh/authorized_keys"))
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let (report, _) = home.run(None, &format!("{KEY_A}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Unchanged,
+                keys: vec![failed(1, b".ssh/authorized_keys")],
+            }
+        );
+        let kind = fs::symlink_metadata(home.file(".ssh/authorized_keys"))
+            .unwrap()
+            .file_type();
+        assert!(kind.is_fifo());
+    }
+
+    #[test]
+    fn s17_comment_and_blank_lines_are_written_but_not_counted() {
+        let home = Home::new();
+        let (report, _) = home.run(None, &format!("# laptop\n\n{KEY_A}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Installed,
+                keys: vec![added(1, b".ssh/authorized_keys")],
+            }
+        );
+        assert_eq!(
+            fs::read_to_string(home.file(".ssh/authorized_keys")).unwrap(),
+            format!("# laptop\n\n{KEY_A}\n")
+        );
+    }
+
+    #[test]
+    fn s18_missing_final_newline_is_added_before_a_leading_comment() {
+        let home = Home::new();
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        fs::write(home.file(".ssh/authorized_keys"), "x").unwrap();
+        home.run(None, &format!("# c\n{KEY_A}\n"));
+        assert_eq!(
+            fs::read_to_string(home.file(".ssh/authorized_keys")).unwrap(),
+            format!("x\n# c\n{KEY_A}\n")
+        );
+    }
+
+    #[cfg(unix)]
+    const SMALL_FILE_LIMIT: &str = "trap '' XFSZ; ulimit -f 2;";
+
+    #[cfg(unix)]
+    fn existing_and_long_line() -> (String, String) {
+        (
+            "e".repeat(999) + "\n",
+            format!("{KEY_A} {}", "c".repeat(2000)),
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s19_partly_written_key_is_rolled_back() {
+        let home = Home::new();
+        let (existing, long_key) = existing_and_long_line();
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        fs::write(home.file(".ssh/authorized_keys"), &existing).unwrap();
+        let (report, _) = home.run_after(SMALL_FILE_LIMIT, None, &format!("{long_key}\n{KEY_B}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Unchanged,
+                keys: vec![
+                    failed(1, b".ssh/authorized_keys"),
+                    failed(2, b".ssh/authorized_keys"),
+                ],
+            }
+        );
+        assert_eq!(
+            fs::read_to_string(home.file(".ssh/authorized_keys")).unwrap(),
+            existing
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s20_partly_written_comment_is_rolled_back_and_later_keys_fail() {
+        let home = Home::new();
+        let (existing, _) = existing_and_long_line();
+        let long_comment = format!("# {}", "c".repeat(2000));
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        fs::write(home.file(".ssh/authorized_keys"), &existing).unwrap();
+        let (report, _) = home.run_after(
+            SMALL_FILE_LIMIT,
+            None,
+            &format!("{long_comment}\n{KEY_A}\n"),
+        );
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Unchanged,
+                keys: vec![failed(1, b".ssh/authorized_keys")],
+            }
+        );
+        assert_eq!(
+            fs::read_to_string(home.file(".ssh/authorized_keys")).unwrap(),
+            existing
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s21_file_created_by_a_failed_write_is_removed() {
+        let home = Home::new();
+        let (report, _) = home.run_after("trap '' XFSZ; ulimit -f 0;", None, &format!("{KEY_A}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Unchanged,
+                keys: vec![failed(1, b".ssh/authorized_keys")],
+            }
+        );
+        assert!(!home.file(".ssh/authorized_keys").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s22_unconfirmed_rollback_is_uncertain() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = Home::new();
+        let (existing, long_key) = existing_and_long_line();
+        fs::create_dir_all(home.file("bin")).unwrap();
+        fs::write(home.file("bin/dd"), "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(home.file("bin/dd"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        fs::write(home.file(".ssh/authorized_keys"), &existing).unwrap();
+        let setup = format!(
+            "{SMALL_FILE_LIMIT} PATH={}:$PATH;",
+            sh_quote(&home.file("bin").to_string_lossy())
+        );
+        let (report, _) = home.run_after(&setup, None, &format!("{long_key}\n{KEY_B}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Uncertain,
+                keys: vec![
+                    KeyResult {
+                        index: 1,
+                        status: KeyStatus::Uncertain,
+                        path: b".ssh/authorized_keys".to_vec(),
+                    },
+                    failed(2, b".ssh/authorized_keys"),
+                ],
+            }
+        );
     }
 }

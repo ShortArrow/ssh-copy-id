@@ -201,6 +201,11 @@ fn install(
             ));
         }
         Outcome::Unchanged => return Err(format!("the key was not written to {target}")),
+        Outcome::Uncertain => {
+            return Err(format!(
+                "writing to {target} failed and the partial line could not be removed; check the file"
+            ));
+        }
         Outcome::Unknown => {
             return Err(format!(
                 "the connection ended without a result; {target} may or may not have changed"

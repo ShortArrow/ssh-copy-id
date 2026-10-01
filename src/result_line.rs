@@ -6,6 +6,8 @@ pub enum Outcome {
     Unchanged,
     Installed,
     Partial,
+    /// A failed write could not be confirmed as rolled back; the target may hold a partial line.
+    Uncertain,
     Unknown,
 }
 
@@ -15,6 +17,8 @@ pub enum KeyStatus {
     Added,
     Skipped,
     Failed,
+    /// The key's write failed and its rollback could not be confirmed.
+    Uncertain,
 }
 
 /// One well-formed key line: 1-based key index, its status, and the decoded target path.
@@ -102,6 +106,7 @@ fn parse_key_line(body: &str) -> Option<KeyResult> {
         "added" => KeyStatus::Added,
         "skipped" => KeyStatus::Skipped,
         "failed" => KeyStatus::Failed,
+        "uncertain" => KeyStatus::Uncertain,
         _ => return None,
     };
     let path = decode_path(path.strip_prefix("path=")?)?;
@@ -118,6 +123,7 @@ fn parse_summary_line(body: &str) -> Option<(Outcome, usize)> {
         "unchanged" => Outcome::Unchanged,
         "installed" => Outcome::Installed,
         "partial" => Outcome::Partial,
+        "uncertain" => Outcome::Uncertain,
         _ => return None,
     };
     let added = parse_decimal(added.strip_prefix("added=")?)?;
@@ -153,7 +159,8 @@ fn derive_outcome(lines: &[Option<Line>], keys: &[KeyResult]) -> Outcome {
     let count = |status| keys.iter().filter(|k| k.status == status).count();
     let consistent = *added == count(KeyStatus::Added)
         && !(*outcome == Outcome::Installed && count(KeyStatus::Failed) > 0)
-        && !(*outcome == Outcome::Unchanged && *added != 0);
+        && !(*outcome == Outcome::Unchanged && *added != 0)
+        && !(*outcome != Outcome::Uncertain && count(KeyStatus::Uncertain) > 0);
     if all_but_last_are_keys && consistent {
         *outcome
     } else {
@@ -168,7 +175,8 @@ fn derive_outcome(lines: &[Option<Line>], keys: &[KeyResult]) -> Outcome {
 /// in order. The outcome is the summary's value only when exactly one
 /// well-formed summary line is the last prefixed line, every prefixed line is
 /// well-formed, `added` equals the number of added key lines, `installed` has
-/// no failed key, and `unchanged` has `added=0`; otherwise it is
+/// no failed key, `unchanged` has `added=0`, and only `uncertain` has an
+/// uncertain key; otherwise it is
 /// [`Outcome::Unknown`].
 pub fn parse_report(stdout: &[u8]) -> Report {
     let lines: Vec<Option<Line>> = prefixed_bodies(stdout).map(parse_line).collect();
@@ -418,5 +426,40 @@ ssh-copy-id: result=installed added=1
 ",
         );
         assert_eq!(r.outcome, Outcome::Unknown);
+    }
+
+    #[test]
+    fn b27_uncertain_key_line_is_parsed() {
+        let r = parse_report(
+            b"ssh-copy-id: key=1 result=uncertain path=x\nssh-copy-id: result=uncertain added=0\n",
+        );
+        assert_eq!(
+            r,
+            Report {
+                outcome: Outcome::Uncertain,
+                keys: vec![key(1, KeyStatus::Uncertain, b"x")],
+            }
+        );
+    }
+
+    #[test]
+    fn b28_uncertain_summary_without_key_lines() {
+        let r = parse_report(b"ssh-copy-id: result=uncertain added=0\n");
+        assert_eq!(r.outcome, Outcome::Uncertain);
+    }
+
+    #[test]
+    fn b29_uncertain_key_under_a_certain_summary_is_unknown() {
+        for summary in ["installed", "partial", "unchanged"] {
+            let stdout = format!(
+                "ssh-copy-id: key=1 result=uncertain path=x\n\
+                 ssh-copy-id: result={summary} added=0\n"
+            );
+            assert_eq!(
+                parse_report(stdout.as_bytes()).outcome,
+                Outcome::Unknown,
+                "{summary}"
+            );
+        }
     }
 }
