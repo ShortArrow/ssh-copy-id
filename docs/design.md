@@ -85,6 +85,12 @@ administrator accounts. See [Windows administrator scope](#windows-administrator
 These are implementation targets, not current support claims. The order of the
 work is the delivery plan below.
 
+Decision recorded on 2026-09-24 (DL-16): the second milestone is one explicitly
+selected key for one standard user on a Windows destination, in normal mode.
+Broader CLI compatibility, SFTP, administrator destinations, and Linux
+distribution follow as separate increments; none is a prerequisite for the first
+two milestones.
+
 ### Delivery Plan
 
 Decision recorded on 2026-09-30 and revised on 2026-10-01 (DL-47, DL-48). Each
@@ -95,13 +101,15 @@ stage ends when its checks pass; the IDs are rows of the
 | --- | --- | --- | --- |
 | 0. Feasibility | none | Prototype of `ssh.exe` on Windows with authentication prompts while public keys go to stdin; a Linux sshd fixture for CLI integration tests | A01 passes for a password, an encrypted key's passphrase, agent confirmation, cancellation, and no terminal; L02 passes and runs in CI |
 | 1. Unix destination, one key | v0.0.1 | `[user@]host`, `-i file`, `-p`, `-o`, `-F`; the installed-key check with three results; the `sh` installation script with result lines; post-installation verification; exit statuses | Initial requirements 1, 2, 3, 7, and 8 pass as tests against L02 |
-| 1.5. CLI compatibility | v0.0.2 | `-n`, `-f`, `-t` on Unix-like destinations, `-i` without a file, default key selection, agent keys, `-x`, upstream messages | Requirements 4 and 5 pass; the D-03 and D-11 tests pass; golden tests against the pinned script (P01) pass for the shared behavior |
-| 2. Windows standard user | v0.1.0 | Destination detection, the PowerShell installation script, ACLs on new objects | W06, W07, and W09 pass before the implementation; requirements 1, 2, 3, 7, and 8 pass against the dockur fixture |
+| 1.5. CLI compatibility | v0.0.2 if released before stage 2 | `-n`, `-f`, `-t` on Unix-like destinations, `-i` without a file, default key selection, agent keys, `-x`, upstream messages | Requirements 4 and 5 pass; the D-03 and D-11 tests pass; golden tests against the pinned script (P01) pass for the shared behavior |
+| 2. Windows standard user | v0.1.0 | One explicitly selected key for one standard user in normal mode: destination detection, the PowerShell installation script, ACLs on new objects | W06, W07, and W09 pass before the implementation; requirements 1, 2, 3, 7, and 8 pass against the dockur fixture |
 | 3. Later increments | 0.1.x or later | Shared administrator file, `-t` on Windows destinations (W08), `-s` (requirement 6), Linux packages | Decided per increment |
 
 Stages 1 and 2 are the first and second milestones that earlier decisions refer
-to. Stage 1.5 is not a prerequisite for stage 2, as DL-16 decided; if stage 2 is
-ready first, it is released as 0.1.0 and stage 1.5 follows as a 0.1.x release.
+to. Stage 1.5 is not a prerequisite for stage 2, as DL-16 decided. Its release
+version follows the versioning rule at the time it ships: 0.0.2 before stage 2,
+and after 0.1.0 a minor bump if it changes existing command-line behavior, such
+as messages or default key selection, otherwise a patch bump.
 Stage 0 comes first because a failed prototype would invalidate the backend
 decision (DL-12) that stages 1 to 3 build on. The Windows evaluation guest
 reported a grace period of 114,769 minutes on 2026-09-30
@@ -163,10 +171,10 @@ support is already available.
 ### Versioning and Release
 
 Decision recorded on 2026-09-30 and corrected on 2026-10-01 (DL-46), following
-the owner's runex and gitreant repositories. Each bullet names the repository
-it follows.
+the owner's runex and gitreant repositories. A bullet that follows one of them
+names it.
 
-- Versions follow Semantic Versioning. `Cargo.toml` carries 0.0.0 until the first release, and every release, v0.0.1 included, raises it in its own bump commit. Releases start at 0.0.1 with stage 1, stage 1.5 is 0.0.2, and Windows destination support in stage 2 is 0.1.0. From 0.1.0 until 1.0.0, a breaking change to the command line bumps the minor version and anything else bumps the patch.
+- Versions follow Semantic Versioning. `Cargo.toml` carries 0.0.0 until the first release, and every release, v0.0.1 included, raises it in its own bump commit. This follows runex's single bump commit. Releases start at 0.0.1 with stage 1, and Windows destination support in stage 2 is 0.1.0; stage 1.5 takes the version the rule below gives when it ships, as the delivery plan describes. From 0.1.0 until 1.0.0, a breaking change to the command line bumps the minor version and anything else bumps the patch.
 - The branching model is trunk-based, as in runex. `main` is always releasable, and changes reach it through pull requests from short-lived branches named after their issue when one exists (`feat/`, `fix/`, `docs/`, `ci/`). The commit that bumps the version to cut a release is the one commit pushed to `main` directly. The owner's general rule of GitFlow for versioned packages is not applied, for the reason runex retired its `develop` branch: every change already lands as a self-contained pull request, so an integration branch only delays fixes.
 - Releases are signed annotated tags `vX.Y.Z` on `main`, created with `git tag -s` and checked with `git tag -v`, as runex now requires; runex's tags through v0.1.20 were annotated but unsigned. A tag containing `-`, such as `v0.0.1-pre`, is a prerelease, as in gitreant, and is signed as well. A prerelease rehearses the pipeline without publishing to crates.io: unlike gitreant, where only `[skip publish]` in the tagged commit stops publishing, the publish job here skips every tag containing `-`, because a crates.io version cannot be reused once published.
 - `CHANGELOG.md` follows Keep a Changelog, as in runex; gitreant has no changelog. Every user-visible change adds an entry under `[Unreleased]`, which a release renames to the version and date. An entry names the difference IDs it adds or changes.
@@ -639,9 +647,11 @@ starting with the system OpenSSH client under the dependency policy above.
 Decision recorded on 2026-09-24: the first two milestones invoke the system
 `ssh.exe`, and `sftp.exe` for `-s`. Authentication results are classified from
 the client's exit status and a short list of stderr patterns. Each pattern is
-checked against each client version the release lists as tested. Superseded by DL-44 on 2026-09-30: a client outside
-that list gets a warning, not an error, as the next paragraph describes. A Rust SFTP implementation is re-evaluated only for appending in `-s`
-mode. Implementing the SSH protocol from scratch is not the plan.
+checked against each client version the release lists as tested. Superseded by
+DL-44 on 2026-09-30: a client outside that list gets a warning, not an error, as
+the next paragraph describes. A Rust SFTP implementation is re-evaluated only
+for appending in `-s` mode. Implementing the SSH protocol from scratch is not
+the plan.
 
 Decision recorded on 2026-09-30 and revised the same day (DL-44): the tested
 clients are `OpenSSH_for_Windows_9.5p2` and OpenSSH `9.6p1` as packaged in
@@ -780,13 +790,13 @@ index. Commit messages name decisions by ID.
 | DL-39 | 2026-09-30 | Key entry grammar; result-line values and encoding of bytes from `0x80` | [CRLF normalization](#crlf-normalization), [Installation outcome](#installation-outcome) |
 | DL-40 | 2026-09-30 | Delivery plan with stage 0 first and completion checks per stage; revised by DL-47 and DL-48 | [Delivery plan](#delivery-plan) |
 | DL-41 | 2026-09-30 | The first milestone covers requirements 1, 2, 3, 7, and 8 | [Initial validation](#initial-validation) |
-| DL-42 | 2026-09-30 | Semantic Versioning from 0.0.1; stage 1 is 0.0.1, stage 1.5 is 0.0.2, stage 2 is 0.1.0 | [Versioning and release](#versioning-and-release) |
+| DL-42 | 2026-09-30 | Semantic Versioning from 0.0.1; stage 1 is 0.0.1, stage 1.5 is 0.0.2, stage 2 is 0.1.0; stage 1.5 revised by DL-48 | [Versioning and release](#versioning-and-release) |
 | DL-43 | 2026-09-30 | Trunk-based branches, `vX.Y.Z` tags, prerelease tags with `-`, Keep a Changelog, `release.yml` before v0.0.1; corrected by DL-46 | [Versioning and release](#versioning-and-release) |
 | DL-44 | 2026-09-30 | D-13 revised: untested client versions warn and continue; unclassifiable output is Inconclusive | [Connection backend](#connection-backend-evaluation) |
 | DL-45 | 2026-09-30 | README marks unpublished install channels as unpublished and shows a source build | [README](../README.md) |
 | DL-46 | 2026-10-01 | Signed tags; prereleases never publish to crates.io; v0.0.1 goes to crates.io and GitHub only; each practice attributed to its source repository | [Versioning and release](#versioning-and-release) |
 | DL-47 | 2026-10-01 | Agent confirmation joins stage 0; `-t` on Unix in stage 1.5 and on Windows (W08) in stage 3; stages 1 and 2 are the two milestones | [Delivery plan](#delivery-plan) |
-| DL-48 | 2026-10-01 | Stage 1.5 is not a prerequisite for stage 2; `Cargo.toml` stays 0.0.0 until the v0.0.1 bump commit | [Delivery plan](#delivery-plan), [Versioning and release](#versioning-and-release) |
+| DL-48 | 2026-10-01 | Stage 1.5 is not a prerequisite for stage 2 and takes the version the rule gives when it ships; `Cargo.toml` stays 0.0.0 until the v0.0.1 bump commit | [Delivery plan](#delivery-plan), [Versioning and release](#versioning-and-release) |
 
 ## References
 
