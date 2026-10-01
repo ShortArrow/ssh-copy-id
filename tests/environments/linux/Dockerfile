@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssh-server 
     && passwd -d emptyuser
 
 COPY sshd_config /etc/ssh/sshd_config.d/fixture.conf
+COPY emptyuser-banner /etc/ssh/emptyuser-banner
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 EXPOSE 22
 ENTRYPOINT ["/bin/sh", "/usr/local/bin/entrypoint.sh"]

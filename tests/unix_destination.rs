@@ -1,5 +1,5 @@
 //! Stage 1 behavior against the L02 Linux fixture: requirements 1, 2, 3, 7, and 8,
-//! and design D-15.
+//! and design D-01, D-15, D-16, D-17, and D-18.
 //!
 //! Each test starts its own container from the `ssh-copy-id-l02:local` image on a
 //! free loopback port. Build the image first and run these tests explicitly:
@@ -30,6 +30,11 @@ struct Fixture {
 
 impl Fixture {
     fn start() -> Fixture {
+        Fixture::start_with(&[])
+    }
+
+    /// Starts a container with `run_args` added to `docker run`, such as a mount.
+    fn start_with(run_args: &[&str]) -> Fixture {
         let work = std::env::temp_dir().join(format!(
             "ssh-copy-id-l02-test-{}-{}",
             std::process::id(),
@@ -43,20 +48,21 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::SeqCst)
         );
         let public = fs::read_to_string(control.with_extension("pub")).unwrap();
-        let run = command(
-            "docker",
-            &[
-                "run",
-                "-d",
-                "-p",
-                "127.0.0.1::22",
-                "-e",
-                &format!("PWUSER_PASSWORD={password}"),
-                "-e",
-                &format!("CONTROL_PUBLIC_KEY={}", public.trim()),
-                IMAGE,
-            ],
-        );
+        let password_env = format!("PWUSER_PASSWORD={password}");
+        let control_env = format!("CONTROL_PUBLIC_KEY={}", public.trim());
+        let mut args = vec![
+            "run",
+            "-d",
+            "-p",
+            "127.0.0.1::22",
+            "-e",
+            &password_env,
+            "-e",
+            &control_env,
+        ];
+        args.extend_from_slice(run_args);
+        args.push(IMAGE);
+        let run = command("docker", &args);
         assert!(run.status.success(), "docker run: {}", text(&run.stderr));
         let container = text(&run.stdout).trim().to_string();
         let mapped = command("docker", &["port", &container, "22/tcp"]);
@@ -218,6 +224,17 @@ impl Fixture {
         text(&command("docker", &["exec", &self.container, "cat", path]).stdout)
     }
 
+    fn exec_as_root(&self, script: &str) -> Output {
+        command("docker", &["exec", &self.container, "sh", "-c", script])
+    }
+
+    /// The octal permission bits of `path`, relative to `user`'s home directory.
+    fn mode(&self, user: &str, path: &str) -> String {
+        text(&self.exec(user, &format!("stat -c %a {path}")).stdout)
+            .trim()
+            .to_string()
+    }
+
     fn logs_in_with(&self, key: &Path, user: &str) -> bool {
         Command::new("ssh")
             .args(self.base_ssh_args())
@@ -289,6 +306,8 @@ fn i1_requirement_2_installs_into_a_missing_file_and_the_key_logs_in() {
         fixture.authorized_keys("pwuser"),
         format!("{}\n", public_line(&key))
     );
+    assert_eq!(fixture.mode("pwuser", ".ssh"), "700");
+    assert_eq!(fixture.mode("pwuser", ".ssh/authorized_keys"), "600");
     assert!(fixture.logs_in_with(&key, "pwuser"));
 }
 
@@ -358,9 +377,9 @@ fn i5_requirement_3_an_unwritable_file_is_kept_and_reported() {
 
 #[test]
 #[ignore = "needs the L02 fixture image"]
-fn i6_requirement_7_comments_with_spaces_quotes_and_japanese_are_data() {
+fn i6_requirement_7_comments_with_spaces_quotes_japanese_and_format_text_are_data() {
     let fixture = Fixture::start();
-    let key = keygen(&fixture.work, "new", "名前 it's \"quoted\" $HOME");
+    let key = keygen(&fixture.work, "new", r#"名前 it's "quoted" $HOME %s \t"#);
     let run = fixture.copy_id(&key, "pwuser", &[]);
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
     assert_eq!(
@@ -475,6 +494,7 @@ fn i12_requirement_7_key_paths_with_spaces_quotes_and_japanese_are_used_as_given
         fixture.authorized_keys("pwuser"),
         format!("{}\n", public_line(&key))
     );
+    assert!(fixture.logs_in_with(&key, "pwuser"));
 }
 
 #[test]
@@ -492,7 +512,7 @@ fn i13_d15_a_forced_tty_does_not_hang_the_installation() {
 
 #[test]
 #[ignore = "needs the L02 fixture image"]
-fn i14_requirement_1_none_authentication_is_not_taken_as_installed() {
+fn i14_d01_none_authentication_after_a_publickey_banner_is_not_taken_as_installed() {
     let fixture = Fixture::start();
     let key = keygen(&fixture.work, "new", "new@test");
     let run = fixture.copy_id(&key, "emptyuser", &[]);
@@ -502,5 +522,72 @@ fn i14_requirement_1_none_authentication_is_not_taken_as_installed() {
     assert_eq!(
         fixture.authorized_keys("emptyuser"),
         format!("{}\n", public_line(&key))
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i15_d18_comment_and_blank_lines_are_appended_and_only_the_key_is_counted() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let lines = format!("# laptop\n\n{}\n", public_line(&key));
+    fs::write(key.with_extension("pub"), &lines).unwrap();
+    let run = fixture.copy_id(&key, "pwuser", &[]);
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("1 key(s) remain to be installed"),
+        "{stderr}"
+    );
+    assert!(text(&run.stdout).contains("Number of key(s) added: 1\n"));
+    assert_eq!(fixture.authorized_keys("pwuser"), lines);
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i16_d16_a_fifo_target_is_not_written_and_does_not_hang() {
+    let fixture = Fixture::start();
+    let setup = fixture.exec(
+        "pwuser",
+        "umask 077 && mkdir -p .ssh && mkfifo .ssh/authorized_keys",
+    );
+    assert!(setup.status.success());
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &[]);
+    assert_eq!(run.status.code(), Some(1), "{}", text(&run.stderr));
+    assert!(
+        fixture
+            .exec("pwuser", "test -p .ssh/authorized_keys")
+            .status
+            .success()
+    );
+}
+
+/// The existing file ends 6 bytes before a page boundary and every other page of
+/// the size-limited tmpfs is taken, so the key line is written in part and then
+/// fails with ENOSPC.
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i17_d17_a_write_cut_short_by_a_full_filesystem_is_rolled_back() {
+    let fixture = Fixture::start_with(&["--tmpfs", "/home/pwuser/.ssh:size=16k,mode=0700"]);
+    let owned = fixture.exec_as_root("chown pwuser:pwuser /home/pwuser/.ssh");
+    assert!(owned.status.success(), "{}", text(&owned.stderr));
+    let fill = fixture.exec(
+        "pwuser",
+        r#"umask 077 && page=$(getconf PAGESIZE) \
+            && { head -c $((page - 7)) /dev/zero | tr '\0' x; printf '\n'; } > .ssh/authorized_keys \
+            && { dd if=/dev/zero of=.ssh/filler bs=1024 2>/dev/null; true; } \
+            && [ "$(df -P .ssh | awk 'NR == 2 { print $4 }')" = 0 ]"#,
+    );
+    assert!(fill.status.success(), "{}", text(&fill.stderr));
+    let before = fixture.read_as_root("/home/pwuser/.ssh/authorized_keys");
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &[]);
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("the key was not written to"), "{stderr}");
+    assert_eq!(
+        fixture.read_as_root("/home/pwuser/.ssh/authorized_keys"),
+        before
     );
 }
