@@ -110,23 +110,36 @@ const NO_AUTHENTICATION_FAILURES: [&str; 12] = [
 ///
 /// `ssh` writes its own messages to the log, while stderr carries the server's
 /// banner and remote output, so nothing on stderr is evidence of `Installed`.
-/// Exit 0 is `Installed` only when no other candidate exists and the
+/// Any exit status is `Installed` when no other candidate exists and the
 /// `Authenticated to ... using "<method>"` line of the log names `publickey`
-/// (the probe runs with `LogLevel=VERBOSE`); `using "publickey"` elsewhere is
+/// (the probe runs with `LogLevel=VERBOSE`); a key with `command=` makes the
+/// probe exit nonzero after authenticating. `using "publickey"` elsewhere is
 /// not evidence. A server accepting another method, such as `none`, lets the
-/// probe succeed without the key. Exit 255 is `NotInstalled` on
+/// probe succeed without the key. Exit 0 with no `Authenticated to` line in the
+/// log is `Failed`, since `ssh` exits 0 only after authenticating. A process
+/// terminated by a signal is `Failed`. Exit 255 is `NotInstalled` on
 /// `Permission denied (`, `Failed` naming the last line with a recognised host
 /// key or connection failure, and `Inconclusive` otherwise; these patterns are
 /// matched on the log and stderr together.
 pub fn classify(exit: Option<i32>, log: &str, stderr: &str, others: &[String]) -> CheckResult {
     let output = format!("{log}\n{stderr}");
     match exit {
+        None => CheckResult::Failed("ssh was terminated before it reported a result".to_string()),
+        Some(_) if others.is_empty() && authenticated_method(log) == Some("publickey") => {
+            CheckResult::Installed
+        }
         Some(0) if !others.is_empty() => CheckResult::Inconclusive(format!(
             "another identity could have authenticated: {}",
             others.join(", ")
         )),
-        Some(0) if authenticated_method(log) == Some("publickey") => CheckResult::Installed,
-        Some(0) => CheckResult::Inconclusive(without_selected_key(log)),
+        Some(0) => match authenticated_method(log) {
+            Some(method) => CheckResult::Inconclusive(format!(
+                "authentication succeeded without the selected key, using \"{method}\""
+            )),
+            None => {
+                CheckResult::Failed("ssh exited without recording an authentication".to_string())
+            }
+        },
         Some(255) if output.contains("Permission denied (") => CheckResult::NotInstalled,
         Some(255) => match (failure_line(&output), last_line(&output)) {
             (Some(line), _) => CheckResult::Failed(line),
@@ -138,16 +151,6 @@ pub fn classify(exit: Option<i32>, log: &str, stderr: &str, others: &[String]) -
         Some(code) => CheckResult::Inconclusive(format!(
             "the session failed after authentication with exit status {code}"
         )),
-        None => CheckResult::Failed("ssh was terminated before it reported a result".to_string()),
-    }
-}
-
-fn without_selected_key(log: &str) -> String {
-    match authenticated_method(log) {
-        Some(method) => {
-            format!("authentication succeeded without the selected key, using \"{method}\"")
-        }
-        None => "authentication succeeded without the selected key".to_string(),
     }
 }
 
@@ -177,6 +180,56 @@ fn last_line(text: &str) -> Option<String> {
 
 fn trimmed_lines(text: &str) -> impl DoubleEndedIterator<Item = &str> {
     text.lines().map(|line| line.trim_end_matches('\r').trim())
+}
+
+/// The suffix of certificate key types.
+const CERTIFICATE_SUFFIX: &[u8] = b"-cert-v01@openssh.com";
+
+/// Whether the first key entry of validated input is a certificate, whose type
+/// ends in `-cert-v01@openssh.com`.
+///
+/// `text` has passed `key_input::prepare`, so its first line that is neither
+/// blank nor a comment is a key entry: `keytype base64` or `options keytype
+/// base64`, where options may quote spaces with double quotes. The base64 field
+/// cannot end in the suffix, so either of the first two fields ending in it is
+/// the key type.
+pub fn is_certificate(text: &[u8]) -> bool {
+    let is_separator = |b: &u8| *b == b' ' || *b == b'\t';
+    let Some(entry) = text
+        .split(|&b| b == b'\n')
+        .map(|line| {
+            &line[line
+                .iter()
+                .position(|b| !is_separator(b))
+                .unwrap_or(line.len())..]
+        })
+        .find(|line| !line.is_empty() && line[0] != b'#')
+    else {
+        return false;
+    };
+    let first_end = first_field_end(entry);
+    let rest = &entry[first_end..];
+    let rest = &rest[rest
+        .iter()
+        .position(|b| !is_separator(b))
+        .unwrap_or(rest.len())..];
+    let second = &rest[..rest.iter().position(is_separator).unwrap_or(rest.len())];
+    entry[..first_end].ends_with(CERTIFICATE_SUFFIX) || second.ends_with(CERTIFICATE_SUFFIX)
+}
+
+fn first_field_end(entry: &[u8]) -> usize {
+    let mut in_quotes = false;
+    let mut i = 0;
+    while i < entry.len() {
+        match entry[i] {
+            b'\\' if in_quotes && entry.get(i + 1) == Some(&b'"') => i += 1,
+            b'"' => in_quotes = !in_quotes,
+            b' ' | b'\t' if !in_quotes => return i,
+            _ => {}
+        }
+        i += 1;
+    }
+    entry.len()
 }
 
 /// Whether the first line of `ssh -V` output names a tested client version.
@@ -339,11 +392,11 @@ mod tests {
     }
 
     #[test]
-    fn k01b_success_without_publickey_evidence_is_inconclusive() {
-        assert!(matches!(
+    fn k01b_success_without_an_authenticated_line_is_failed() {
+        assert_eq!(
             classify(Some(0), "", "", &[]),
-            CheckResult::Inconclusive(_)
-        ));
+            CheckResult::Failed("ssh exited without recording an authentication".to_string())
+        );
     }
 
     #[test]
@@ -461,12 +514,12 @@ Authenticated to h ([10.0.0.1]:22) using \"none\".
     }
 
     #[test]
-    fn k14_publickey_in_a_banner_without_an_authenticated_line_is_inconclusive() {
+    fn k14_publickey_in_a_banner_without_an_authenticated_line_is_failed() {
         let stderr = "Welcome. Last login using \"publickey\".
 ";
         assert!(matches!(
             classify(Some(0), "", stderr, &[]),
-            CheckResult::Inconclusive(_)
+            CheckResult::Failed(_)
         ));
     }
 
@@ -513,12 +566,12 @@ ssh: {fragment}
     }
 
     #[test]
-    fn k17_publickey_on_stderr_with_an_empty_log_is_inconclusive() {
+    fn k17_publickey_on_stderr_with_an_empty_log_is_failed() {
         let stderr = "Authenticated to h ([127.0.0.1]:22) using \"publickey\".
 ";
         assert!(matches!(
             classify(Some(0), "", stderr, &[]),
-            CheckResult::Inconclusive(_)
+            CheckResult::Failed(_)
         ));
     }
 
@@ -554,6 +607,30 @@ ssh: {fragment}
             classify(Some(255), log, stderr, &[]),
             CheckResult::Failed("ssh: connect to host h port 22: Connection refused".to_string())
         );
+    }
+
+    #[test]
+    fn k21_publickey_in_the_log_is_installed_whatever_the_exit_status() {
+        let log = "Authenticated to h ([127.0.0.1]:22) using \"publickey\".
+";
+        for status in [1, 127, 255] {
+            assert_eq!(
+                classify(Some(status), log, "", &[]),
+                CheckResult::Installed,
+                "{status}"
+            );
+        }
+    }
+
+    #[test]
+    fn k22_publickey_with_another_candidate_and_a_nonzero_exit_is_not_installed() {
+        let log = "Authenticated to h ([127.0.0.1]:22) using \"publickey\".
+";
+        let others = vec!["identity file x".to_string()];
+        assert!(matches!(
+            classify(Some(1), log, "", &others),
+            CheckResult::Inconclusive(_)
+        ));
     }
 
     #[test]
@@ -666,6 +743,39 @@ ssh: {fragment}
         assert!(!is_tested_client("OpenSSH_for_Windows_9.5p1, LibreSSL"));
         assert!(!is_tested_client(
             "OpenSSH_9.6p1 Ubuntu-3ubuntu130, OpenSSL"
+        ));
+    }
+
+    #[test]
+    fn v07_a_tested_name_is_matched_whole() {
+        assert!(is_tested_client("OpenSSH_10.0p2"));
+        assert!(is_tested_client("OpenSSH_10.0p2 x"));
+        assert!(!is_tested_client("OpenSSH_10.0p20"));
+    }
+
+    #[test]
+    fn e01_a_plain_key_is_not_a_certificate() {
+        assert!(!is_certificate(b"# laptop\nssh-ed25519 AAAA me\n"));
+    }
+
+    #[test]
+    fn e02_a_certificate_type_is_a_certificate() {
+        assert!(is_certificate(
+            b"# laptop\n\nssh-ed25519-cert-v01@openssh.com AAAA me\n"
+        ));
+    }
+
+    #[test]
+    fn e03_a_certificate_after_options_is_a_certificate() {
+        assert!(is_certificate(
+            b"command=\"echo a b\",restrict ecdsa-sha2-nistp256-cert-v01@openssh.com AAAA\n"
+        ));
+    }
+
+    #[test]
+    fn e04_the_suffix_inside_quoted_options_is_not_a_certificate() {
+        assert!(!is_certificate(
+            b"command=\"echo x ssh-ed25519-cert-v01@openssh.com\" ssh-ed25519 AAAA\n"
         ));
     }
 }

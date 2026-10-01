@@ -1,7 +1,9 @@
 //! One run of the CLI: the stage 1 flow from the selected key to the reported outcome.
 
 use crate::cli_args::{Invocation, SshOption};
-use crate::installed_check::{CheckResult, classify, is_tested_client, other_candidates_matching};
+use crate::installed_check::{
+    CheckResult, classify, is_certificate, is_tested_client, other_candidates_matching,
+};
 use crate::key_input::{InputError, prepare};
 use crate::remote_script::{install_command, sh_quote};
 use crate::result_line::{Outcome, parse_report};
@@ -10,6 +12,10 @@ use std::path::{Path, PathBuf};
 
 /// The key file on Unix-like destinations, relative to the home directory.
 pub const TARGET: &str = ".ssh/authorized_keys";
+
+const NOTHING_WRITTEN: &str = "interrupted; nothing was written";
+const CERTIFICATE_REASON: &str =
+    "the key is a certificate, which authorized_keys does not authenticate";
 
 /// What one `ssh` run returned. `status` is `None` when the process was terminated by a signal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,16 +48,36 @@ pub struct Environment<'a> {
     pub readable_file: &'a dyn Fn(&Path) -> bool,
     /// Whether two paths name the same file.
     pub same_file: &'a dyn Fn(&Path, &Path) -> bool,
-    /// Creates a new empty file, at a path no earlier call returned, for one
-    /// probe's `ssh -E` log, and returns its path.
-    pub create_log: &'a dyn Fn() -> io::Result<PathBuf>,
-    /// Removes a file; a failure is ignored.
-    pub remove_file: &'a dyn Fn(&Path),
+    /// Creates a new directory, readable only by its owner, inside the given
+    /// existing directory and returns its path; the probes' `ssh -E` logs go there.
+    pub create_scratch_dir: &'a dyn Fn(&Path) -> io::Result<PathBuf>,
+    /// Removes a directory and its contents; a failure is ignored.
+    pub remove_dir: &'a dyn Fn(&Path),
+    /// Whether a console interrupt has arrived during the run.
+    pub interrupted: &'a dyn Fn() -> bool,
+}
+
+/// A directory created for one run, removed when the value is dropped.
+struct ScratchDir<'a> {
+    path: PathBuf,
+    remove: &'a dyn Fn(&Path),
+}
+
+impl Drop for ScratchDir<'_> {
+    fn drop(&mut self) {
+        (self.remove)(&self.path);
+    }
 }
 
 /// Runs the stage 1 flow and returns the exit status: 0 when the key is installed
 /// or was already installed, 1 otherwise. Diagnostics go to `err`, and the final
 /// summary to `out`, as upstream prints them.
+///
+/// The probes' logs live in a scratch directory under `<home>/.ssh`, created
+/// before the first `ssh` run and removed on every return after it. After each
+/// `ssh` run, an interrupt stops the run with exit status 1: before the
+/// installation nothing was written; after it the parsed outcome is reported and
+/// verification is not attempted or not reported.
 pub fn run(
     invocation: &Invocation,
     env: &Environment,
@@ -95,8 +121,18 @@ fn install(
         err,
         &format!("Source of key(s) to be installed: \"{public_key}\""),
     );
+    let scratch = ScratchDir {
+        path: (env.create_scratch_dir)(&env.home.join(".ssh")).map_err(|_| {
+            format!(
+                "failed to create required temporary directory under ~/.ssh (HOME=\"{}\")",
+                env.home.display()
+            )
+        })?,
+        remove: env.remove_dir,
+    };
 
     let version = run_ssh(ssh, &["-V".to_string()], b"", true)?;
+    stop_if_interrupted(env, NOTHING_WRITTEN)?;
     let version_line = String::from_utf8_lossy(&version.stderr)
         .lines()
         .next()
@@ -131,6 +167,7 @@ fn install(
     config_args.extend(common.iter().cloned());
     config_args.push(invocation.destination.clone());
     let config = run_ssh(ssh, &config_args, b"", true)?;
+    stop_if_interrupted(env, NOTHING_WRITTEN)?;
     if config.status != Some(0) {
         return Err(format!(
             "ssh -G failed: {}",
@@ -144,13 +181,23 @@ fn install(
         env.exists,
         env.same_file,
     );
-    let probe_args = |log: &Path| probe_args(&identity, log, &common, &invocation.destination);
+    let certificate = is_certificate(&prepared.text);
+    let probe = |ssh: &mut dyn Ssh, log_name: &str| {
+        if certificate {
+            return Ok(CheckResult::Inconclusive(CERTIFICATE_REASON.to_string()));
+        }
+        let log = scratch.path.join(log_name);
+        let args = probe_args(&identity, &log, &common, &invocation.destination);
+        check(ssh, env, &args, &log, &others)
+    };
 
     info(
         err,
         "attempting to log in with the new key(s), to filter out any that are already installed",
     );
-    match check(ssh, env, &probe_args, &others)? {
+    let checked = probe(ssh, "check.log")?;
+    stop_if_interrupted(env, NOTHING_WRITTEN)?;
+    match checked {
         CheckResult::Installed => {
             warn(
                 err,
@@ -223,7 +270,17 @@ fn install(
         }
     }
 
-    match check(ssh, env, &probe_args, &others)? {
+    let login = login_command(invocation, &identity);
+    if (env.interrupted)() {
+        summary(out, added, &login);
+        return Err("interrupted".to_string());
+    }
+    let verified = probe(ssh, "verify.log")?;
+    if (env.interrupted)() {
+        summary(out, added, &login);
+        return Err("interrupted before the key was verified".to_string());
+    }
+    match verified {
         CheckResult::Installed => info(err, "the key authenticates: it is installed and verified"),
         CheckResult::NotInstalled => warn(
             err,
@@ -238,14 +295,25 @@ fn install(
         ),
     }
 
-    let login = login_command(invocation, &identity);
+    summary(out, added, &login);
+    Ok(())
+}
+
+fn summary(out: &mut dyn Write, added: usize, login: &str) {
     let _ = write!(
         out,
         "\nNumber of key(s) added: {added}\n\n\
          Now try logging into the machine, with: \"{login}\"\n\
          and check to make sure that only the key(s) you wanted were added.\n\n"
     );
-    Ok(())
+}
+
+fn stop_if_interrupted(env: &Environment, message: &str) -> Result<(), String> {
+    if (env.interrupted)() {
+        Err(message.to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn common_args(invocation: &Invocation, env: &Environment) -> Vec<String> {
@@ -330,35 +398,25 @@ fn probe_args(identity: &str, log: &Path, common: &[String], destination: &str) 
     args
 }
 
-/// Runs one probe with its log in a fresh file, removed afterwards, and classifies it.
+/// Runs one probe that logs to `log`, a path in the scratch directory, and classifies it.
 fn check(
     ssh: &mut dyn Ssh,
     env: &Environment,
-    probe_args: &dyn Fn(&Path) -> Vec<String>,
+    args: &[String],
+    log: &Path,
     others: &[String],
 ) -> Result<CheckResult, String> {
-    let log_path = match (env.create_log)() {
-        Ok(path) => path,
-        Err(e) => {
-            return Ok(CheckResult::Inconclusive(format!(
-                "cannot create the ssh log file: {e}"
-            )));
-        }
-    };
-    let probe = run_ssh(ssh, &probe_args(&log_path), b"", true);
-    let log = (env.read_file)(&log_path);
-    (env.remove_file)(&log_path);
-    let probe = probe?;
-    Ok(match log {
-        Ok(log) => classify(
+    let probe = run_ssh(ssh, args, b"", true)?;
+    Ok(match (env.read_file)(log) {
+        Ok(text) => classify(
             probe.status,
-            &String::from_utf8_lossy(&log),
+            &String::from_utf8_lossy(&text),
             &String::from_utf8_lossy(&probe.stderr),
             others,
         ),
         Err(e) => CheckResult::Inconclusive(format!(
             "cannot read the ssh log file {}: {e}",
-            log_path.display()
+            log.display()
         )),
     })
 }
@@ -399,7 +457,7 @@ fn warn(err: &mut dyn Write, message: &str) {
 mod tests {
     use super::*;
     use crate::remote_script::install_command;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::{HashMap, HashSet};
     use std::rc::Rc;
 
@@ -419,9 +477,14 @@ mod tests {
         config: String,
         probes: Vec<Probe>,
         install: Option<SshOutput>,
+        config_status: i32,
         logs: Rc<RefCell<HashMap<PathBuf, Vec<u8>>>>,
+        scratch_parents: Rc<RefCell<Vec<PathBuf>>>,
         removed: Rc<RefCell<Vec<PathBuf>>>,
-        log_creation_fails: bool,
+        scratch_creation_fails: bool,
+        fails_to_start: Option<&'static str>,
+        interrupt_during: Option<usize>,
+        interrupted: Rc<Cell<bool>>,
     }
 
     impl FakeSsh {
@@ -520,9 +583,15 @@ mod tests {
         ) -> io::Result<SshOutput> {
             self.calls
                 .push((args.to_vec(), stdin.to_vec(), capture_stderr));
+            if self.interrupt_during == Some(self.calls.len() - 1) {
+                self.interrupted.set(true);
+            }
+            if self.fails_to_start == Some(kind(args)) {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "program not found"));
+            }
             Ok(match kind(args) {
                 "version" => output(0, "", &self.version),
-                "config" => output(0, &self.config, ""),
+                "config" => output(self.config_status, &self.config, ""),
                 "probe" => {
                     let probe = self.probes.remove(0);
                     self.write_log(args, probe.log);
@@ -531,6 +600,23 @@ mod tests {
                 _ => self.install.clone().expect("install not scripted"),
             })
         }
+    }
+
+    const SCRATCH_NAME: &str = "ssh-copy-id.test";
+    const CERTIFICATE: &str =
+        "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQ= me@here";
+
+    fn scratch() -> PathBuf {
+        Path::new("C:/home").join(".ssh").join(SCRATCH_NAME)
+    }
+
+    fn log_in_scratch(name: &str) -> String {
+        scratch().join(name).display().to_string()
+    }
+
+    fn removed_only_the_scratch_directory(run: &Run) {
+        assert_eq!(*run.ssh.removed.borrow(), [scratch()], "{}", run.err);
+        assert!(run.ssh.logs.borrow().is_empty());
     }
 
     const INSTALLED: &str = "ssh-copy-id: key=1 result=added path=.ssh/authorized_keys\nssh-copy-id: result=installed added=1\n";
@@ -588,8 +674,10 @@ mod tests {
         mut ssh: FakeSsh,
     ) -> Run {
         let logs = Rc::clone(&ssh.logs);
+        let scratch_parents = Rc::clone(&ssh.scratch_parents);
         let removed = Rc::clone(&ssh.removed);
-        let log_creation_fails = ssh.log_creation_fails;
+        let interrupted = Rc::clone(&ssh.interrupted);
+        let scratch_creation_fails = ssh.scratch_creation_fails;
         let read_file = |p: &Path| {
             files
                 .get(p)
@@ -600,20 +688,18 @@ mod tests {
         let exists = |p: &Path| files.contains_key(p);
         let readable_file = |p: &Path| files.contains_key(p) && !unreadable.contains(p);
         let same_file = |a: &Path, b: &Path| a == b;
-        let created = RefCell::new(0);
-        let create_log = || {
-            if log_creation_fails {
-                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"));
+        let create_scratch_dir = |parent: &Path| {
+            scratch_parents.borrow_mut().push(parent.to_path_buf());
+            if scratch_creation_fails {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "not found"));
             }
-            *created.borrow_mut() += 1;
-            let path = PathBuf::from(format!("C:/tmp/log-{}", created.borrow()));
-            logs.borrow_mut().insert(path.clone(), Vec::new());
-            Ok(path)
+            Ok(parent.join(SCRATCH_NAME))
         };
-        let remove_file = |p: &Path| {
-            logs.borrow_mut().remove(p);
+        let remove_dir = |p: &Path| {
+            logs.borrow_mut().retain(|log, _| !log.starts_with(p));
             removed.borrow_mut().push(p.to_path_buf());
         };
+        let is_interrupted = || interrupted.get();
         let env = Environment {
             has_console,
             askpass_set,
@@ -622,8 +708,9 @@ mod tests {
             exists: &exists,
             readable_file: &readable_file,
             same_file: &same_file,
-            create_log: &create_log,
-            remove_file: &remove_file,
+            create_scratch_dir: &create_scratch_dir,
+            remove_dir: &remove_dir,
+            interrupted: &is_interrupted,
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let status = run(invocation, &env, &mut ssh, &mut out, &mut err);
@@ -813,11 +900,12 @@ mod tests {
             FakeSsh::new().probe(0, ACCEPTED),
         );
         let (args, stdin, capture_stderr) = run.ssh.call("probe");
+        let log = log_in_scratch("check.log");
         let expected: Vec<String> = [
             "-i",
             "C:/k/id",
             "-E",
-            "C:/tmp/log-1",
+            &log,
             "-o",
             "ControlPath=none",
             "-o",
@@ -1074,7 +1162,7 @@ mod tests {
     }
 
     #[test]
-    fn a30_each_probe_logs_to_a_fresh_file_that_is_removed_afterwards() {
+    fn a30_each_probe_logs_to_its_own_file_in_a_scratch_directory_under_dot_ssh() {
         let run = execute(
             FakeSsh::new()
                 .probe(255, DENIED)
@@ -1082,6 +1170,10 @@ mod tests {
                 .probe(0, ACCEPTED),
         );
         assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(
+            *run.ssh.scratch_parents.borrow(),
+            [Path::new("C:/home").join(".ssh")]
+        );
         let logs: Vec<String> = run
             .ssh
             .probe_args()
@@ -1091,12 +1183,11 @@ mod tests {
                 args[at + 1].clone()
             })
             .collect();
-        assert_eq!(logs, ["C:/tmp/log-1", "C:/tmp/log-2"]);
         assert_eq!(
-            *run.ssh.removed.borrow(),
-            [PathBuf::from("C:/tmp/log-1"), PathBuf::from("C:/tmp/log-2")]
+            logs,
+            [log_in_scratch("check.log"), log_in_scratch("verify.log")]
         );
-        assert!(run.ssh.logs.borrow().is_empty());
+        removed_only_the_scratch_directory(&run);
     }
 
     #[test]
@@ -1133,23 +1224,21 @@ mod tests {
     }
 
     #[test]
-    fn a33_a_log_that_cannot_be_created_makes_both_checks_inconclusive() {
-        let mut ssh = FakeSsh::new().installs(INSTALLED);
-        ssh.log_creation_fails = true;
+    fn a33_a_scratch_directory_that_cannot_be_created_stops_before_any_ssh_run() {
+        let mut ssh = FakeSsh::new();
+        ssh.scratch_creation_fails = true;
         let run = execute(ssh);
-        assert_eq!(run.status, 0, "{}", run.err);
-        assert_eq!(run.ssh.kinds(), ["version", "config", "install"]);
+        assert_eq!(run.status, 1);
+        assert!(run.ssh.calls.is_empty());
         assert!(
-            run.err
-                .contains("could not tell whether the key is already installed (cannot create"),
+            run.err.ends_with(
+                "ssh-copy-id: ERROR: failed to create required temporary directory \
+                 under ~/.ssh (HOME=\"C:/home\")\n"
+            ),
             "{}",
             run.err
         );
-        assert!(
-            run.err.contains("could not be verified: cannot create"),
-            "{}",
-            run.err
-        );
+        assert!(run.ssh.removed.borrow().is_empty());
     }
 
     #[test]
@@ -1239,5 +1328,162 @@ mod tests {
             "{}",
             run.out
         );
+    }
+
+    #[test]
+    fn a39_publickey_in_the_log_skips_the_key_whatever_the_exit_status() {
+        let run = execute(FakeSsh::new().probe(1, ACCEPTED));
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
+        assert!(run.err.contains("All keys were skipped"), "{}", run.err);
+    }
+
+    #[test]
+    fn a40_success_without_an_authenticated_line_stops_before_writing() {
+        let run = execute(FakeSsh::new().probe(0, ""));
+        assert_eq!(run.status, 1);
+        assert!(!run.ssh.kinds().contains(&"install"));
+        assert!(
+            run.err
+                .contains("ERROR: ssh exited without recording an authentication"),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn a41_the_scratch_directory_is_removed_after_a_failed_probe() {
+        let run = execute(FakeSsh::new().probe(255, "Host key verification failed.\r\n"));
+        assert_eq!(run.status, 1);
+        removed_only_the_scratch_directory(&run);
+    }
+
+    #[test]
+    fn a42_the_scratch_directory_is_removed_when_ssh_fails_to_start() {
+        let mut ssh = FakeSsh::new();
+        ssh.fails_to_start = Some("version");
+        let run = execute(ssh);
+        assert_eq!(run.status, 1);
+        assert!(run.err.contains("cannot run ssh"), "{}", run.err);
+        removed_only_the_scratch_directory(&run);
+    }
+
+    #[test]
+    fn a43_the_scratch_directory_is_removed_after_an_early_error() {
+        let mut ssh = FakeSsh::new();
+        ssh.config_status = 255;
+        let run = execute(ssh);
+        assert_eq!(run.status, 1);
+        assert!(run.err.contains("ssh -G failed"), "{}", run.err);
+        removed_only_the_scratch_directory(&run);
+    }
+
+    #[test]
+    fn a44_the_scratch_directory_is_removed_after_the_key_is_skipped() {
+        let run = execute(FakeSsh::new().probe(0, ACCEPTED));
+        assert_eq!(run.status, 0, "{}", run.err);
+        removed_only_the_scratch_directory(&run);
+    }
+
+    #[test]
+    fn a45_an_interrupt_during_the_probe_stops_before_writing() {
+        let mut ssh = FakeSsh::new().probe(255, DENIED).installs(INSTALLED);
+        ssh.interrupt_during = Some(2);
+        let run = execute(ssh);
+        assert_eq!(run.status, 1);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
+        assert!(
+            run.err
+                .ends_with("ssh-copy-id: ERROR: interrupted; nothing was written\n"),
+            "{}",
+            run.err
+        );
+        removed_only_the_scratch_directory(&run);
+    }
+
+    #[test]
+    fn a46_an_interrupt_during_the_configuration_query_stops_before_writing() {
+        let mut ssh = FakeSsh::new().probe(255, DENIED).installs(INSTALLED);
+        ssh.interrupt_during = Some(1);
+        let run = execute(ssh);
+        assert_eq!(run.status, 1);
+        assert_eq!(run.ssh.kinds(), ["version", "config"]);
+        assert!(
+            run.err.contains("ERROR: interrupted; nothing was written"),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn a47_an_interrupt_during_the_installation_reports_the_add_and_skips_verification() {
+        let mut ssh = FakeSsh::new()
+            .probe(255, DENIED)
+            .installs(INSTALLED)
+            .probe(0, ACCEPTED);
+        ssh.interrupt_during = Some(3);
+        let run = execute(ssh);
+        assert_eq!(run.status, 1);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe", "install"]);
+        assert!(run.out.contains("Number of key(s) added: 1"), "{}", run.out);
+        assert!(
+            run.err.ends_with("ssh-copy-id: ERROR: interrupted\n"),
+            "{}",
+            run.err
+        );
+        removed_only_the_scratch_directory(&run);
+    }
+
+    #[test]
+    fn a48_an_interrupt_during_verification_exits_1() {
+        let mut ssh = FakeSsh::new()
+            .probe(255, DENIED)
+            .installs(INSTALLED)
+            .probe(0, ACCEPTED);
+        ssh.interrupt_during = Some(4);
+        let run = execute(ssh);
+        assert_eq!(run.status, 1);
+        assert!(run.out.contains("Number of key(s) added: 1"), "{}", run.out);
+        assert!(!run.err.contains("the key authenticates"), "{}", run.err);
+        assert!(
+            run.err
+                .ends_with("ssh-copy-id: ERROR: interrupted before the key was verified\n"),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn a49_a_certificate_is_installed_without_probing() {
+        let mut files = files();
+        files.insert(
+            PathBuf::from("C:/k/id.pub"),
+            format!("{CERTIFICATE}\n").into_bytes(),
+        );
+        let run = execute_with(
+            &invocation(),
+            files,
+            true,
+            false,
+            FakeSsh::new().installs(INSTALLED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "install"]);
+        let reason = "the key is a certificate, which authorized_keys does not authenticate";
+        assert!(
+            run.err.contains(&format!(
+                "could not tell whether the key is already installed ({reason})"
+            )),
+            "{}",
+            run.err
+        );
+        assert!(
+            run.err.contains(&format!(
+                "the key was installed but could not be verified: {reason}"
+            )),
+            "{}",
+            run.err
+        );
+        assert!(run.out.contains("Number of key(s) added: 1"), "{}", run.out);
     }
 }
