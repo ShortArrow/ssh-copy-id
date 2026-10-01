@@ -171,7 +171,7 @@ follows one of them names it.
 - Releases are signed annotated tags `vX.Y.Z` on `main`, created with `git tag -s` and checked with `git tag -v`, as runex requires; runex's tags through v0.1.20 were annotated but unsigned. A tag containing `-`, such as `v0.0.1-pre`, is a prerelease, as in gitreant, and is signed as well. A prerelease rehearses the pipeline without publishing to crates.io: unlike gitreant, where only `[skip publish]` in the tagged commit stops publishing, the publish job here skips every tag containing `-`, because a crates.io version cannot be reused once published.
 - `CHANGELOG.md` follows Keep a Changelog, as in runex; gitreant has no changelog. Every user-visible change adds an entry under `[Unreleased]`, which a release renames to the version and date. An entry names the difference IDs it adds or changes.
 - `release.yml` is written before v0.0.1, modeled on runex and gitreant, which both do the following: tests on Linux, Windows, and macOS gate the release, then builds, a GitHub release, and publishing to crates.io through trusted publishing with OIDC. A release checklist in `CONTRIBUTING.md` comes with it, as in runex. The crate name is `ssh-copy-id`; it and `ssh-copy-id-rs` returned 404 from the crates.io API on 2026-09-30 and 2026-10-01.
-- v0.0.1 is published to crates.io and as a GitHub release only.
+- v0.0.1 is published to crates.io and as a GitHub release only. Until it is published, the README states that nothing is published and shows a build from source.
 
 ## Compatibility with the Linux Version
 
@@ -210,7 +210,7 @@ compatibility suite is part of stage 1.5.
 | `-h`, `-?` | Display help |
 | `--target-os unix\|windows` | Override destination detection (D-12); not in upstream |
 
-Determine whether a key is already installed by checking whether it can
+Normally, determine whether a key is already installed by checking whether it can
 authenticate. Do not substitute a text comparison against `authorized_keys`.
 Avoid false positives caused by authentication with another key or reuse of an
 existing multiplexed connection. Do not interpret connection failures or host key
@@ -263,9 +263,9 @@ since the message shows only that a shell was refused, not that the key opened
 an SFTP session.
 
 The selected-identity rule above applies to both modes. `-f` skips the check.
-Failure to establish SFTP does not by itself mean that the key is absent. Normal
-mode keeps exit-status checking; it is not replaced by direct inspection of the
-authentication result.
+Failure to establish SFTP does not by itself mean that the key is absent. The SFTP
+check does not replace normal-mode exit-status checking with direct inspection of
+the authentication result.
 
 ### Recorded Difference: Existing Parent Directory of a Custom Target
 
@@ -471,7 +471,8 @@ prefixed `.pub` file through both transports and forced mode.
 ## Remote Operating Systems and Shells
 
 Implement the basic path for Unix-like destinations first, then extend it to
-Windows destinations. Do not require an OS option for normal use.
+Windows destinations. Do not require an OS option for normal use; assume a
+Unix-like destination by default, as the Linux version does.
 
 | Destination | Usual key file | Permission handling |
 | --- | --- | --- |
@@ -488,7 +489,7 @@ shell that executes the installation script. For example:
 `SSH → cmd.exe → powershell.exe → key installation`.
 
 - Use POSIX `sh` for Unix-like installation scripts without requiring Bash-specific features.
-- Use Windows PowerShell for Windows scripts, launched as described in [Windows remote command](#windows-remote-command).
+- Use Windows PowerShell for Windows scripts, launched as described in [Windows remote command](#windows-remote-command), and verify that the scripts also run under `pwsh`.
 - Test launching through `cmd`, Windows PowerShell, and `pwsh` as the default shell.
 - Do not infer the OS from the shell name; `pwsh`, for example, also runs on Linux.
 
@@ -594,6 +595,7 @@ duplicate checks and newline handling either.
 - Run `ls -l` on the target before `get`. A "No such file" answer means the file is missing; any other error stops the run before writing. Upstream's `-get` ignores every error and cannot make that distinction. Apparent intent of the leading `-`: tolerate the missing file of a first installation. Reason to differ: when `get` fails for another reason, upstream continues and uploads a file that holds only the new keys, which can replace the existing file. That is damage to data the user did not ask to change. This is difference D-09.
 - SFTP v3 Unix permission attributes alone cannot configure Windows ACLs. On Windows destinations, `-s` writes to `.ssh/authorized_keys` under the profile, the same default as Unix. It cannot set ACLs or learn whether the account is an administrator, so an existing directory with a correct ACL is a prerequisite (destination difference O-05). A key rejected afterwards is reported by the post-installation verification (D-06), with the suggestion to pass `-t` for the shared administrator file or to use normal mode.
 - Do not automatically fall back to remote commands when `-s` cannot establish the required permissions.
+- Test concurrent updates in `-s` mode to define the supported scope.
 
 ### Recorded Difference: Change Check Before Upload
 
@@ -629,8 +631,9 @@ Separate the CLI, key selection, installed-key checks, connections, destination
 policy, and file updates.
 
 The backend for the first two milestones is the system `ssh.exe`, and `sftp.exe`
-for `-s`. It reuses the user's SSH configuration, agent, jump hosts, and host key
-verification, and leaves authentication prompts to the client. A Rust SSH/SFTP
+for `-s`. It is expected to reuse the user's SSH configuration, authentication,
+agent, jump hosts, and host key verification; whether interactive prompts coexist
+with public key data on stdin is verified in stage 0. A Rust SSH/SFTP
 library is reconsidered only if it can satisfy the authentication delegation
 policy above without collecting credentials in this CLI, and handle SSH
 configuration, agents, jump hosts, and host key verification. A Rust SFTP
@@ -663,8 +666,9 @@ lists removed, made an absent selected key fail with `Permission denied` and an
 installed one succeed, both directly and through one jump host (validation row
 L01). This is not a production implementation. Arbitrary configuration
 serialization, `Match`, percent expansion, quoted paths, multiple jumps,
-certificates, agent selection, and multiplexing are not covered, which is why the
-first two milestones use the Inconclusive result instead.
+certificates, agent selection, and multiplexing are not covered. Isolation is a
+later optimization that turns Inconclusive into a conclusive result; the first
+two milestones do not require it.
 
 ## Initial Validation
 
@@ -694,7 +698,8 @@ Linux fixture, and stdout and exit status are compared where behavior is shared.
 
 Continuous integration (`.github/workflows/ci.yml`) runs `cargo fmt --check` and
 `cargo clippy -D warnings` on Linux, `cargo test` on Linux and Windows, and the
-Linux fixture, for every push to `main` and every pull request. The Windows
+Linux fixture, on GitHub-hosted runners for every push to `main` and every pull
+request. The Windows
 fixture needs KVM and a multi-gigabyte guest disk, so it runs on a self-hosted
 runner from `workflow_dispatch` only; pull requests from forks never reach it.
 

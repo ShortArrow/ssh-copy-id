@@ -13,5 +13,5 @@ result is stated in the [design](design.md).
 | The exact destination-detection probe command and its expected outputs | Validation row W09 |
 | How `-s` tells authentication rejection apart from other failures when the SFTP session cannot be established (D-02) | `-s` (stage 3) |
 | How much concurrency `-s` supports beyond the change check before upload (D-08) | `-s` (stage 3) |
-| Whether and when to generate a configuration that isolates the selected key, turning Inconclusive checks into conclusive ones | Selected-identity check (D-01) |
+| When to add the planned optimization that isolates the selected key, turning Inconclusive checks into conclusive ones | Selected-identity check (D-01) |
 | Where the self-hosted runner for the Windows fixture runs, and whether a prepared guest disk may be distributed to hosted runners | Windows fixture in CI; the evaluation image's redistribution terms |
