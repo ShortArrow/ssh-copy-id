@@ -200,7 +200,7 @@ compatibility suite is part of stage 1.5.
 | Operation or argument | Target behavior |
 | --- | --- |
 | `[user@]host` | Accept the destination, including host aliases from SSH configuration |
-| `-i [identity_file]` | Select the specified public key file, adding `.pub` if absent. The private key file, the same path without `.pub`, must exist unless `-f` is given, as upstream requires. A leading `~/` or `~\` is expanded with the home directory, because the Windows shells do not expand it. A second `-i` is an error, as upstream. Match upstream parsing when the argument is omitted |
+| `-i [identity_file]` | Select the specified public key file, adding `.pub` if absent. The private key file, the same path without `.pub`, must exist unless `-f` is given, as upstream requires. A leading `~/` or `~\` is expanded with the home directory, because the Windows shells do not expand it. A second `-i` is an error, as upstream. As upstream, when only one argument follows `-i`, that argument is the destination and `-i` has no file, and a readable file containing `ssh` there is reported as a missing hostname; otherwise `-i` takes the next argument unless it looks like one of the options `-[iopFtfnsxh?-]` |
 | No `-i` | Prefer public keys from the agent; otherwise select the most recently modified `~/.ssh/id*.pub`, excluding `*-cert.pub` |
 | `-p port` | Set the destination port |
 | `-o option`, `-F config` | Specify SSH options or a configuration file. Allow repeated `-o` arguments |
@@ -242,9 +242,13 @@ The check has three results.
 | Not installed | The server answered `Permission denied (…)`, so no candidate authenticated | Install the key |
 | Inconclusive | Another identity or certificate was a candidate, authentication used another method such as `none`, the session failed after authentication, or the client reported an error that matches no known pattern | Install the key and print the reason; duplicates are possible, as with `-f` |
 
-The probe runs with `LogLevel=VERBOSE`, and `ssh` then prints `Authenticated to
-… using "publickey"`; both tested clients do. Without that line a successful probe
-is not evidence: a server that accepts the `none` method, such as an account with
+The probe runs with `LogLevel=VERBOSE` and `-E` naming a fresh file in the temp
+directory, and `ssh` then writes `Authenticated to … using "publickey"` to that
+file; every tested client does. Banners and remote output stay on stderr, so a
+server cannot forge the line; text on stderr is never evidence of an installed
+key, while the `Permission denied` and connection patterns are matched on both.
+A log file that cannot be created or read makes the check Inconclusive. Without
+that line a successful probe is not evidence: a server that accepts the `none` method, such as an account with
 an empty password and `PermitEmptyPasswords yes`, lets the probe exit 0 with no
 key at all, and upstream then skips the key without installing it.
 
@@ -346,8 +350,10 @@ quotes and expand `!` even there.
 ### Recorded Difference: Targets That Cannot Be Appended Safely
 
 A target that exists but is not a regular file, such as a FIFO or a directory,
-and a non-empty target that cannot be read are not written; every key is
-reported failed. Upstream appends to an unreadable file without knowing whether
+a non-empty target that cannot be read, and any target when the home directory
+cannot be entered are not written; every key is reported failed. Upstream's `cd`
+failing leaves it in the server's working directory, where the relative target
+is not the account's file. Upstream appends to an unreadable file without knowing whether
 its last line ends with a newline, which can join the new key to that line, and
 opening a FIFO waits for a reader indefinitely. Apparent intent: upstream expects
 the target to be the account's own readable file. Reason to differ: damage to
@@ -357,21 +363,29 @@ D-16.
 ### Recorded Difference: Removing a Partial Write
 
 When appending a line fails, for example on a full file system, the script
-truncates the target back to its size before that line, including a newline it
-added before the first line; a file the run created is removed. Upstream leaves
+truncates the target back to its size before that key's group: the key line and
+the comment and blank lines written since the previous key, including a newline
+it added before the first line. A file the group created is removed, and later
+lines are not written. Before truncating, the script checks that the file is no
+larger than its size before the group plus the bytes the run tried to write; a
+larger file means another writer appended meanwhile, and nothing is truncated. Upstream leaves
 the fragment, so the file no longer ends with a newline and the next append joins
 onto it, while the run reports that the key was not written. Apparent intent:
 upstream reports a failed append as a failed run and expects nothing to be left.
 Reason to differ: damage to existing data and a false report that nothing was
-written. When the size afterwards cannot be confirmed, the key is reported
-`uncertain` and the user is told to check the file. This is difference D-17.
+written. When the size afterwards cannot be confirmed, or another writer
+prevented the truncation, the key is reported `uncertain`, the summary is
+`uncertain`, and the user is told to check the file. This is difference D-17.
 
 ### Dry-Run Behavior
 
 `-n` performs installed-key checks and displays the keys that would be installed.
 It does not create the destination directory or key file, append keys, or change
 their permissions. Connections for the check still occur unless `-f` skips it;
-`-n -f` makes no connection, as in upstream, where `-f` bypasses the probe loop.
+`-n -f` makes no authenticated connection, as in upstream, where `-f` bypasses
+the probe loop. Upstream still opens one connection without authentication to
+read the server's version for NetScreen detection; this tool makes that
+connection from stage 1.5, when NetScreen destinations are handled.
 Authentication logs, login hooks, host key handling, and user-configured
 `AddKeysToAgent` behavior may still occur as part of those connections.
 
@@ -515,7 +529,10 @@ prefixed `.pub` file through both transports and forced mode.
 #### Recorded Difference: Counting Keys
 
 `#` comment lines and blank lines in the key file are appended as upstream
-appends them. Upstream also counts them in "Number of key(s) added" and in the
+appends them. A comment line is one whose first character other than a space or
+tab is `#`; a blank line holds only spaces and tabs. The local check and the
+remote script use the same rule, and a run whose reported key count differs
+from the keys sent ends with an unknown outcome. Upstream also counts them in "Number of key(s) added" and in the
 keys that remain to be installed. Here only key lines are numbered, reported,
 and counted. Apparent intent: upstream expects one key per line. Reason to
 differ: a false report of how many keys were installed. This is difference D-18.
@@ -627,7 +644,7 @@ or `ForwardX11` does not reach a host that is only being set up.
 
 | Phase | Options this tool sets | User options |
 | --- | --- | --- |
-| Installed-key check | `-a`, `-x`, `ControlPath=none`, `LogLevel=VERBOSE`, `PreferredAuthentications=publickey`, `IdentitiesOnly=yes`, and `-i` with the selected key | `-o`, `-F`, `-p`, and the user's configuration are passed through after the overrides |
+| Installed-key check | `-a`, `-x`, `-E` with a temporary log file, `ControlPath=none`, `LogLevel=VERBOSE`, `PreferredAuthentications=publickey`, `IdentitiesOnly=yes`, and `-i` with the selected key | `-o`, `-F`, `-p`, and the user's configuration are passed through after the overrides |
 | Installation | `-a`, `-x`, `RequestTTY=no` (D-15) | passed through after the override |
 | `-s` transfer | a control master shared by the `sftp` sessions, as upstream | passed through unchanged |
 
@@ -733,8 +750,9 @@ behavior. Implementing the SSH protocol from scratch is not the plan.
 
 Authentication results are classified from the client's exit status and a short
 list of stderr patterns: `Permission denied`, host key verification failure, and
-connection failure. The tested clients are `OpenSSH_for_Windows_9.5p2` and
-OpenSSH `9.6p1` as packaged in Ubuntu 24.04, which the fixtures exercise. Each
+connection failure. The tested clients are `OpenSSH_for_Windows_9.5p2`,
+`OpenSSH_10.0p2` from Git for Windows, and OpenSSH `9.6p1` as packaged in Ubuntu
+24.04 (`OpenSSH_9.6p1 Ubuntu-3ubuntu13`), which the fixtures exercise. Each
 release lists its tested client versions, and a version is added after the
 fixtures pass with it; every pattern is checked against every listed version. With any other
 client version the tool prints a warning and continues. Output that matches no

@@ -15,7 +15,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   matching private key must exist, and a repeated `-i` is an error. The default
   target follows upstream, including the OpenWrt and Haiku locations.
 - The key is checked first and skipped only when it alone authenticated with
-  `publickey`. Success with another configured identity, an identity named
+  `publickey`, as recorded in the client's own log rather than in output a
+  server can write. Success with another configured identity, an identity named
   with a `%` token, or the `none` method is not taken as installed (D-01). The
   key is verified after writing (D-06).
 - Reject private key material (D-04), CRLF line endings are normalized (D-05), a
@@ -32,7 +33,9 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 - The installation runs without a terminal, so `RequestTTY=force` in the
   configuration cannot leave it waiting (D-15).
 - Warn when the `ssh` client version has not been tested; an unknown check
-  result is reported instead of guessed (D-13).
+  result is reported instead of guessed (D-13). Tested clients:
+  `OpenSSH_for_Windows_9.5p2`, Git for Windows `OpenSSH_10.0p2`, and Ubuntu
+  24.04's `OpenSSH_9.6p1`.
 - Without a console or `SSH_ASKPASS`, `ssh` runs with `BatchMode=yes` and fails
   at once instead of waiting for a password. Ctrl-C ends `ssh` but not the CLI,
   which reports the result.
