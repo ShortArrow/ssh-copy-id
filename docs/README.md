@@ -20,5 +20,5 @@ and [Windows dockur fixture](../tests/environments/windows/README.md).
 - If a decision originated in the review, record its disposition there and link to the design. Keep unaccepted proposals distinct from accepted requirements.
 - Describe upstream differences neutrally; do not label them as defects or bug fixes without an explicit decision to do so. Each recorded difference states the apparent upstream intent and the reason to differ, taken from the design stance list (DL-24).
 - Distinguish accepted designs from implemented and verified behavior. Record verification narratives in the validation document; the design document keeps one line and a link per area.
-- Record each decision once, in the section it affects, and add a row to the design document's decision log with the next `DL-xx` ID. Name that ID in the commit message.
+- Record each decision once, in the section it affects, and add a row to the design document's decision log with the next `DL-xx` ID. Name that ID in the commit message, together with any difference ID (`D-xx`, `O-xx`) the change implements.
 - Check relative links and section anchors when moving or renaming documents or headings.

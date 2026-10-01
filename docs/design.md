@@ -92,16 +92,20 @@ are rows of the [validation matrix](validation.md).
 
 | Stage | Release | Content | Done when |
 | --- | --- | --- | --- |
-| 0. Feasibility | none | Prototype of `ssh.exe` on Windows with authentication prompts while public keys go to stdin; a Linux sshd fixture for CLI integration tests | A01 passes for a password, an encrypted key's passphrase, cancellation, and no terminal; L02 passes and runs in CI |
+| 0. Feasibility | none | Prototype of `ssh.exe` on Windows with authentication prompts while public keys go to stdin; a Linux sshd fixture for CLI integration tests | A01 passes for a password, an encrypted key's passphrase, agent confirmation, cancellation, and no terminal; L02 passes and runs in CI |
 | 1. Unix destination, one key | v0.0.1 | `[user@]host`, `-i file`, `-p`, `-o`, `-F`; the installed-key check with three results; the `sh` installation script with result lines; post-installation verification; exit statuses | Initial requirements 1, 2, 3, 7, and 8 pass as tests against L02 |
-| 1.5. CLI compatibility | v0.0.2 | `-n`, `-f`, `-i` without a file, default key selection, agent keys, `-x`, upstream messages | Requirements 4 and 5 pass; golden tests against the pinned script (P01) pass for the shared behavior |
+| 1.5. CLI compatibility | v0.0.2 | `-n`, `-f`, `-t` on Unix-like destinations, `-i` without a file, default key selection, agent keys, `-x`, upstream messages | Requirements 4 and 5 pass; the D-03 and D-11 tests pass; golden tests against the pinned script (P01) pass for the shared behavior |
 | 2. Windows standard user | v0.1.0 | Destination detection, the PowerShell installation script, ACLs on new objects | W06, W07, and W09 pass before the implementation; requirements 1, 2, 3, 7, and 8 pass against the dockur fixture |
-| 3. Later increments | 0.1.x or later | Shared administrator file, `-s` (requirement 6), Linux packages | Decided per increment |
+| 3. Later increments | 0.1.x or later | Shared administrator file, `-t` on Windows destinations (W08), `-s` (requirement 6), Linux packages | Decided per increment |
 
+Stages 1 and 2 are the first and second milestones that earlier decisions
+refer to; a statement about "the first two milestones" covers stages 1, 1.5, and 2.
 Stage 0 comes first because a failed prototype would invalidate the backend
 decision (DL-12) that stages 1 to 3 build on. The Windows evaluation guest
-reported a grace period of 114,769 minutes on 2026-09-30, so it expires around
-2026-12-19; the stage 2 fixture scenarios run before then or on a rebuilt guest.
+reported a grace period of 114,769 minutes on 2026-09-30
+([measurement](validation.md#evaluation-license-2026-09-30)), so it expires
+around 2026-12-19; the stage 2 fixture scenarios run before then or on a
+rebuilt guest.
 
 ### Out of Scope
 
@@ -157,14 +161,16 @@ support is already available.
 
 ### Versioning and Release
 
-Decision recorded on 2026-09-30, following the owner's runex and gitreant
-repositories.
+Decision recorded on 2026-09-30 and corrected on 2026-10-01 (DL-46), following
+the owner's runex and gitreant repositories. Each bullet names the repository
+it follows.
 
 - Versions follow Semantic Versioning. Releases start at 0.0.1 with stage 1, stage 1.5 is 0.0.2, and Windows destination support in stage 2 is 0.1.0. From 0.1.0 until 1.0.0, a breaking change to the command line bumps the minor version and anything else bumps the patch.
-- The branching model is trunk-based. `main` is always releasable, and changes reach it through pull requests from short-lived branches named after their issue (`feat/`, `fix/`, `docs/`, `ci/`). The version bump commit is the one commit pushed to `main` directly. The owner's general rule of GitFlow for versioned packages is not applied, for the reason runex retired its `develop` branch: every change already lands as a self-contained pull request, so an integration branch only delays fixes.
-- Releases are annotated `vX.Y.Z` tags on `main`. A tag containing `-`, such as `v0.0.1-pre`, is published as a prerelease and rehearses the pipeline.
-- `CHANGELOG.md` follows Keep a Changelog. Every user-visible change adds an entry under `[Unreleased]`, which a release renames to the version and date. An entry names the difference IDs it adds or changes.
-- `release.yml` is written before v0.0.1, modeled on runex and gitreant: tests on Linux, Windows, and macOS gate the release, then builds, a GitHub release, and publishing to crates.io through trusted publishing with OIDC. The crate name is `ssh-copy-id`; it and `ssh-copy-id-rs` were both unused on crates.io on 2026-09-30.
+- The branching model is trunk-based, as in runex. `main` is always releasable, and changes reach it through pull requests from short-lived branches named after their issue when one exists (`feat/`, `fix/`, `docs/`, `ci/`). The commit that bumps the version to cut a release is the one commit pushed to `main` directly. The owner's general rule of GitFlow for versioned packages is not applied, for the reason runex retired its `develop` branch: every change already lands as a self-contained pull request, so an integration branch only delays fixes.
+- Releases are signed annotated tags `vX.Y.Z` on `main`, created with `git tag -s` and checked with `git tag -v`, as runex now requires; runex's tags through v0.1.20 were annotated but unsigned while every commit was signed. A tag containing `-`, such as `v0.0.1-pre`, is a prerelease, as in gitreant, and is signed as well. A prerelease rehearses the pipeline without publishing to crates.io: unlike gitreant, where only `[skip publish]` in the tagged commit stops publishing, the publish job here skips every tag containing `-`, because a crates.io version cannot be reused once published.
+- `CHANGELOG.md` follows Keep a Changelog, as in runex; gitreant has no changelog. Every user-visible change adds an entry under `[Unreleased]`, which a release renames to the version and date. An entry names the difference IDs it adds or changes.
+- `release.yml` is written before v0.0.1, modeled on runex and gitreant, which both do the following: tests on Linux, Windows, and macOS gate the release, then builds, a GitHub release, and publishing to crates.io through trusted publishing with OIDC. A release checklist in `CONTRIBUTING.md` comes with it, as in runex. The crate name is `ssh-copy-id`; it and `ssh-copy-id-rs` returned 404 from the crates.io API on 2026-09-30 and 2026-10-01.
+- v0.0.1 is published to crates.io and as a GitHub release only. Other channels, such as winget, which runex and gitreant also use, are decided later.
 - Open: `cargo install` on Linux installs a binary named `ssh-copy-id`, which can shadow OpenSSH's command in `PATH`, unlike the `ssh-copy-id-rs` name chosen for Linux packages.
 
 ## Compatibility with the Linux Version
@@ -633,8 +639,8 @@ Decision recorded on 2026-09-24: the first two milestones invoke the system
 `ssh.exe`, and `sftp.exe` for `-s`. Authentication results are classified from
 the client's exit status and a short list of stderr patterns. Each pattern is
 tested against every supported OpenSSH client version, and the supported versions
-are listed with each release; a client outside that list gets a stated error, not
-a guess. A Rust SFTP implementation is re-evaluated only for appending in `-s`
+are listed with each release. Superseded by DL-44 on 2026-09-30: a client outside
+that list gets a warning, not an error, as the next paragraph describes. A Rust SFTP implementation is re-evaluated only for appending in `-s`
 mode. Implementing the SSH protocol from scratch is not the plan.
 
 Decision recorded on 2026-09-30 and revised the same day (DL-44): the tested
@@ -744,7 +750,7 @@ index. Commit messages name decisions by ID.
 | DL-09 | 2026-09-20 | Respect `AddKeysToAgent`; never invoke `ssh-add` to add keys | [Agent use](#agent-use-and-user-configuration) |
 | DL-10 | 2026-09-20 | Delegate password and passphrase prompts to the SSH client | [Authentication interaction](#authentication-interaction) |
 | DL-11 | 2026-09-24 | Design stance: four commitments and the difference procedure | [Design stance](#design-stance) |
-| DL-12 | 2026-09-24 | Backend: `ssh.exe` and `sftp.exe`; classification by exit status and tested stderr patterns | [Connection backend](#connection-backend-evaluation) |
+| DL-12 | 2026-09-24 | Backend: `ssh.exe` and `sftp.exe`; classification by exit status and tested stderr patterns; untested clients revised by DL-44 | [Connection backend](#connection-backend-evaluation) |
 | DL-13 | 2026-09-24 | Four outcomes on a result line; exit statuses 0 and 1 | [Installation outcome](#installation-outcome) |
 | DL-14 | 2026-09-24 | D-01 has three results; an inconclusive check installs with a warning | [Selected identity](#recorded-difference-identity-used-for-the-installed-key-check) |
 | DL-15 | 2026-09-24 | D-06: verify each written key after installation | [Post-installation verification](#recorded-difference-post-installation-verification) |
@@ -766,7 +772,7 @@ index. Commit messages name decisions by ID.
 | DL-31 | 2026-09-24 | D-07: remove a leading byte order mark from the input | [Leading BOM removal](#leading-bom-removal) |
 | DL-32 | 2026-09-24 | D-08: `-s` stops before `put` when the target changed since `get` | [Change check before upload](#recorded-difference-change-check-before-upload) |
 | DL-33 | 2026-09-30 | Result lines: one per key, then a summary line; path characters encoded as `%XX` | [Installation outcome](#installation-outcome) |
-| DL-34 | 2026-09-30 | Initial supported clients: Windows 9.5p2 and Ubuntu 24.04 9.6p1; three stderr patterns | [Connection backend](#connection-backend-evaluation) |
+| DL-34 | 2026-09-30 | Initial tested clients: Windows 9.5p2 and Ubuntu 24.04 9.6p1; three stderr patterns; revised by DL-44 | [Connection backend](#connection-backend-evaluation) |
 | DL-35 | 2026-09-30 | Certificate and `cert-authority` lines pass through; checks report them as Inconclusive | [CRLF normalization](#crlf-normalization) |
 | DL-36 | 2026-09-30 | Index D-09 to D-14, which DL-12, DL-18, DL-26, DL-27, DL-28, and DL-30 had introduced without rows | [Differences](compatibility.md) |
 | DL-37 | 2026-09-30 | Relative `-t` paths start at the home or profile directory; normal mode appends without a lock, as upstream | [Custom parent](#recorded-difference-existing-parent-directory-of-a-custom-target) |
@@ -775,9 +781,11 @@ index. Commit messages name decisions by ID.
 | DL-40 | 2026-09-30 | Delivery plan with stage 0 first and completion checks per stage | [Delivery plan](#delivery-plan) |
 | DL-41 | 2026-09-30 | The first milestone covers requirements 1, 2, 3, 7, and 8 | [Initial validation](#initial-validation) |
 | DL-42 | 2026-09-30 | Semantic Versioning from 0.0.1; stage 1 is 0.0.1, stage 1.5 is 0.0.2, stage 2 is 0.1.0 | [Versioning and release](#versioning-and-release) |
-| DL-43 | 2026-09-30 | Trunk-based branches, annotated `vX.Y.Z` tags, prerelease tags with `-`, Keep a Changelog, `release.yml` before v0.0.1 | [Versioning and release](#versioning-and-release) |
+| DL-43 | 2026-09-30 | Trunk-based branches, `vX.Y.Z` tags, prerelease tags with `-`, Keep a Changelog, `release.yml` before v0.0.1; corrected by DL-46 | [Versioning and release](#versioning-and-release) |
 | DL-44 | 2026-09-30 | D-13 revised: untested client versions warn and continue; unclassifiable output is Inconclusive | [Connection backend](#connection-backend-evaluation) |
 | DL-45 | 2026-09-30 | README marks unpublished install channels as unpublished and shows a source build | [README](../README.md) |
+| DL-46 | 2026-10-01 | Signed tags; prereleases never publish to crates.io; v0.0.1 goes to crates.io and GitHub only; each practice attributed to its source repository | [Versioning and release](#versioning-and-release) |
+| DL-47 | 2026-10-01 | Agent confirmation joins stage 0; `-t` on Unix in stage 1.5 and on Windows (W08) in stage 3; stages 1 and 2 are the two milestones | [Delivery plan](#delivery-plan) |
 
 ## References
 

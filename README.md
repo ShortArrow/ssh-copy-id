@@ -25,7 +25,7 @@ Differences from upstream: [English](docs/compatibility.md) | [日本語](docs/c
 ## Install
 
 Not published yet. The first release, v0.0.1, will be published to crates.io
-and winget; see the [delivery plan](docs/design.md#delivery-plan). The command
+and as a GitHub release; see the [delivery plan](docs/design.md#delivery-plan). The command
 does not install keys yet. To build the current source, with Rust installed:
 
 ```powershell
