@@ -1,10 +1,12 @@
 #!/bin/sh
-# Sets pwuser's password and keyuser's control key from the environment, then
-# runs sshd in the foreground. The caller generates both for each run.
+# Sets the password of pwuser and cshuser and keyuser's control key from the
+# environment, then runs sshd in the foreground. The caller generates both for each run.
 set -eu
 if [ -n "${PWUSER_PASSWORD:-}" ]; then
-    printf 'pwuser:%s\n' "$PWUSER_PASSWORD" | chpasswd
-    passwd -u pwuser >/dev/null
+    for user in pwuser cshuser; do
+        printf '%s:%s\n' "$user" "$PWUSER_PASSWORD" | chpasswd
+        passwd -u "$user" >/dev/null
+    done
 fi
 if [ -n "${CONTROL_PUBLIC_KEY:-}" ]; then
     case "$CONTROL_PUBLIC_KEY" in

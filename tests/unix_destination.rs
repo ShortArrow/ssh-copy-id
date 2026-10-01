@@ -1,4 +1,5 @@
-//! Stage 1 behavior against the L02 Linux fixture: requirements 1, 2, 3, 7, and 8.
+//! Stage 1 behavior against the L02 Linux fixture: requirements 1, 2, 3, 7, and 8,
+//! and design D-15.
 //!
 //! Each test starts its own container from the `ssh-copy-id-l02:local` image on a
 //! free loopback port. Build the image first and run these tests explicitly:
@@ -9,12 +10,14 @@
 //! ```
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const IMAGE: &str = "ssh-copy-id-l02:local";
+const COPY_ID_TIMEOUT: Duration = Duration::from_secs(60);
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 struct Fixture {
@@ -117,14 +120,14 @@ impl Fixture {
         ]
     }
 
-    fn askpass(&self) -> PathBuf {
+    fn askpass(&self, password: &str) -> PathBuf {
         if cfg!(windows) {
             let path = self.work.join("askpass.cmd");
-            fs::write(&path, format!("@echo {}\r\n", self.password)).unwrap();
+            fs::write(&path, format!("@echo {password}\r\n")).unwrap();
             path
         } else {
             let path = self.work.join("askpass");
-            fs::write(&path, format!("#!/bin/sh\necho '{}'\n", self.password)).unwrap();
+            fs::write(&path, format!("#!/bin/sh\necho '{password}'\n")).unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -135,6 +138,12 @@ impl Fixture {
     }
 
     fn copy_id(&self, key: &Path, user: &str, extra: &[&str]) -> Output {
+        self.copy_id_answering(&self.password, key, user, extra)
+    }
+
+    /// Runs the CLI with an askpass program that answers `password`, and fails the
+    /// test when the run takes longer than `COPY_ID_TIMEOUT`.
+    fn copy_id_answering(&self, password: &str, key: &Path, user: &str, extra: &[&str]) -> Output {
         let mut args: Vec<String> = vec![
             "-i".into(),
             key.display().to_string(),
@@ -151,13 +160,33 @@ impl Fixture {
         ];
         args.extend(extra.iter().map(|s| s.to_string()));
         args.push(format!("{user}@127.0.0.1"));
-        Command::new(env!("CARGO_BIN_EXE_ssh-copy-id"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ssh-copy-id"))
             .args(&args)
-            .env("SSH_ASKPASS", self.askpass())
+            .env("SSH_ASKPASS", self.askpass(password))
             .env("SSH_ASKPASS_REQUIRE", "force")
             .stdin(Stdio::null())
-            .output()
-            .unwrap()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = drain(child.stdout.take().unwrap());
+        let stderr = drain(child.stderr.take().unwrap());
+        let deadline = Instant::now() + COPY_ID_TIMEOUT;
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                panic!("ssh-copy-id did not finish within {COPY_ID_TIMEOUT:?}");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        Output {
+            status,
+            stdout: stdout.join().unwrap(),
+            stderr: stderr.join().unwrap(),
+        }
     }
 
     fn exec(&self, user: &str, script: &str) -> Output {
@@ -183,6 +212,10 @@ impl Fixture {
                 .exec(user, "cat .ssh/authorized_keys 2>/dev/null")
                 .stdout,
         )
+    }
+
+    fn read_as_root(&self, path: &str) -> String {
+        text(&command("docker", &["exec", &self.container, "cat", path]).stdout)
     }
 
     fn logs_in_with(&self, key: &Path, user: &str) -> bool {
@@ -212,6 +245,14 @@ fn command(program: &str, args: &[&str]) -> Output {
         .stdin(Stdio::null())
         .output()
         .unwrap()
+}
+
+fn drain(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        bytes
+    })
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -349,4 +390,117 @@ fn i7_requirement_8_a_host_key_mismatch_writes_nothing() {
         "the run must stop at the check, before the installation step: {stderr}"
     );
     assert_eq!(fixture.authorized_keys("pwuser"), "");
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i8_a_tcsh_login_shell_runs_the_installation_command() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "cshuser", &[]);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert_eq!(
+        fixture.authorized_keys("cshuser"),
+        format!("{}\n", public_line(&key))
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i9_requirement_2_an_empty_file_gets_no_leading_newline() {
+    let fixture = Fixture::start();
+    let setup = fixture.exec(
+        "pwuser",
+        "umask 077 && mkdir -p .ssh && : > .ssh/authorized_keys",
+    );
+    assert!(setup.status.success());
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &[]);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert_eq!(
+        fixture.authorized_keys("pwuser"),
+        format!("{}\n", public_line(&key))
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i10_requirement_3_an_unreadable_file_is_not_written() {
+    let fixture = Fixture::start();
+    let setup = fixture.exec(
+        "pwuser",
+        "umask 077 && mkdir -p .ssh && printf 'existing' > .ssh/authorized_keys && chmod 200 .ssh/authorized_keys",
+    );
+    assert!(setup.status.success());
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &[]);
+    assert_eq!(run.status.code(), Some(1), "{}", text(&run.stderr));
+    assert_eq!(
+        fixture.read_as_root("/home/pwuser/.ssh/authorized_keys"),
+        "existing"
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i11_requirement_8_a_failed_password_login_writes_nothing() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id_answering("wrong-password", &key, "pwuser", &[]);
+    let stderr = text(&run.stderr);
+    let stdout = text(&run.stdout);
+    assert_eq!(run.status.code(), Some(1), "{stderr}");
+    assert!(!stderr.contains("Number of key(s) added"), "{stderr}");
+    assert!(!stdout.contains("Number of key(s) added"), "{stdout}");
+    assert!(
+        fixture
+            .exec("pwuser", "test ! -e .ssh/authorized_keys")
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i12_requirement_7_key_paths_with_spaces_quotes_and_japanese_are_used_as_given() {
+    let fixture = Fixture::start();
+    let dir = fixture.work.join("dir 名前 'q'");
+    fs::create_dir_all(&dir).unwrap();
+    let key = keygen(&dir, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &[]);
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("the key authenticates"), "{stderr}");
+    assert_eq!(
+        fixture.authorized_keys("pwuser"),
+        format!("{}\n", public_line(&key))
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i13_d15_a_forced_tty_does_not_hang_the_installation() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &["-o", "RequestTTY=force"]);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert_eq!(
+        fixture.authorized_keys("pwuser"),
+        format!("{}\n", public_line(&key))
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i14_requirement_1_none_authentication_is_not_taken_as_installed() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "emptyuser", &[]);
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(!stderr.contains("All keys were skipped"), "{stderr}");
+    assert_eq!(
+        fixture.authorized_keys("emptyuser"),
+        format!("{}\n", public_line(&key))
+    );
 }
