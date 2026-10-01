@@ -2,8 +2,8 @@
 
 This document tracks experiments against the accepted [design](design.md).
 Passing a fixture test demonstrates the tested OpenSSH behavior; it does not
-demonstrate that the Rust product implements it. The Rust entry point is still a
-placeholder. Behavioral differences remain indexed in [compatibility](compatibility.md).
+demonstrate that the Rust product implements it; product behavior is covered by
+the U rows. Behavioral differences remain indexed in [compatibility](compatibility.md).
 
 ## Recording Policy
 

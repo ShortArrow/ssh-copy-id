@@ -33,8 +33,9 @@ Every decision in this document follows four commitments.
    without that reading.
 2. Differ from upstream only for a reason on this list: a false success or false
    failure report, damage to data the user did not ask to change, transmission of
-   private material, or an operation that a supported platform cannot perform.
-   The reason is written next to the difference.
+   private material, an operation that a supported platform cannot perform, or
+   a run that never ends without reporting an outcome. The reason is written
+   next to the difference.
 3. Give Unix-like and Windows destinations the same observable behavior wherever
    the platform allows: the same options, outcome states, exit statuses, and
    messages. Where the platform forbids parity, the difference is a destination
@@ -95,7 +96,7 @@ Each stage ends when its checks pass; the IDs are rows of the
 | --- | --- | --- | --- |
 | 0. Feasibility | none | Prototype of `ssh.exe` on Windows with authentication prompts while public keys go to stdin; a Linux sshd fixture for CLI integration tests | A01 passes for a password, an encrypted key's passphrase, agent confirmation (or the agent's refusal of it), cancellation, and no terminal; L02 passes and runs in CI |
 | 1. Unix destination, one key (first milestone) | v0.0.1 | `[user@]host`, `-i file`, `-p`, `-o`, `-F`; the installed-key check with three results; the `sh` installation script with result lines; post-installation verification; exit statuses | Initial requirements 1, 2, 3, 7, and 8 pass as tests against L02 |
-| 1.5. CLI compatibility | v0.0.2 before stage 2; otherwise per the versioning rule | `-n`, `-f`, `-t` on Unix-like destinations, `-i` without a file, key files with several keys, default key selection, agent keys, `-x`, upstream messages | Requirements 4 and 5 pass; the D-03 and D-11 tests pass; golden tests against the pinned script (P01) pass for the shared behavior |
+| 1.5. CLI compatibility | v0.0.2 before stage 2; otherwise per the versioning rule | `-n`, `-f`, `-t` on Unix-like destinations, `-i` without a file, key files with several keys, default key selection, agent keys, `-x`, upstream messages, NetScreen destinations | Requirements 4 and 5 pass; the D-03 and D-11 tests pass; golden tests against the pinned script (P01) pass for the shared behavior |
 | 2. Windows standard user (second milestone) | v0.1.0 | One explicitly selected key for one standard user in normal mode: destination detection, the PowerShell installation script, ACLs on new objects | W06, W09, and W07's first check (whether an inherited profile ACL alone passes) pass before the implementation; requirements 1, 2, 3, 7, and 8 pass against the dockur fixture |
 | 3. Later increments | 0.1.x or later | Shared administrator file (the rest of W07), `-t` on Windows destinations (W08), `-s` (requirement 6), Linux packages | Decided per increment |
 
@@ -199,7 +200,7 @@ compatibility suite is part of stage 1.5.
 | Operation or argument | Target behavior |
 | --- | --- |
 | `[user@]host` | Accept the destination, including host aliases from SSH configuration |
-| `-i [identity_file]` | Select the specified public key file, adding `.pub` if absent. Match upstream parsing when the argument is omitted |
+| `-i [identity_file]` | Select the specified public key file, adding `.pub` if absent. The private key file, the same path without `.pub`, must exist unless `-f` is given, as upstream requires. A leading `~/` or `~\` is expanded with the home directory, because the Windows shells do not expand it. A second `-i` is an error, as upstream. Match upstream parsing when the argument is omitted |
 | No `-i` | Prefer public keys from the agent; otherwise select the most recently modified `~/.ssh/id*.pub`, excluding `*-cert.pub` |
 | `-p port` | Set the destination port |
 | `-o option`, `-F config` | Specify SSH options or a configuration file. Allow repeated `-o` arguments |
@@ -237,11 +238,23 @@ The check has three results.
 
 | Result | Condition | Consequence |
 | --- | --- | --- |
-| Installed | The selected key was the only candidate the client could offer, and the probe succeeded | Skip the key |
-| Not installed | The selected key was the only candidate, and the server answered `Permission denied` | Install the key |
-| Inconclusive | Another identity or certificate was a candidate, the session failed after authentication, or the client reported another error | Install the key and print the reason; duplicates are possible, as with `-f` |
+| Installed | The selected key was the only candidate the client could offer, the probe succeeded, and `ssh` reported authentication with the `publickey` method | Skip the key |
+| Not installed | The server answered `Permission denied (…)`, so no candidate authenticated | Install the key |
+| Inconclusive | Another identity or certificate was a candidate, authentication used another method such as `none`, the session failed after authentication, or the client reported an error that matches no known pattern | Install the key and print the reason; duplicates are possible, as with `-f` |
 
-Whether other candidates exist is read from `ssh -G`. Generating a configuration that isolates the
+The probe runs with `LogLevel=VERBOSE`, and `ssh` then prints `Authenticated to
+… using "publickey"`; both tested clients do. Without that line a successful probe
+is not evidence: a server that accepts the `none` method, such as an account with
+an empty password and `PermitEmptyPasswords yes`, lets the probe exit 0 with no
+key at all, and upstream then skips the key without installing it.
+
+Whether other candidates exist is read from `ssh -G`: every `identityfile` other
+than the selected key whose file exists, every `certificatefile` whose file
+exists, the selected key's own `-cert.pub` or `-cert` file, and a `pkcs11provider`
+other than `none`. An `identityfile` that names the same file as the selected key
+by another path, such as `~/.ssh/id_ed25519` against an absolute `-i`, is the
+selected key and not a candidate. A value containing `%` tokens or `${…}`, which
+`ssh -G` prints unexpanded, is counted as a candidate. Generating a configuration that isolates the
 selected key would turn Inconclusive into a conclusive result; it is not needed
 for the first two milestones, and it has limits stated in
 [selected-key isolation](#selected-identity-experiment-results).
@@ -321,9 +334,15 @@ upstream's `-x`: trace the shell script itself. Reason to differ: a compiled
 program has no shell trace, so the platform cannot perform the upstream behavior.
 This is difference D-14; the output format differs, the purpose does not.
 
-The upstream special cases stay: OpenWrt as root installs into
-`/etc/dropbear/authorized_keys`, Haiku uses `config/settings/ssh/authorized_keys`,
-and NetScreen keys are installed one per command as upstream does.
+The upstream special cases stay. For the default target, OpenWrt as root
+installs into `/etc/dropbear/authorized_keys` and Haiku uses
+`config/settings/ssh/authorized_keys`. NetScreen keys are installed one per
+command as upstream does; that case belongs to stage 1.5.
+
+The Unix installation command is one line, as upstream's is, so that csh and
+tcsh login shells can run `exec sh -c '…'`: they reject a newline inside single
+quotes and expand `!` even there. A non-empty target file that cannot be read is
+not written, because its last byte cannot be checked for a final newline.
 
 ### Dry-Run Behavior
 
@@ -574,9 +593,24 @@ overrides and nothing more.
 
 | Phase | Options this tool sets | User options |
 | --- | --- | --- |
-| Installed-key check | `ControlPath=none`, `LogLevel=INFO`, `PreferredAuthentications=publickey`, `IdentitiesOnly=yes`, and `-i` with the selected key | `-o`, `-F`, `-p`, and the user's configuration are passed through after the overrides |
-| Installation | none | passed through unchanged |
+| Installed-key check | `ControlPath=none`, `LogLevel=VERBOSE`, `PreferredAuthentications=publickey`, `IdentitiesOnly=yes`, and `-i` with the selected key | `-o`, `-F`, `-p`, and the user's configuration are passed through after the overrides |
+| Installation | `RequestTTY=no` (D-15) | passed through after the override |
 | `-s` transfer | a control master shared by the `sftp` sessions, as upstream | passed through unchanged |
+
+Upstream sets `LogLevel=INFO` for the probe; `VERBOSE` adds the authentication
+method to the captured output, which the user does not see, and is not a
+difference.
+
+### Recorded Difference: No Terminal for the Installation
+
+The installation connection sets `RequestTTY=no` ahead of the user's options, so
+a configured `RequestTTY force` or `yes` does not allocate a terminal for it.
+Upstream passes the user's setting through; with a forced terminal, end of input
+never reaches the remote script through the pseudo terminal, and the run waits
+indefinitely after writing the key. Apparent intent: upstream relies on the
+default, which allocates no terminal for a command with redirected input. Reason
+to differ: a run that never ends without reporting an outcome. This is
+difference D-15.
 
 The agent is whichever one the SSH client selects through `SSH_AUTH_SOCK` and
 `IdentityAgent`; `ssh-add -L` reads `SSH_AUTH_SOCK` only, so a host-specific
@@ -638,8 +672,9 @@ when there is no console, while upstream on Unix fails at once when it cannot
 open a terminal. The rule keeps that upstream behavior on Windows and is not a
 difference.
 
-While `ssh` runs, the CLI does not end on a console Ctrl-C: it waits for `ssh`
-to exit and reports the outcome from what `ssh` returned. With Git for Windows'
+From the start of the run, the CLI does not end on a console Ctrl-C: while `ssh`
+runs, it waits for `ssh` to exit and reports the outcome from what `ssh`
+returned. With Git for Windows'
 client, Ctrl-C reaches the CLI as well as `ssh`; ending first would leave the
 outcome unreported. The Windows OpenSSH agent refuses keys added with
 confirmation (`ssh-add -c` answers `agent refused operation`), so no

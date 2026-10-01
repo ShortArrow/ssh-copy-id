@@ -32,6 +32,7 @@ is in the [validation matrix](validation.md#matrix).
 | D-12 | Sends the `sh` script without checking the destination; has no OS option. | In normal mode, detect the shell family with one more connection before writing; `--target-os` overrides. | [Remote operating systems](design.md#remote-operating-systems-and-shells) |
 | D-13 | Runs with any OpenSSH client. | Warns on client versions whose stderr patterns were not tested; output it cannot classify makes the check inconclusive. | [Connection backend](design.md#connection-backend-evaluation) |
 | D-14 | `-x` enables the shell's `set -x` trace. | `-x` prints each client command and the remote script before running them. | [Exit statuses and messages](design.md#exit-statuses-messages-and-special-destinations) |
+| D-15 | Passes the user's `RequestTTY` to the installation connection; with a forced terminal the run never ends. | Sets `RequestTTY=no` for the installation connection ahead of the user's options. | [No terminal for the installation](design.md#recorded-difference-no-terminal-for-the-installation) |
 
 ## Destination Differences
 
