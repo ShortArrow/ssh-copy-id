@@ -41,6 +41,9 @@ pub enum ArgsError {
     MissingIdentity,
     /// `-i` was not followed by a file name; default key selection is not available yet.
     IdentityWithoutFile,
+    /// `-i` was followed only by the last argument, which upstream takes as the destination, so `-i` has no file.
+    /// Holds that argument: upstream reports a missing hostname when it is a readable file containing `ssh`.
+    IdentityBeforeDestinationOnly(String),
     /// `-i` was given more than once.
     RepeatedIdentity,
     /// An upstream option that this release does not implement yet.
@@ -54,7 +57,8 @@ pub enum ArgsError {
 /// Options follow upstream's `getopts` rules: they end at `--` or at the first
 /// argument that does not start with `-`, flags may be grouped, and `-o`, `-F`
 /// and `-p` take their value attached or as the next argument. `-i` takes the
-/// next argument as its file, as upstream does.
+/// next argument as its file unless it looks like an option, as upstream does; when
+/// that argument is the last one, it is the destination and `-i` has no file.
 pub fn parse(args: &[String]) -> Result<Invocation, ArgsError> {
     let mut identity: Option<String> = None;
     let mut port = None;
@@ -64,6 +68,9 @@ pub fn parse(args: &[String]) -> Result<Invocation, ArgsError> {
         index += 1;
         if arg == "--" {
             break;
+        }
+        if arg.starts_with("--") {
+            return Err(ArgsError::Unknown(arg.clone()));
         }
         let Some(flags) = arg.strip_prefix('-').filter(|rest| !rest.is_empty()) else {
             index -= 1;
@@ -89,8 +96,9 @@ pub fn parse(args: &[String]) -> Result<Invocation, ArgsError> {
                     break;
                 }
                 'i' if identity.is_some() => return Err(ArgsError::RepeatedIdentity),
-                'i' => match args.get(index) {
-                    Some(file) if !file.starts_with('-') => {
+                'i' => match &args[index..] {
+                    [last] => return Err(ArgsError::IdentityBeforeDestinationOnly(last.clone())),
+                    [file, ..] if !looks_like_option(file) => {
                         identity = Some(file.clone());
                         index += 1;
                     }
@@ -118,6 +126,16 @@ pub fn parse(args: &[String]) -> Result<Invocation, ArgsError> {
         port,
         ssh_options,
     })
+}
+
+/// Upstream's test for an argument that `-i` must not take as its file: `-` followed by
+/// one of upstream's option letters or `-`.
+fn looks_like_option(arg: &str) -> bool {
+    let mut chars = arg.chars();
+    chars.next() == Some('-')
+        && chars
+            .next()
+            .is_some_and(|letter| "iopFtfnsxh?-".contains(letter))
 }
 
 #[cfg(test)]
@@ -196,7 +214,7 @@ mod tests {
 
     #[test]
     fn p07_no_destination() {
-        assert_eq!(parse(&args(&["-i", "k"])), Err(ArgsError::NoDestination));
+        assert_eq!(parse(&args(&["-p", "22"])), Err(ArgsError::NoDestination));
         assert_eq!(parse(&args(&[])), Err(ArgsError::NoDestination));
     }
 
@@ -286,6 +304,49 @@ mod tests {
         assert_eq!(
             parse(&args(&["-i", "a", "-i", "b", "h"])),
             Err(ArgsError::RepeatedIdentity)
+        );
+    }
+
+    #[test]
+    fn p19_identity_followed_only_by_the_destination_has_no_file() {
+        assert_eq!(
+            parse(&args(&["-i", "host"])),
+            Err(ArgsError::IdentityBeforeDestinationOnly("host".into()))
+        );
+        assert_eq!(
+            parse(&args(&["-p", "22", "-i", "k.pub"])),
+            Err(ArgsError::IdentityBeforeDestinationOnly("k.pub".into()))
+        );
+    }
+
+    #[test]
+    fn p20_identity_takes_a_dash_argument_that_is_not_an_option_letter() {
+        assert_eq!(
+            parse(&args(&["-i", "-mykey", "host"])),
+            Ok(invocation("host", "-mykey"))
+        );
+        assert_eq!(
+            parse(&args(&["-i", "-", "host"])),
+            Ok(invocation("host", "-"))
+        );
+    }
+
+    #[test]
+    fn p21_identity_has_no_file_before_an_upstream_option_letter() {
+        for letter in ['i', 'o', 'p', 'F', 't', 'f', 'n', 's', 'x', 'h', '?', '-'] {
+            assert_eq!(
+                parse(&args(&["-i", &format!("-{letter}k"), "h", "extra"])),
+                Err(ArgsError::IdentityWithoutFile),
+                "letter {letter}"
+            );
+        }
+    }
+
+    #[test]
+    fn p22_unknown_long_option_is_named_whole() {
+        assert_eq!(
+            parse(&args(&["--target-os", "unix", "h"])),
+            Err(ArgsError::Unknown("--target-os".into()))
         );
     }
 }
