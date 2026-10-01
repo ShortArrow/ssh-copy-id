@@ -200,7 +200,7 @@ compatibility suite is part of stage 1.5.
 | Operation or argument | Target behavior |
 | --- | --- |
 | `[user@]host` | Accept the destination, including host aliases from SSH configuration |
-| `-i [identity_file]` | Select the specified public key file, adding `.pub` if absent. The private key file, the same path without `.pub`, must exist unless `-f` is given, as upstream requires. A leading `~/` or `~\` is expanded with the home directory, because the Windows shells do not expand it. A second `-i` is an error, as upstream. As upstream, when only one argument follows `-i`, that argument is the destination and `-i` has no file, and a readable file containing `ssh` there is reported as a missing hostname; otherwise `-i` takes the next argument unless it looks like one of the options `-[iopFtfnsxh?-]` |
+| `-i [identity_file]` | Select the specified public key file, adding `.pub` if absent. The private key file, the same path without `.pub`, must exist unless `-f` is given, as upstream requires. A leading `~/` or `~\` is expanded with the home directory, because the Windows shells do not expand it. A second `-i` is an error, as upstream. As upstream, when only one argument follows `-i`, that argument is the destination and `-i` has no file, and a readable file containing `ssh` there is reported as a missing hostname (in stage 1 without upstream's suggestion of `-i --`, which needs `-i` without a file); otherwise `-i` takes the next argument unless it looks like one of the options `-[iopFtfnsxh?-]` |
 | No `-i` | Prefer public keys from the agent; otherwise select the most recently modified `~/.ssh/id*.pub`, excluding `*-cert.pub` |
 | `-p port` | Set the destination port |
 | `-o option`, `-F config` | Specify SSH options or a configuration file. Allow repeated `-o` arguments |
@@ -238,17 +238,23 @@ The check has three results.
 
 | Result | Condition | Consequence |
 | --- | --- | --- |
-| Installed | The selected key was the only candidate the client could offer, the probe succeeded, and `ssh` reported authentication with the `publickey` method | Skip the key |
+| Installed | The selected key was the only candidate the client could offer, and `ssh`'s log records authentication with the `publickey` method, whatever the exit status | Skip the key |
 | Not installed | The server answered `Permission denied (…)`, so no candidate authenticated | Install the key |
-| Inconclusive | Another identity or certificate was a candidate, authentication used another method such as `none`, the session failed after authentication, or the client reported an error that matches no known pattern | Install the key and print the reason; duplicates are possible, as with `-f` |
+| Inconclusive | Another identity or certificate was a candidate, authentication used another method such as `none`, or the client reported an error that matches no known pattern | Install the key and print the reason; duplicates are possible, as with `-f` |
 
-The probe runs with `LogLevel=VERBOSE` and `-E` naming a fresh file in the temp
-directory, and `ssh` then writes `Authenticated to … using "publickey"` to that
-file; every tested client does. Banners and remote output stay on stderr, so a
+The probe runs with `LogLevel=VERBOSE` and `-E` naming a file in a fresh
+directory under the local `~/.ssh`, created with mode 700 like upstream's scratch
+directory and removed when the run ends; when it cannot be created, the run stops
+before connecting with upstream's message. `ssh` then writes `Authenticated to …
+using "publickey"` to that file; every tested client does. Banners and remote output stay on stderr, so a
 server cannot forge the line; text on stderr is never evidence of an installed
 key, while the `Permission denied` and connection patterns are matched on both.
-A log file that cannot be created or read makes the check Inconclusive. Without
-that line a successful probe is not evidence: a server that accepts the `none` method, such as an account with
+A log that cannot be read makes the check Inconclusive. The line decides even
+when the probe exits nonzero, as it does for a key restricted by `command=`;
+upstream stops there with an error on every run after the first installation. A
+probe that exits 0 without any `Authenticated to` line has not authenticated, and
+the run stops as a failure. Without the `publickey` line a successful probe is
+not evidence: a server that accepts the `none` method, such as an account with
 an empty password and `PermitEmptyPasswords yes`, lets the probe exit 0 with no
 key at all, and upstream then skips the key without installing it.
 
@@ -366,9 +372,9 @@ When appending a line fails, for example on a full file system, the script
 truncates the target back to its size before that key's group: the key line and
 the comment and blank lines written since the previous key, including a newline
 it added before the first line. A file the group created is removed, and later
-lines are not written. Before truncating, the script checks that the file is no
-larger than its size before the group plus the bytes the run tried to write; a
-larger file means another writer appended meanwhile, and nothing is truncated. Upstream leaves
+lines are not written. Before truncating, the script checks that the bytes after
+the group's starting size are a prefix of the text it tried to write; anything
+else means another writer appended meanwhile, and nothing is truncated. Upstream leaves
 the fragment, so the file no longer ends with a newline and the next append joins
 onto it, while the run reports that the key was not written. Apparent intent:
 upstream reports a failed append as a failed run and expects nothing to be left.
@@ -511,9 +517,9 @@ upstream counts as added. This is difference D-10.
 
 Certificate lines, whose type ends in `-cert-v01@openssh.com`, and
 `cert-authority` lines are passed through as upstream does. sshd does not accept
-a certificate line in an authorized-keys file for login, so the installed-key
-check and the post-installation verification report such a line as Inconclusive
-with that reason. This is not a difference.
+a certificate line in an authorized-keys file for login, so for such a selected
+key the installed-key check and the post-installation verification make no
+connection and report Inconclusive with that reason. This is not a difference.
 
 #### Leading BOM Removal
 
@@ -528,8 +534,10 @@ prefixed `.pub` file through both transports and forced mode.
 
 #### Recorded Difference: Counting Keys
 
-`#` comment lines and blank lines in the key file are appended as upstream
-appends them. A comment line is one whose first character other than a space or
+Each line of the key file loses its leading and trailing spaces and tabs, and
+blank lines at the end are dropped, as upstream's line reading does. `#` comment
+lines and the remaining blank lines are appended as upstream appends them. A
+comment line is one whose first character other than a space or
 tab is `#`; a blank line holds only spaces and tabs. The local check and the
 remote script use the same rule, and a run whose reported key count differs
 from the keys sent ends with an unknown outcome. Upstream also counts them in "Number of key(s) added" and in the
@@ -644,7 +652,7 @@ or `ForwardX11` does not reach a host that is only being set up.
 
 | Phase | Options this tool sets | User options |
 | --- | --- | --- |
-| Installed-key check | `-a`, `-x`, `-E` with a temporary log file, `ControlPath=none`, `LogLevel=VERBOSE`, `PreferredAuthentications=publickey`, `IdentitiesOnly=yes`, and `-i` with the selected key | `-o`, `-F`, `-p`, and the user's configuration are passed through after the overrides |
+| Installed-key check | `-a`, `-x`, `-E` with a log file in the scratch directory, `ControlPath=none`, `LogLevel=VERBOSE`, `PreferredAuthentications=publickey`, `IdentitiesOnly=yes`, and `-i` with the selected key | `-o`, `-F`, `-p`, and the user's configuration are passed through after the overrides |
 | Installation | `-a`, `-x`, `RequestTTY=no` (D-15) | passed through after the override |
 | `-s` transfer | a control master shared by the `sftp` sessions, as upstream | passed through unchanged |
 
@@ -723,9 +731,12 @@ when there is no console, while upstream on Unix fails at once when it cannot
 open a terminal. The rule keeps that upstream behavior on Windows and is not a
 difference.
 
-From the start of the run, the CLI does not end on a console Ctrl-C: while `ssh`
-runs, it waits for `ssh` to exit and reports the outcome from what `ssh`
-returned. With Git for Windows'
+Once the arguments are parsed, the CLI does not end on a console Ctrl-C: while
+`ssh` runs, it waits for `ssh` to exit and reports the outcome from what `ssh`
+returned. The interrupt then ends the run with status 1, as it ends upstream's
+script: before the installation nothing is written, and after it the outcome
+is reported and the verification is skipped. The exit status of an interrupted
+`ssh` is not evidence; Windows OpenSSH can exit 0. With Git for Windows'
 client, Ctrl-C reaches the CLI as well as `ssh`; ending first would leave the
 outcome unreported. The Windows OpenSSH agent refuses keys added with
 confirmation (`ssh-add -c` answers `agent refused operation`), so no
