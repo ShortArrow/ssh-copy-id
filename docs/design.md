@@ -5,7 +5,7 @@
 [Differences from upstream](compatibility.md)
 
 Status: implementation started on 2026-09-30 with the pure core modules; nothing
-is released. Decisions through 2026-09-30 are indexed in the
+is released. Decisions through 2026-10-01 are indexed in the
 [decision log](#decision-log), and the [delivery plan](#delivery-plan) orders the
 remaining work.
 
@@ -87,8 +87,9 @@ work is the delivery plan below.
 
 ### Delivery Plan
 
-Decision recorded on 2026-09-30. Each stage ends when its checks pass; the IDs
-are rows of the [validation matrix](validation.md).
+Decision recorded on 2026-09-30 and revised on 2026-10-01 (DL-47, DL-48). Each
+stage ends when its checks pass; the IDs are rows of the
+[validation matrix](validation.md).
 
 | Stage | Release | Content | Done when |
 | --- | --- | --- | --- |
@@ -98,14 +99,14 @@ are rows of the [validation matrix](validation.md).
 | 2. Windows standard user | v0.1.0 | Destination detection, the PowerShell installation script, ACLs on new objects | W06, W07, and W09 pass before the implementation; requirements 1, 2, 3, 7, and 8 pass against the dockur fixture |
 | 3. Later increments | 0.1.x or later | Shared administrator file, `-t` on Windows destinations (W08), `-s` (requirement 6), Linux packages | Decided per increment |
 
-Stages 1 and 2 are the first and second milestones that earlier decisions
-refer to; a statement about "the first two milestones" covers stages 1, 1.5, and 2.
+Stages 1 and 2 are the first and second milestones that earlier decisions refer
+to. Stage 1.5 is not a prerequisite for stage 2, as DL-16 decided; if stage 2 is
+ready first, it is released as 0.1.0 and stage 1.5 follows as a 0.1.x release.
 Stage 0 comes first because a failed prototype would invalidate the backend
 decision (DL-12) that stages 1 to 3 build on. The Windows evaluation guest
 reported a grace period of 114,769 minutes on 2026-09-30
-([measurement](validation.md#evaluation-license-2026-09-30)), so it expires
-around 2026-12-19; the stage 2 fixture scenarios run before then or on a
-rebuilt guest.
+([measurement](validation.md#evaluation-license-2026-09-30)), so it expires on
+2026-12-18; the stage 2 fixture scenarios run before then or on a rebuilt guest.
 
 ### Out of Scope
 
@@ -165,9 +166,9 @@ Decision recorded on 2026-09-30 and corrected on 2026-10-01 (DL-46), following
 the owner's runex and gitreant repositories. Each bullet names the repository
 it follows.
 
-- Versions follow Semantic Versioning. Releases start at 0.0.1 with stage 1, stage 1.5 is 0.0.2, and Windows destination support in stage 2 is 0.1.0. From 0.1.0 until 1.0.0, a breaking change to the command line bumps the minor version and anything else bumps the patch.
+- Versions follow Semantic Versioning. `Cargo.toml` carries 0.0.0 until the first release, and every release, v0.0.1 included, raises it in its own bump commit. Releases start at 0.0.1 with stage 1, stage 1.5 is 0.0.2, and Windows destination support in stage 2 is 0.1.0. From 0.1.0 until 1.0.0, a breaking change to the command line bumps the minor version and anything else bumps the patch.
 - The branching model is trunk-based, as in runex. `main` is always releasable, and changes reach it through pull requests from short-lived branches named after their issue when one exists (`feat/`, `fix/`, `docs/`, `ci/`). The commit that bumps the version to cut a release is the one commit pushed to `main` directly. The owner's general rule of GitFlow for versioned packages is not applied, for the reason runex retired its `develop` branch: every change already lands as a self-contained pull request, so an integration branch only delays fixes.
-- Releases are signed annotated tags `vX.Y.Z` on `main`, created with `git tag -s` and checked with `git tag -v`, as runex now requires; runex's tags through v0.1.20 were annotated but unsigned while every commit was signed. A tag containing `-`, such as `v0.0.1-pre`, is a prerelease, as in gitreant, and is signed as well. A prerelease rehearses the pipeline without publishing to crates.io: unlike gitreant, where only `[skip publish]` in the tagged commit stops publishing, the publish job here skips every tag containing `-`, because a crates.io version cannot be reused once published.
+- Releases are signed annotated tags `vX.Y.Z` on `main`, created with `git tag -s` and checked with `git tag -v`, as runex now requires; runex's tags through v0.1.20 were annotated but unsigned. A tag containing `-`, such as `v0.0.1-pre`, is a prerelease, as in gitreant, and is signed as well. A prerelease rehearses the pipeline without publishing to crates.io: unlike gitreant, where only `[skip publish]` in the tagged commit stops publishing, the publish job here skips every tag containing `-`, because a crates.io version cannot be reused once published.
 - `CHANGELOG.md` follows Keep a Changelog, as in runex; gitreant has no changelog. Every user-visible change adds an entry under `[Unreleased]`, which a release renames to the version and date. An entry names the difference IDs it adds or changes.
 - `release.yml` is written before v0.0.1, modeled on runex and gitreant, which both do the following: tests on Linux, Windows, and macOS gate the release, then builds, a GitHub release, and publishing to crates.io through trusted publishing with OIDC. A release checklist in `CONTRIBUTING.md` comes with it, as in runex. The crate name is `ssh-copy-id`; it and `ssh-copy-id-rs` returned 404 from the crates.io API on 2026-09-30 and 2026-10-01.
 - v0.0.1 is published to crates.io and as a GitHub release only. Other channels, such as winget, which runex and gitreant also use, are decided later.
@@ -638,8 +639,7 @@ starting with the system OpenSSH client under the dependency policy above.
 Decision recorded on 2026-09-24: the first two milestones invoke the system
 `ssh.exe`, and `sftp.exe` for `-s`. Authentication results are classified from
 the client's exit status and a short list of stderr patterns. Each pattern is
-tested against every supported OpenSSH client version, and the supported versions
-are listed with each release. Superseded by DL-44 on 2026-09-30: a client outside
+checked against each client version the release lists as tested. Superseded by DL-44 on 2026-09-30: a client outside
 that list gets a warning, not an error, as the next paragraph describes. A Rust SFTP implementation is re-evaluated only for appending in `-s`
 mode. Implementing the SSH protocol from scratch is not the plan.
 
@@ -778,7 +778,7 @@ index. Commit messages name decisions by ID.
 | DL-37 | 2026-09-30 | Relative `-t` paths start at the home or profile directory; normal mode appends without a lock, as upstream | [Custom parent](#recorded-difference-existing-parent-directory-of-a-custom-target) |
 | DL-38 | 2026-09-30 | `--target-os` values `unix` and `windows`; probe outputs fixed by W09 measurements | [Remote operating systems](#remote-operating-systems-and-shells) |
 | DL-39 | 2026-09-30 | Key entry grammar; result-line values and encoding of bytes from `0x80` | [CRLF normalization](#crlf-normalization), [Installation outcome](#installation-outcome) |
-| DL-40 | 2026-09-30 | Delivery plan with stage 0 first and completion checks per stage | [Delivery plan](#delivery-plan) |
+| DL-40 | 2026-09-30 | Delivery plan with stage 0 first and completion checks per stage; revised by DL-47 and DL-48 | [Delivery plan](#delivery-plan) |
 | DL-41 | 2026-09-30 | The first milestone covers requirements 1, 2, 3, 7, and 8 | [Initial validation](#initial-validation) |
 | DL-42 | 2026-09-30 | Semantic Versioning from 0.0.1; stage 1 is 0.0.1, stage 1.5 is 0.0.2, stage 2 is 0.1.0 | [Versioning and release](#versioning-and-release) |
 | DL-43 | 2026-09-30 | Trunk-based branches, `vX.Y.Z` tags, prerelease tags with `-`, Keep a Changelog, `release.yml` before v0.0.1; corrected by DL-46 | [Versioning and release](#versioning-and-release) |
@@ -786,6 +786,7 @@ index. Commit messages name decisions by ID.
 | DL-45 | 2026-09-30 | README marks unpublished install channels as unpublished and shows a source build | [README](../README.md) |
 | DL-46 | 2026-10-01 | Signed tags; prereleases never publish to crates.io; v0.0.1 goes to crates.io and GitHub only; each practice attributed to its source repository | [Versioning and release](#versioning-and-release) |
 | DL-47 | 2026-10-01 | Agent confirmation joins stage 0; `-t` on Unix in stage 1.5 and on Windows (W08) in stage 3; stages 1 and 2 are the two milestones | [Delivery plan](#delivery-plan) |
+| DL-48 | 2026-10-01 | Stage 1.5 is not a prerequisite for stage 2; `Cargo.toml` stays 0.0.0 until the v0.0.1 bump commit | [Delivery plan](#delivery-plan), [Versioning and release](#versioning-and-release) |
 
 ## References
 

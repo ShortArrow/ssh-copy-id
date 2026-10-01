@@ -160,7 +160,8 @@ for the product with a partial product key and application ID
 | GracePeriodRemaining | 114,769 minutes |
 | OS install date | 2026-09-19 22:07 |
 
-The grace period ends around 2026-12-19. The baseline guest shares the install,
+The grace period ends on 2026-12-18 at about 22:08 guest time, which matches the
+install date plus 90 days. The baseline guest shares the install,
 because the second guest is a copy of its disk. Rerun the query before relying on
 this date; activation state can change after a rebuild.
 
