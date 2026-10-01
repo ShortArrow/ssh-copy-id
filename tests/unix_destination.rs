@@ -228,6 +228,30 @@ impl Fixture {
         command("docker", &["exec", &self.container, "sh", "-c", script])
     }
 
+    /// Starts a container whose `/home/pwuser/.ssh` is a 16 KiB tmpfs.
+    fn start_with_small_ssh_directory() -> Fixture {
+        let fixture = Fixture::start_with(&["--tmpfs", "/home/pwuser/.ssh:size=16k,mode=0700"]);
+        let owned = fixture.exec_as_root("chown pwuser:pwuser /home/pwuser/.ssh");
+        assert!(owned.status.success(), "{}", text(&owned.stderr));
+        fixture
+    }
+
+    /// Writes pwuser's `authorized_keys` as one line ending `room` bytes before a
+    /// page boundary, takes every other page of the tmpfs, and returns the file.
+    fn fill_ssh_directory_leaving(&self, room: usize) -> String {
+        let fill = self.exec(
+            "pwuser",
+            &format!(
+                r#"umask 077 && page=$(getconf PAGESIZE) \
+            && {{ head -c $((page - {room} - 1)) /dev/zero | tr '\0' x; printf '\n'; }} > .ssh/authorized_keys \
+            && {{ dd if=/dev/zero of=.ssh/filler bs=1024 2>/dev/null; true; }} \
+            && [ "$(df -P .ssh | awk 'NR == 2 {{ print $4 }}')" = 0 ]"#
+            ),
+        );
+        assert!(fill.status.success(), "{}", text(&fill.stderr));
+        self.read_as_root("/home/pwuser/.ssh/authorized_keys")
+    }
+
     /// The octal permission bits of `path`, relative to `user`'s home directory.
     fn mode(&self, user: &str, path: &str) -> String {
         text(&self.exec(user, &format!("stat -c %a {path}")).stdout)
@@ -512,8 +536,13 @@ fn i13_d15_a_forced_tty_does_not_hang_the_installation() {
 
 #[test]
 #[ignore = "needs the L02 fixture image"]
-fn i14_d01_none_authentication_after_a_publickey_banner_is_not_taken_as_installed() {
+fn i14_d01_a_banner_forging_publickey_authentication_is_not_taken_as_installed() {
     let fixture = Fixture::start();
+    let banner = fixture.read_as_root("/etc/ssh/emptyuser-banner");
+    assert!(
+        banner.contains(r#"Authenticated to 127.0.0.1 ([127.0.0.1]:22) using "publickey"."#),
+        "{banner}"
+    );
     let key = keygen(&fixture.work, "new", "new@test");
     let run = fixture.copy_id(&key, "emptyuser", &[]);
     let stderr = text(&run.stderr);
@@ -530,7 +559,7 @@ fn i14_d01_none_authentication_after_a_publickey_banner_is_not_taken_as_installe
 fn i15_d18_comment_and_blank_lines_are_appended_and_only_the_key_is_counted() {
     let fixture = Fixture::start();
     let key = keygen(&fixture.work, "new", "new@test");
-    let lines = format!("# laptop\n\n{}\n", public_line(&key));
+    let lines = format!("# laptop\n\n  # indented\n\t\n{}\n", public_line(&key));
     fs::write(key.with_extension("pub"), &lines).unwrap();
     let run = fixture.copy_id(&key, "pwuser", &[]);
     let stderr = text(&run.stderr);
@@ -569,19 +598,30 @@ fn i16_d16_a_fifo_target_is_not_written_and_does_not_hang() {
 #[test]
 #[ignore = "needs the L02 fixture image"]
 fn i17_d17_a_write_cut_short_by_a_full_filesystem_is_rolled_back() {
-    let fixture = Fixture::start_with(&["--tmpfs", "/home/pwuser/.ssh:size=16k,mode=0700"]);
-    let owned = fixture.exec_as_root("chown pwuser:pwuser /home/pwuser/.ssh");
-    assert!(owned.status.success(), "{}", text(&owned.stderr));
-    let fill = fixture.exec(
-        "pwuser",
-        r#"umask 077 && page=$(getconf PAGESIZE) \
-            && { head -c $((page - 7)) /dev/zero | tr '\0' x; printf '\n'; } > .ssh/authorized_keys \
-            && { dd if=/dev/zero of=.ssh/filler bs=1024 2>/dev/null; true; } \
-            && [ "$(df -P .ssh | awk 'NR == 2 { print $4 }')" = 0 ]"#,
-    );
-    assert!(fill.status.success(), "{}", text(&fill.stderr));
-    let before = fixture.read_as_root("/home/pwuser/.ssh/authorized_keys");
+    let fixture = Fixture::start_with_small_ssh_directory();
+    let before = fixture.fill_ssh_directory_leaving(6);
     let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &[]);
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("the key was not written to"), "{stderr}");
+    assert_eq!(
+        fixture.read_as_root("/home/pwuser/.ssh/authorized_keys"),
+        before
+    );
+}
+
+/// The comment line fits in the 32 bytes left before the page boundary and the
+/// key line does not, so the comment is rolled back with the key that failed.
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i18_d17_a_comment_line_is_rolled_back_with_the_key_that_failed() {
+    let fixture = Fixture::start_with_small_ssh_directory();
+    let before = fixture.fill_ssh_directory_leaving(32);
+    let key = keygen(&fixture.work, "new", "new@test");
+    let line = public_line(&key);
+    assert!(line.len() + 1 > 32 - "# note\n".len());
+    fs::write(key.with_extension("pub"), format!("# note\n{line}\n")).unwrap();
     let run = fixture.copy_id(&key, "pwuser", &[]);
     let stderr = text(&run.stderr);
     assert_eq!(run.status.code(), Some(1), "{stderr}");
