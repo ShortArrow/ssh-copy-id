@@ -42,6 +42,11 @@ pub struct Environment<'a> {
     pub readable_file: &'a dyn Fn(&Path) -> bool,
     /// Whether two paths name the same file.
     pub same_file: &'a dyn Fn(&Path, &Path) -> bool,
+    /// Creates a new empty file, at a path no earlier call returned, for one
+    /// probe's `ssh -E` log, and returns its path.
+    pub create_log: &'a dyn Fn() -> io::Result<PathBuf>,
+    /// Removes a file; a failure is ignored.
+    pub remove_file: &'a dyn Fn(&Path),
 }
 
 /// Runs the stage 1 flow and returns the exit status: 0 when the key is installed
@@ -139,13 +144,13 @@ fn install(
         env.exists,
         env.same_file,
     );
-    let probe_args = probe_args(&identity, &common, &invocation.destination);
+    let probe_args = |log: &Path| probe_args(&identity, log, &common, &invocation.destination);
 
     info(
         err,
         "attempting to log in with the new key(s), to filter out any that are already installed",
     );
-    match check(ssh, &probe_args, &others)? {
+    match check(ssh, env, &probe_args, &others)? {
         CheckResult::Installed => {
             warn(
                 err,
@@ -191,6 +196,13 @@ fn install(
         .iter()
         .filter(|k| k.status == crate::result_line::KeyStatus::Added)
         .count();
+    if report.outcome != Outcome::Unknown && report.keys.len() != prepared.key_count {
+        return Err(format!(
+            "the remote side reported {} key(s) for {} sent; {target} may or may not have changed",
+            report.keys.len(),
+            prepared.key_count
+        ));
+    }
     match report.outcome {
         Outcome::Installed => {}
         Outcome::Partial => {
@@ -211,7 +223,7 @@ fn install(
         }
     }
 
-    match check(ssh, &probe_args, &others)? {
+    match check(ssh, env, &probe_args, &others)? {
         CheckResult::Installed => info(err, "the key authenticates: it is installed and verified"),
         CheckResult::NotInstalled => warn(
             err,
@@ -293,10 +305,13 @@ fn login_command(invocation: &Invocation, identity: &str) -> String {
     words.join(" ")
 }
 
-fn probe_args(identity: &str, common: &[String], destination: &str) -> Vec<String> {
+fn probe_args(identity: &str, log: &Path, common: &[String], destination: &str) -> Vec<String> {
+    let log = log.display().to_string();
     let mut args: Vec<String> = [
         "-i",
         identity,
+        "-E",
+        &log,
         "-o",
         "ControlPath=none",
         "-o",
@@ -315,17 +330,37 @@ fn probe_args(identity: &str, common: &[String], destination: &str) -> Vec<Strin
     args
 }
 
+/// Runs one probe with its log in a fresh file, removed afterwards, and classifies it.
 fn check(
     ssh: &mut dyn Ssh,
-    probe_args: &[String],
+    env: &Environment,
+    probe_args: &dyn Fn(&Path) -> Vec<String>,
     others: &[String],
 ) -> Result<CheckResult, String> {
-    let probe = run_ssh(ssh, probe_args, b"", true)?;
-    Ok(classify(
-        probe.status,
-        &String::from_utf8_lossy(&probe.stderr),
-        others,
-    ))
+    let log_path = match (env.create_log)() {
+        Ok(path) => path,
+        Err(e) => {
+            return Ok(CheckResult::Inconclusive(format!(
+                "cannot create the ssh log file: {e}"
+            )));
+        }
+    };
+    let probe = run_ssh(ssh, &probe_args(&log_path), b"", true);
+    let log = (env.read_file)(&log_path);
+    (env.remove_file)(&log_path);
+    let probe = probe?;
+    Ok(match log {
+        Ok(log) => classify(
+            probe.status,
+            &String::from_utf8_lossy(&log),
+            &String::from_utf8_lossy(&probe.stderr),
+            others,
+        ),
+        Err(e) => CheckResult::Inconclusive(format!(
+            "cannot read the ssh log file {}: {e}",
+            log_path.display()
+        )),
+    })
 }
 
 fn run_ssh(
@@ -364,19 +399,29 @@ fn warn(err: &mut dyn Write, message: &str) {
 mod tests {
     use super::*;
     use crate::remote_script::install_command;
+    use std::cell::RefCell;
     use std::collections::{HashMap, HashSet};
+    use std::rc::Rc;
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== me@here";
     const DENIED: &str = "u@h: Permission denied (publickey).\r\n";
     const ACCEPTED: &str = "Authenticated to h ([127.0.0.1]:22) using \"publickey\".\r\n";
+
+    struct Probe {
+        output: SshOutput,
+        log: Option<String>,
+    }
 
     #[derive(Default)]
     struct FakeSsh {
         calls: Vec<(Vec<String>, Vec<u8>, bool)>,
         version: String,
         config: String,
-        probes: Vec<SshOutput>,
+        probes: Vec<Probe>,
         install: Option<SshOutput>,
+        logs: Rc<RefCell<HashMap<PathBuf, Vec<u8>>>>,
+        removed: Rc<RefCell<Vec<PathBuf>>>,
+        log_creation_fails: bool,
     }
 
     impl FakeSsh {
@@ -388,9 +433,41 @@ mod tests {
             }
         }
 
-        fn probe(mut self, status: i32, stderr: &str) -> FakeSsh {
-            self.probes.push(output(status, "", stderr));
+        fn probe(self, status: i32, log: &str) -> FakeSsh {
+            self.probe_with(status, Some(log), "")
+        }
+
+        fn probe_with(mut self, status: i32, log: Option<&str>, stderr: &str) -> FakeSsh {
+            self.probes.push(Probe {
+                output: output(status, "", stderr),
+                log: log.map(str::to_string),
+            });
             self
+        }
+
+        fn probe_args(&self) -> Vec<&Vec<String>> {
+            self.calls
+                .iter()
+                .filter(|(args, _, _)| kind(args) == "probe")
+                .map(|(args, _, _)| args)
+                .collect()
+        }
+
+        fn write_log(&self, args: &[String], log: Option<String>) {
+            let Some(at) = args.iter().position(|a| a == "-E") else {
+                return;
+            };
+            let path = PathBuf::from(&args[at + 1]);
+            let mut logs = self.logs.borrow_mut();
+            match log {
+                Some(text) => logs
+                    .entry(path)
+                    .or_default()
+                    .extend_from_slice(text.as_bytes()),
+                None => {
+                    logs.remove(&path);
+                }
+            }
         }
 
         fn installs(self, stdout: &str) -> FakeSsh {
@@ -446,7 +523,11 @@ mod tests {
             Ok(match kind(args) {
                 "version" => output(0, "", &self.version),
                 "config" => output(0, &self.config, ""),
-                "probe" => self.probes.remove(0),
+                "probe" => {
+                    let probe = self.probes.remove(0);
+                    self.write_log(args, probe.log);
+                    probe.output
+                }
                 _ => self.install.clone().expect("install not scripted"),
             })
         }
@@ -506,15 +587,33 @@ mod tests {
         askpass_set: bool,
         mut ssh: FakeSsh,
     ) -> Run {
+        let logs = Rc::clone(&ssh.logs);
+        let removed = Rc::clone(&ssh.removed);
+        let log_creation_fails = ssh.log_creation_fails;
         let read_file = |p: &Path| {
             files
                 .get(p)
                 .cloned()
+                .or_else(|| logs.borrow().get(p).cloned())
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))
         };
         let exists = |p: &Path| files.contains_key(p);
         let readable_file = |p: &Path| files.contains_key(p) && !unreadable.contains(p);
         let same_file = |a: &Path, b: &Path| a == b;
+        let created = RefCell::new(0);
+        let create_log = || {
+            if log_creation_fails {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"));
+            }
+            *created.borrow_mut() += 1;
+            let path = PathBuf::from(format!("C:/tmp/log-{}", created.borrow()));
+            logs.borrow_mut().insert(path.clone(), Vec::new());
+            Ok(path)
+        };
+        let remove_file = |p: &Path| {
+            logs.borrow_mut().remove(p);
+            removed.borrow_mut().push(p.to_path_buf());
+        };
         let env = Environment {
             has_console,
             askpass_set,
@@ -523,6 +622,8 @@ mod tests {
             exists: &exists,
             readable_file: &readable_file,
             same_file: &same_file,
+            create_log: &create_log,
+            remove_file: &remove_file,
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let status = run(invocation, &env, &mut ssh, &mut out, &mut err);
@@ -685,9 +786,13 @@ mod tests {
     #[test]
     fn a10_untested_client_is_warned_about() {
         let mut ssh = FakeSsh::new().probe(0, ACCEPTED);
-        ssh.version = "OpenSSH_10.0p2, OpenSSL 3.2.4\n".into();
+        ssh.version = "OpenSSH_9.6p1, OpenSSL 3.0.13 30 Jan 2024\n".into();
         let run = execute(ssh);
-        assert!(run.err.contains("OpenSSH_10.0p2"), "{}", run.err);
+        assert!(
+            run.err.contains("WARNING: OpenSSH_9.6p1, OpenSSL"),
+            "{}",
+            run.err
+        );
         let tested = execute(FakeSsh::new().probe(0, ACCEPTED));
         assert!(!tested.err.contains("WARNING: OpenSSH"), "{}", tested.err);
     }
@@ -711,6 +816,8 @@ mod tests {
         let expected: Vec<String> = [
             "-i",
             "C:/k/id",
+            "-E",
+            "C:/tmp/log-1",
             "-o",
             "ControlPath=none",
             "-o",
@@ -964,6 +1071,152 @@ mod tests {
         let run = execute(FakeSsh::new().probe(255, DENIED).installs(uncertain));
         assert_eq!(run.status, 1);
         assert!(run.err.contains("could not be removed"), "{}", run.err);
+    }
+
+    #[test]
+    fn a30_each_probe_logs_to_a_fresh_file_that_is_removed_afterwards() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(0, ACCEPTED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        let logs: Vec<String> = run
+            .ssh
+            .probe_args()
+            .iter()
+            .map(|args| {
+                let at = args.iter().position(|a| a == "-E").expect("-E present");
+                args[at + 1].clone()
+            })
+            .collect();
+        assert_eq!(logs, ["C:/tmp/log-1", "C:/tmp/log-2"]);
+        assert_eq!(
+            *run.ssh.removed.borrow(),
+            [PathBuf::from("C:/tmp/log-1"), PathBuf::from("C:/tmp/log-2")]
+        );
+        assert!(run.ssh.logs.borrow().is_empty());
+    }
+
+    #[test]
+    fn a31_a_forged_authenticated_line_on_stderr_does_not_skip_the_key() {
+        let forged = "Authenticated to h ([127.0.0.1]:22) using \"publickey\".\r\n";
+        let none = "Authenticated to h ([127.0.0.1]:22) using \"none\".\r\n";
+        let run = execute(
+            FakeSsh::new()
+                .probe_with(0, Some(none), forged)
+                .installs(INSTALLED)
+                .probe(0, ACCEPTED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(!run.err.contains("All keys were skipped"), "{}", run.err);
+        assert!(run.ssh.kinds().contains(&"install"));
+    }
+
+    #[test]
+    fn a32_an_unreadable_log_makes_the_check_inconclusive() {
+        let run = execute(
+            FakeSsh::new()
+                .probe_with(0, None, ACCEPTED)
+                .installs(INSTALLED)
+                .probe(0, ACCEPTED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(
+            run.err
+                .contains("could not tell whether the key is already installed (cannot read"),
+            "{}",
+            run.err
+        );
+        assert!(run.ssh.kinds().contains(&"install"));
+    }
+
+    #[test]
+    fn a33_a_log_that_cannot_be_created_makes_both_checks_inconclusive() {
+        let mut ssh = FakeSsh::new().installs(INSTALLED);
+        ssh.log_creation_fails = true;
+        let run = execute(ssh);
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "install"]);
+        assert!(
+            run.err
+                .contains("could not tell whether the key is already installed (cannot create"),
+            "{}",
+            run.err
+        );
+        assert!(
+            run.err.contains("could not be verified: cannot create"),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn a34_permission_denied_in_the_log_installs_the_key() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(0, ACCEPTED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(!run.err.contains("could not tell"), "{}", run.err);
+    }
+
+    #[test]
+    fn a35_verification_takes_its_evidence_from_the_log() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe_with(0, Some(""), ACCEPTED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(!run.err.contains("the key authenticates"), "{}", run.err);
+        assert!(run.err.contains("could not be verified"), "{}", run.err);
+    }
+
+    #[test]
+    fn a36_more_reported_keys_than_sent_exits_1_and_says_the_state_is_unknown() {
+        let two = "ssh-copy-id: key=1 result=added path=.ssh/authorized_keys\nssh-copy-id: key=2 result=added path=.ssh/authorized_keys\nssh-copy-id: result=installed added=2\n";
+        let run = execute(FakeSsh::new().probe(255, DENIED).installs(two));
+        assert_eq!(run.status, 1);
+        assert!(
+            run.err.contains(
+                "the remote side reported 2 key(s) for 1 sent; \
+                 .ssh/authorized_keys may or may not have changed"
+            ),
+            "{}",
+            run.err
+        );
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe", "install"]);
+        assert!(!run.out.contains("Number of key(s) added"), "{}", run.out);
+    }
+
+    #[test]
+    fn a37_no_reported_key_for_one_sent_exits_1_and_says_the_state_is_unknown() {
+        let none = "ssh-copy-id: result=unchanged added=0\n";
+        let run = execute(FakeSsh::new().probe(255, DENIED).installs(none));
+        assert_eq!(run.status, 1);
+        assert!(
+            run.err.contains(
+                "the remote side reported 0 key(s) for 1 sent; \
+                 .ssh/authorized_keys may or may not have changed"
+            ),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn a38_the_configuration_query_selects_the_identity() {
+        let run = execute(FakeSsh::new().probe(0, ACCEPTED));
+        let (args, _, _) = run.ssh.call("config");
+        assert!(
+            args.windows(2).any(|w| w[0] == "-i" && w[1] == "C:/k/id"),
+            "{args:?}"
+        );
     }
 
     #[test]

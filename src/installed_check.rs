@@ -16,8 +16,15 @@ pub enum CheckResult {
     Failed(String),
 }
 
-/// Client version strings, as `ssh -V` prints them, that the fixtures have tested.
-pub const TESTED_CLIENTS: [&str; 2] = ["OpenSSH_for_Windows_9.5p2", "OpenSSH_9.6p1"];
+/// Client version strings, as `ssh -V` prints them, that the fixtures have tested:
+/// Windows OpenSSH, Git for Windows, and Ubuntu 24.04. Each is a prefix of the
+/// first line of `ssh -V`, so an Ubuntu point release still matches while an
+/// unpatched `OpenSSH_9.6p1` does not.
+pub const TESTED_CLIENTS: [&str; 3] = [
+    "OpenSSH_for_Windows_9.5p2",
+    "OpenSSH_10.0p2",
+    "OpenSSH_9.6p1 Ubuntu-3ubuntu13",
+];
 
 /// Lists the identities other than `selected` that `ssh` could offer, read from `ssh -G` output.
 ///
@@ -81,7 +88,7 @@ fn expand(home: &Path, value: &str) -> PathBuf {
     }
 }
 
-/// Stderr fragments of a status-255 probe that mean the host key was rejected
+/// Fragments of a status-255 probe's output that mean the host key was rejected
 /// or the connection failed, so authentication was never attempted.
 const NO_AUTHENTICATION_FAILURES: [&str; 12] = [
     "Host key verification failed",
@@ -98,30 +105,35 @@ const NO_AUTHENTICATION_FAILURES: [&str; 12] = [
     "connect to host",
 ];
 
-/// Classifies a probe from its exit status and stderr, given the other candidates.
+/// Classifies a probe from its exit status, the log `ssh` wrote with `-E`, and
+/// its stderr, given the other candidates.
 ///
+/// `ssh` writes its own messages to the log, while stderr carries the server's
+/// banner and remote output, so nothing on stderr is evidence of `Installed`.
 /// Exit 0 is `Installed` only when no other candidate exists and the
-/// `Authenticated to ... using "<method>"` line of stderr names `publickey`
-/// (the probe runs with `LogLevel=VERBOSE`); `using "publickey"` elsewhere, such
-/// as in a banner, is not evidence. A server accepting another method, such as
-/// `none`, lets the probe succeed without the key. Exit 255 is `NotInstalled` on `Permission denied (`,
-/// `Failed` on a recognised host key or connection failure, and `Inconclusive`
-/// otherwise.
-pub fn classify(exit: Option<i32>, stderr: &str, others: &[String]) -> CheckResult {
+/// `Authenticated to ... using "<method>"` line of the log names `publickey`
+/// (the probe runs with `LogLevel=VERBOSE`); `using "publickey"` elsewhere is
+/// not evidence. A server accepting another method, such as `none`, lets the
+/// probe succeed without the key. Exit 255 is `NotInstalled` on
+/// `Permission denied (`, `Failed` naming the last line with a recognised host
+/// key or connection failure, and `Inconclusive` otherwise; these patterns are
+/// matched on the log and stderr together.
+pub fn classify(exit: Option<i32>, log: &str, stderr: &str, others: &[String]) -> CheckResult {
+    let output = format!("{log}\n{stderr}");
     match exit {
         Some(0) if !others.is_empty() => CheckResult::Inconclusive(format!(
             "another identity could have authenticated: {}",
             others.join(", ")
         )),
-        Some(0) if authenticated_method(stderr) == Some("publickey") => CheckResult::Installed,
-        Some(0) => CheckResult::Inconclusive(without_selected_key(stderr)),
-        Some(255) if stderr.contains("Permission denied (") => CheckResult::NotInstalled,
-        Some(255) => match last_line(stderr) {
-            Some(line) if contains_any(stderr, &NO_AUTHENTICATION_FAILURES) => {
-                CheckResult::Failed(line)
+        Some(0) if authenticated_method(log) == Some("publickey") => CheckResult::Installed,
+        Some(0) => CheckResult::Inconclusive(without_selected_key(log)),
+        Some(255) if output.contains("Permission denied (") => CheckResult::NotInstalled,
+        Some(255) => match (failure_line(&output), last_line(&output)) {
+            (Some(line), _) => CheckResult::Failed(line),
+            (None, Some(line)) => {
+                CheckResult::Inconclusive(format!("ssh exited with status 255: {line}"))
             }
-            Some(line) => CheckResult::Inconclusive(format!("ssh exited with status 255: {line}")),
-            None => CheckResult::Inconclusive("ssh exited with status 255".to_string()),
+            (None, None) => CheckResult::Inconclusive("ssh exited with status 255".to_string()),
         },
         Some(code) => CheckResult::Inconclusive(format!(
             "the session failed after authentication with exit status {code}"
@@ -130,8 +142,8 @@ pub fn classify(exit: Option<i32>, stderr: &str, others: &[String]) -> CheckResu
     }
 }
 
-fn without_selected_key(stderr: &str) -> String {
-    match authenticated_method(stderr) {
+fn without_selected_key(log: &str) -> String {
+    match authenticated_method(log) {
         Some(method) => {
             format!("authentication succeeded without the selected key, using \"{method}\"")
         }
@@ -139,23 +151,32 @@ fn without_selected_key(stderr: &str) -> String {
     }
 }
 
-fn authenticated_method(stderr: &str) -> Option<&str> {
-    stderr.lines().find_map(|line| {
+fn authenticated_method(log: &str) -> Option<&str> {
+    log.lines().find_map(|line| {
         let after = &line[line.find("Authenticated to ")?..];
         let quoted = &after[after.find(" using \"")? + " using \"".len()..];
         quoted.split_once('"').map(|(method, _)| method)
     })
 }
 
-fn contains_any(text: &str, fragments: &[&str]) -> bool {
-    fragments.iter().any(|fragment| text.contains(fragment))
+fn failure_line(text: &str) -> Option<String> {
+    trimmed_lines(text)
+        .rfind(|line| {
+            NO_AUTHENTICATION_FAILURES
+                .iter()
+                .any(|fragment| line.contains(fragment))
+        })
+        .map(str::to_string)
 }
 
 fn last_line(text: &str) -> Option<String> {
-    text.lines()
-        .map(|line| line.trim_end_matches('\r').trim())
+    trimmed_lines(text)
         .rfind(|line| !line.is_empty())
         .map(str::to_string)
+}
+
+fn trimmed_lines(text: &str) -> impl DoubleEndedIterator<Item = &str> {
+    text.lines().map(|line| line.trim_end_matches('\r').trim())
 }
 
 /// Whether the first line of `ssh -V` output names a tested client version.
@@ -164,7 +185,7 @@ pub fn is_tested_client(version_output: &str) -> bool {
     TESTED_CLIENTS.iter().any(|tested| {
         first
             .strip_prefix(tested)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with([',', ' ', '\r']))
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with([',', ' ', '\r', '.']))
     })
 }
 
@@ -314,13 +335,13 @@ mod tests {
     #[test]
     fn k01_success_with_no_other_candidate_is_installed() {
         let stderr = "Authenticated to h ([127.0.0.1]:22) using \"publickey\".\r\n";
-        assert_eq!(classify(Some(0), stderr, &[]), CheckResult::Installed);
+        assert_eq!(classify(Some(0), stderr, "", &[]), CheckResult::Installed);
     }
 
     #[test]
     fn k01b_success_without_publickey_evidence_is_inconclusive() {
         assert!(matches!(
-            classify(Some(0), "", &[]),
+            classify(Some(0), "", "", &[]),
             CheckResult::Inconclusive(_)
         ));
     }
@@ -329,7 +350,7 @@ mod tests {
     fn k02_success_with_another_candidate_is_inconclusive() {
         let others = vec!["identity file ~/.ssh/extra_key".to_string()];
         assert!(matches!(
-            classify(Some(0), "", &others),
+            classify(Some(0), "", "", &others),
             CheckResult::Inconclusive(reason) if reason.contains("~/.ssh/extra_key")
         ));
     }
@@ -337,10 +358,13 @@ mod tests {
     #[test]
     fn k03_permission_denied_is_not_installed_even_with_other_candidates() {
         let stderr = "user@host: Permission denied (publickey).\r\n";
-        assert_eq!(classify(Some(255), stderr, &[]), CheckResult::NotInstalled);
+        assert_eq!(
+            classify(Some(255), stderr, "", &[]),
+            CheckResult::NotInstalled
+        );
         let others = vec!["identity file x".to_string()];
         assert_eq!(
-            classify(Some(255), stderr, &others),
+            classify(Some(255), stderr, "", &others),
             CheckResult::NotInstalled
         );
     }
@@ -349,7 +373,7 @@ mod tests {
     fn k04_host_key_failure_stops_the_run() {
         let stderr = "Host key verification failed.\r\n";
         assert_eq!(
-            classify(Some(255), stderr, &[]),
+            classify(Some(255), stderr, "", &[]),
             CheckResult::Failed("Host key verification failed.".to_string())
         );
     }
@@ -358,7 +382,7 @@ mod tests {
     fn k05_connection_failure_stops_the_run() {
         let stderr = "ssh: connect to host 127.0.0.1 port 1: Connection refused\r\n";
         assert!(matches!(
-            classify(Some(255), stderr, &[]),
+            classify(Some(255), stderr, "", &[]),
             CheckResult::Failed(_)
         ));
     }
@@ -366,21 +390,24 @@ mod tests {
     #[test]
     fn k06_failure_after_authentication_is_inconclusive() {
         assert!(matches!(
-            classify(Some(1), "", &[]),
+            classify(Some(1), "", "", &[]),
             CheckResult::Inconclusive(_)
         ));
     }
 
     #[test]
     fn k07_killed_probe_stops_the_run() {
-        assert!(matches!(classify(None, "", &[]), CheckResult::Failed(_)));
+        assert!(matches!(
+            classify(None, "", "", &[]),
+            CheckResult::Failed(_)
+        ));
     }
 
     #[test]
-    fn k08_failed_message_is_the_last_nonempty_stderr_line() {
+    fn k08_failed_message_is_the_last_line_naming_the_failure() {
         let stderr = "debug noise\r\nssh: Could not resolve hostname nowhere: No such host is known.\r\n\r\n";
         assert_eq!(
-            classify(Some(255), stderr, &[]),
+            classify(Some(255), stderr, "", &[]),
             CheckResult::Failed(
                 "ssh: Could not resolve hostname nowhere: No such host is known.".to_string()
             )
@@ -391,7 +418,7 @@ mod tests {
     fn k09_success_by_another_method_is_inconclusive_naming_it() {
         let stderr = "Authenticated to h ([127.0.0.1]:22) using \"none\".";
         assert!(matches!(
-            classify(Some(0), stderr, &[]),
+            classify(Some(0), stderr, "", &[]),
             CheckResult::Inconclusive(reason) if reason.contains("none")
         ));
     }
@@ -400,7 +427,7 @@ mod tests {
     fn k10_changed_host_key_stops_the_run() {
         let stderr = "@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@";
         assert!(matches!(
-            classify(Some(255), stderr, &[]),
+            classify(Some(255), stderr, "", &[]),
             CheckResult::Failed(_)
         ));
     }
@@ -409,7 +436,7 @@ mod tests {
     fn k11_connect_permission_denied_is_a_connection_failure() {
         let stderr = "ssh: connect to host h port 22: Permission denied";
         assert!(matches!(
-            classify(Some(255), stderr, &[]),
+            classify(Some(255), stderr, "", &[]),
             CheckResult::Failed(_)
         ));
     }
@@ -417,7 +444,7 @@ mod tests {
     #[test]
     fn k12_unrecognised_status_255_is_inconclusive_with_the_last_line() {
         assert!(matches!(
-            classify(Some(255), "something unexpected", &[]),
+            classify(Some(255), "something unexpected", "", &[]),
             CheckResult::Inconclusive(reason) if reason.contains("something unexpected")
         ));
     }
@@ -428,7 +455,7 @@ mod tests {
 Authenticated to h ([10.0.0.1]:22) using \"none\".
 ";
         assert!(matches!(
-            classify(Some(0), stderr, &[]),
+            classify(Some(0), stderr, "", &[]),
             CheckResult::Inconclusive(_)
         ));
     }
@@ -438,7 +465,7 @@ Authenticated to h ([10.0.0.1]:22) using \"none\".
         let stderr = "Welcome. Last login using \"publickey\".
 ";
         assert!(matches!(
-            classify(Some(0), stderr, &[]),
+            classify(Some(0), "", stderr, &[]),
             CheckResult::Inconclusive(_)
         ));
     }
@@ -466,11 +493,67 @@ ssh: {fragment}
 "
             );
             assert_eq!(
-                classify(Some(255), &stderr, &[]),
+                classify(Some(255), &stderr, "", &[]),
                 CheckResult::Failed(format!("ssh: {fragment}")),
                 "{fragment}"
             );
         }
+    }
+
+    #[test]
+    fn k16_a_forged_authenticated_line_on_stderr_is_not_evidence() {
+        let log = "Authenticated to h ([127.0.0.1]:22) using \"none\".
+";
+        let stderr = "Authenticated to h ([127.0.0.1]:22) using \"publickey\".
+";
+        assert!(matches!(
+            classify(Some(0), log, stderr, &[]),
+            CheckResult::Inconclusive(reason) if reason.contains("none")
+        ));
+    }
+
+    #[test]
+    fn k17_publickey_on_stderr_with_an_empty_log_is_inconclusive() {
+        let stderr = "Authenticated to h ([127.0.0.1]:22) using \"publickey\".
+";
+        assert!(matches!(
+            classify(Some(0), "", stderr, &[]),
+            CheckResult::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn k18_permission_denied_on_stderr_is_not_installed() {
+        let stderr = "u@h: Permission denied (publickey).
+";
+        assert_eq!(
+            classify(Some(255), "", stderr, &[]),
+            CheckResult::NotInstalled
+        );
+    }
+
+    #[test]
+    fn k19_a_failure_on_stderr_stops_the_run_naming_its_line() {
+        let log = "Transferred: sent 1, received 2 bytes
+";
+        let stderr = "Host key verification failed.
+";
+        assert_eq!(
+            classify(Some(255), log, stderr, &[]),
+            CheckResult::Failed("Host key verification failed.".to_string())
+        );
+    }
+
+    #[test]
+    fn k20_the_failure_line_is_named_even_when_other_lines_follow() {
+        let log = "ssh: connect to host h port 22: Connection refused
+";
+        let stderr = "Goodbye.
+";
+        assert_eq!(
+            classify(Some(255), log, stderr, &[]),
+            CheckResult::Failed("ssh: connect to host h port 22: Connection refused".to_string())
+        );
     }
 
     #[test]
@@ -540,19 +623,49 @@ ssh: {fragment}
     #[test]
     fn v01_tested_clients() {
         assert!(is_tested_client(
-            "OpenSSH_for_Windows_9.5p2, LibreSSL 3.8.2\r\n"
+            "OpenSSH_for_Windows_9.5p2, LibreSSL 3.8.2
+"
         ));
         assert!(is_tested_client(
-            "OpenSSH_9.6p1 Ubuntu-3ubuntu13.19, OpenSSL 3.0.13 30 Jan 2024\n"
+            "OpenSSH_9.6p1 Ubuntu-3ubuntu13.14, OpenSSL 3.0.13 30 Jan 2024
+"
         ));
     }
 
     #[test]
     fn v02_untested_clients() {
-        assert!(!is_tested_client(
-            "OpenSSH_10.0p2, OpenSSL 3.2.4 11 Feb 2025"
-        ));
         assert!(!is_tested_client("OpenSSH_9.6p10, OpenSSL"));
         assert!(!is_tested_client(""));
+    }
+
+    #[test]
+    fn v03_git_for_windows_client_is_tested() {
+        assert!(is_tested_client(
+            "OpenSSH_10.0p2, OpenSSL 3.2.4 11 Feb 2025
+"
+        ));
+    }
+
+    #[test]
+    fn v04_unpatched_openssh_9_6p1_is_not_tested() {
+        assert!(!is_tested_client(
+            "OpenSSH_9.6p1, OpenSSL 3.0.13 30 Jan 2024"
+        ));
+    }
+
+    #[test]
+    fn v05_ubuntu_client_without_a_point_release_is_tested() {
+        assert!(is_tested_client(
+            "OpenSSH_9.6p1 Ubuntu-3ubuntu13, OpenSSL 3.0.13 30 Jan 2024"
+        ));
+    }
+
+    #[test]
+    fn v06_other_versions_of_a_tested_name_are_not_tested() {
+        assert!(!is_tested_client("OpenSSH_10.0p20, OpenSSL"));
+        assert!(!is_tested_client("OpenSSH_for_Windows_9.5p1, LibreSSL"));
+        assert!(!is_tested_client(
+            "OpenSSH_9.6p1 Ubuntu-3ubuntu130, OpenSSL"
+        ));
     }
 }
