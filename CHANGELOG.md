@@ -11,13 +11,24 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 ### Added
 
 - Install one explicitly selected public key (`-i FILE`) on a Unix-like host, with
-  `-p`, `-o`, and `-F` passed to `ssh`. The key is checked first and skipped when
-  it already authenticates; a successful check with another configured identity
-  is not taken as installed (D-01). The key is verified after writing (D-06).
+  `-p`, `-o`, and `-F` passed to `ssh`. A leading `~/` in `-i` is expanded, the
+  matching private key must exist, and a repeated `-i` is an error. The default
+  target follows upstream, including the OpenWrt and Haiku locations.
+- The key is checked first and skipped only when it alone authenticated with
+  `publickey`. Success with another configured identity, the same key file
+  under another path, a `%` token, or the `none` method is not taken as
+  installed (D-01). The key is verified after writing (D-06).
 - Reject private key material (D-04), CRLF line endings are normalized (D-05), a
   leading byte order mark is removed (D-07), and malformed lines are rejected
   (D-10) before anything is sent.
-- The target path is passed to the remote shell as data (D-11).
-- Warn when the `ssh` client version has not been tested (D-13).
+- The target path is passed to the remote shell as data (D-11). The remote
+  command is one line, so a csh or tcsh login shell runs it, and a non-empty
+  target file that cannot be read is reported and left unchanged.
+- The installation runs without a terminal, so `RequestTTY=force` in the
+  configuration cannot leave it waiting (D-15).
+- Warn when the `ssh` client version has not been tested; an unknown check
+  result is reported instead of guessed (D-13).
 - Without a console or `SSH_ASKPASS`, `ssh` runs with `BatchMode=yes` and fails
-  at once instead of waiting for a password.
+  at once instead of waiting for a password. Ctrl-C ends `ssh` but not the CLI,
+  which reports the result.
+- Messages name the target path the remote side reported.
