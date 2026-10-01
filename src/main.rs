@@ -82,9 +82,7 @@ fn describe(error: &ArgsError, read_file: &dyn Fn(&Path) -> io::Result<Vec<u8>>)
         ArgsError::IdentityBeforeDestinationOnly(argument)
             if names_a_key_file(argument, read_file) =>
         {
-            format!(
-                "Missing hostname. Use \"-i -- {argument}\" if you really mean to use this as the hostname"
-            )
+            "Missing hostname".to_string()
         }
         ArgsError::MissingIdentity
         | ArgsError::IdentityWithoutFile
@@ -132,19 +130,16 @@ mod tests {
         };
         assert_eq!(
             describe_last("k.pub", &read).as_deref(),
-            Some(
-                "Missing hostname. Use \"-i -- k.pub\" if you really mean to use this as the hostname"
-            )
+            Some("Missing hostname")
         );
     }
 
     #[test]
     fn m02_ssh_is_matched_without_case() {
         let read = |_: &Path| Ok(b"key from SSH agent".to_vec());
-        assert!(
-            describe_last("k", &read)
-                .unwrap()
-                .starts_with("Missing hostname.")
+        assert_eq!(
+            describe_last("k", &read).as_deref(),
+            Some("Missing hostname")
         );
     }
 

@@ -3,7 +3,8 @@
 /// Input that passed validation, normalized for transfer to the remote side.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedInput {
-    /// Every input line with its trailing CR removed and an LF appended, in order.
+    /// Every input line, in order, with its trailing CR and its leading and trailing
+    /// spaces and tabs removed and an LF appended; blank lines at the end are left out.
     pub text: Vec<u8>,
     /// Number of key entry lines in `text`.
     pub key_count: usize,
@@ -29,28 +30,31 @@ pub enum InputError {
 /// A leading UTF-8 BOM is removed. The private key check runs over all lines
 /// before any other check and wins over every other error. Otherwise the first
 /// failing line, checked for NUL, then standalone CR, then grammar, is reported.
+/// Line numbers count every input line, including the trailing blank lines left out of the text.
 pub fn prepare(input: &[u8]) -> Result<PreparedInput, InputError> {
     let lines = split_lines(strip_bom(input));
     if let Some(line) = lines.iter().position(|l| is_private_key_marker(l)) {
         return Err(InputError::PrivateKey { line: line + 1 });
     }
-    let mut text = Vec::with_capacity(input.len() + 1);
+    let mut contents = Vec::with_capacity(lines.len());
     let mut key_count = 0;
     for (index, raw) in lines.iter().enumerate() {
         let line = index + 1;
-        let content = check_line_bytes(raw, line)?;
+        let content = trim_separators(check_line_bytes(raw, line)?);
         match classify(content) {
             Some(LineKind::Key) => key_count += 1,
             Some(LineKind::BlankOrComment) => {}
             None => return Err(InputError::Malformed { line }),
         }
-        text.extend_from_slice(content);
-        text.push(b'\n');
+        contents.push(content);
     }
     if key_count == 0 {
         return Err(InputError::NoKeys);
     }
-    Ok(PreparedInput { text, key_count })
+    Ok(PreparedInput {
+        text: join_without_trailing_blanks(&contents),
+        key_count,
+    })
 }
 
 enum LineKind {
@@ -101,6 +105,28 @@ fn is_separator(b: u8) -> bool {
 fn skip_separators(s: &[u8]) -> &[u8] {
     let start = s.iter().position(|&b| !is_separator(b)).unwrap_or(s.len());
     &s[start..]
+}
+
+/// Removes leading and trailing spaces and tabs, as `read -r` with the default IFS does.
+fn trim_separators(s: &[u8]) -> &[u8] {
+    let rest = skip_separators(s);
+    let end = rest
+        .iter()
+        .rposition(|&b| !is_separator(b))
+        .map_or(0, |i| i + 1);
+    &rest[..end]
+}
+
+/// Joins trimmed lines with LF after each, leaving out the blank lines at the end as `$(…)` does.
+fn join_without_trailing_blanks(contents: &[&[u8]]) -> Vec<u8> {
+    let kept = contents
+        .iter()
+        .rposition(|c| !c.is_empty())
+        .map_or(0, |i| i + 1);
+    contents[..kept]
+        .iter()
+        .flat_map(|c| c.iter().copied().chain(std::iter::once(b'\n')))
+        .collect()
 }
 
 /// Splits `s` at the first separator into the token and the remainder.
@@ -281,8 +307,8 @@ mod tests {
 
     #[test]
     fn a16_cr_only_lines_become_blank() {
-        let given = input("ssh-ed25519 {K}\n\r\n\r\n");
-        assert_eq!(prepare(&given), ok("ssh-ed25519 {K}\n\n\n", 1));
+        let given = input("\r\nssh-ed25519 {K}\n\r\n\r\n");
+        assert_eq!(prepare(&given), ok("\nssh-ed25519 {K}\n", 1));
     }
 
     #[test]
@@ -327,9 +353,9 @@ mod tests {
     }
 
     #[test]
-    fn a24_leading_spaces_are_kept() {
-        let given = input("  ssh-ed25519 {K}\n");
-        assert_eq!(prepare(&given), ok("  ssh-ed25519 {K}\n", 1));
+    fn a24_leading_spaces_and_tabs_are_removed() {
+        let given = input(" \t ssh-ed25519 {K}\n");
+        assert_eq!(prepare(&given), ok("ssh-ed25519 {K}\n", 1));
     }
 
     #[test]
@@ -357,5 +383,57 @@ mod tests {
 ",
         );
         assert_eq!(prepare(&given), Err(InputError::Malformed { line: 1 }));
+    }
+
+    #[test]
+    fn a29_line_is_trimmed_and_trailing_blank_lines_are_dropped() {
+        let given = input("  ssh-ed25519 {K} me  \n\n\t\n");
+        assert_eq!(prepare(&given), ok("ssh-ed25519 {K} me\n", 1));
+    }
+
+    #[test]
+    fn a30_interior_blank_lines_are_kept_and_emptied() {
+        let given = input("ssh-ed25519 {K} a\n \t\n\nssh-ed25519 {K} b\n");
+        assert_eq!(
+            prepare(&given),
+            ok("ssh-ed25519 {K} a\n\n\nssh-ed25519 {K} b\n", 2)
+        );
+    }
+
+    #[test]
+    fn a31_comment_lines_are_trimmed_and_a_trailing_comment_stays() {
+        let given = input("\t# c  \nssh-ed25519 {K}\n# d \n\n");
+        assert_eq!(prepare(&given), ok("# c\nssh-ed25519 {K}\n# d\n", 1));
+    }
+
+    #[test]
+    fn a32_trailing_whitespace_before_crlf_is_removed() {
+        let given = input("ssh-ed25519 {K} me \t\r\n \r\n\r\n");
+        assert_eq!(prepare(&given), ok("ssh-ed25519 {K} me\n", 1));
+    }
+
+    #[test]
+    fn a33_trailing_blank_lines_without_final_lf_are_dropped() {
+        let given = input("ssh-ed25519 {K}\n\n  ");
+        assert_eq!(prepare(&given), ok("ssh-ed25519 {K}\n", 1));
+    }
+
+    #[test]
+    fn a34_interior_separators_are_kept() {
+        let given = input("ssh-ed25519\t{K}  my  comment\n");
+        assert_eq!(prepare(&given), ok("ssh-ed25519\t{K}  my  comment\n", 1));
+    }
+
+    #[test]
+    fn a35_error_line_numbers_count_leading_blank_and_trimmed_lines() {
+        let given = input("\n  \nssh-ed25519 {K}\n  bad line  \n\n");
+        assert_eq!(prepare(&given), Err(InputError::Malformed { line: 4 }));
+    }
+
+    #[test]
+    fn a36_bom_is_removed_before_trimming() {
+        let mut given = vec![0xEF, 0xBB, 0xBF];
+        given.extend(input("  ssh-ed25519 {K}\n"));
+        assert_eq!(prepare(&given), ok("ssh-ed25519 {K}\n", 1));
     }
 }
