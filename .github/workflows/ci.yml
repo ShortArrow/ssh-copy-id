@@ -62,3 +62,5 @@ jobs:
         run: docker build -t ssh-copy-id-identity-probe:ci tests/prototypes/identity-isolation
       - name: Run it without network access
         run: docker run --rm --network none ssh-copy-id-identity-probe:ci
+      - name: Linux destination fixture (L02)
+        run: sh tests/environments/linux/smoke.sh

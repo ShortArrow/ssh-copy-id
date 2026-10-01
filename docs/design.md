@@ -92,7 +92,7 @@ Each stage ends when its checks pass; the IDs are rows of the
 
 | Stage | Release | Content | Done when |
 | --- | --- | --- | --- |
-| 0. Feasibility | none | Prototype of `ssh.exe` on Windows with authentication prompts while public keys go to stdin; a Linux sshd fixture for CLI integration tests | A01 passes for a password, an encrypted key's passphrase, agent confirmation, cancellation, and no terminal; L02 passes and runs in CI |
+| 0. Feasibility | none | Prototype of `ssh.exe` on Windows with authentication prompts while public keys go to stdin; a Linux sshd fixture for CLI integration tests | A01 passes for a password, an encrypted key's passphrase, agent confirmation (or the agent's refusal of it), cancellation, and no terminal; L02 passes and runs in CI |
 | 1. Unix destination, one key (first milestone) | v0.0.1 | `[user@]host`, `-i file`, `-p`, `-o`, `-F`; the installed-key check with three results; the `sh` installation script with result lines; post-installation verification; exit statuses | Initial requirements 1, 2, 3, 7, and 8 pass as tests against L02 |
 | 1.5. CLI compatibility | v0.0.2 before stage 2; otherwise per the versioning rule | `-n`, `-f`, `-t` on Unix-like destinations, `-i` without a file, default key selection, agent keys, `-x`, upstream messages | Requirements 4 and 5 pass; the D-03 and D-11 tests pass; golden tests against the pinned script (P01) pass for the shared behavior |
 | 2. Windows standard user (second milestone) | v0.1.0 | One explicitly selected key for one standard user in normal mode: destination detection, the PowerShell installation script, ACLs on new objects | W06, W09, and W07's first check (whether an inherited profile ACL alone passes) pass before the implementation; requirements 1, 2, 3, 7, and 8 pass against the dockur fixture |
@@ -617,13 +617,32 @@ confirmation requests to SSH and the agent. This CLI does not collect or store
 passwords or passphrases. This follows upstream behavior and adds no compatibility
 difference.
 
-Whether sending public keys through stdin can coexist with authentication prompts
-in the `ssh.exe` process path on Windows is the subject of stage 0. The prototype
-covers password authentication, encrypted private keys, agent confirmation,
-cancellation, and execution without an interactive terminal. Keep authentication
-interaction separate from the public key data stream; do not solve prompt
-handling by collecting credentials in this CLI or globally enabling
-`BatchMode=yes`.
+Public keys travel on the stdin pipe of `ssh`, and both tested Windows clients
+read password and passphrase prompts from the console, not from stdin, so the
+two coexist (validation row A01). Keep authentication interaction separate from
+the public key data stream; do not solve prompt handling by collecting
+credentials in this CLI or globally enabling `BatchMode=yes`.
+
+The prompt mode follows the console, as Sudo for Windows offers inline and
+input-closed modes:
+
+| Situation | Behavior |
+| --- | --- |
+| The CLI has a console | Prompts appear inline on that console, as upstream's do on a terminal |
+| No console (`CONIN$` cannot be opened) and `SSH_ASKPASS` is set | `ssh` uses the user's askpass program |
+| No console and no `SSH_ASKPASS` | Pass `BatchMode=yes`: key and agent authentication still work, and a password or passphrase request fails at once with a message naming the reason |
+
+Without the last rule, Windows OpenSSH waits indefinitely at a password prompt
+when there is no console, while upstream on Unix fails at once when it cannot
+open a terminal. The rule keeps that upstream behavior on Windows and is not a
+difference.
+
+While `ssh` runs, the CLI does not end on a console Ctrl-C: it waits for `ssh`
+to exit and reports the outcome from what `ssh` returned. With Git for Windows'
+client, Ctrl-C reaches the CLI as well as `ssh`; ending first would leave the
+outcome unreported. The Windows OpenSSH agent refuses keys added with
+confirmation (`ssh-add -c` answers `agent refused operation`), so no
+confirmation request reaches `ssh` from it.
 
 ### Connection Backend Evaluation
 

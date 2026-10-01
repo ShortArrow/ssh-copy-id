@@ -1,0 +1,4 @@
+# Files executed or read inside Linux containers must keep LF line endings.
+tests/environments/linux/** text eol=lf
+tests/prototypes/**/*.py text eol=lf
+tests/prototypes/**/Dockerfile text eol=lf

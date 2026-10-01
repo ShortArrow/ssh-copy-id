@@ -1,0 +1,9 @@
+# keyuser authenticates with public keys only; pwuser may also use a password.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+PermitRootLogin no
+UsePAM yes
+LogLevel VERBOSE
+Match User pwuser
+    PasswordAuthentication yes
