@@ -1,5 +1,6 @@
 //! Core of ssh-copy-id: pure functions shared by the CLI and its backends.
 
+pub mod app;
 pub mod cli_args;
 pub mod installed_check;
 pub mod key_input;
