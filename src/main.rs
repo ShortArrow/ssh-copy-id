@@ -39,12 +39,20 @@ fn main() -> ExitCode {
     platform::outlive_interrupts();
     let read_file = |path: &std::path::Path| std::fs::read(path);
     let exists = |path: &std::path::Path| path.exists();
+    let same_file = |a: &std::path::Path, b: &std::path::Path| match (
+        std::fs::canonicalize(a),
+        std::fs::canonicalize(b),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
     let env = Environment {
         has_console: platform::has_console(),
         askpass_set: std::env::var_os("SSH_ASKPASS").is_some(),
         home: platform::home_dir(),
         read_file: &read_file,
         exists: &exists,
+        same_file: &same_file,
     };
     let status = app::run(
         &invocation,
@@ -67,6 +75,7 @@ fn describe(error: &ArgsError) -> Option<String> {
         ArgsError::MissingIdentity | ArgsError::IdentityWithoutFile => {
             "-i with a key file is required in this release".to_string()
         }
+        ArgsError::RepeatedIdentity => "-i option must not be specified more than once".to_string(),
         ArgsError::Unsupported(flag) => format!("option -{flag} is not available in this release"),
         ArgsError::Unknown(option) => format!("unknown option {option}"),
     })

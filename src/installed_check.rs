@@ -23,13 +23,24 @@ pub const TESTED_CLIENTS: [&str; 2] = ["OpenSSH_for_Windows_9.5p2", "OpenSSH_9.6
 ///
 /// `selected` is the `-i` argument exactly as passed to `ssh`. `home` expands a
 /// leading `~/`. `exists` reports whether a file is present; absent identity and
-/// certificate files are not offered by `ssh` and are not counted.
-pub fn other_candidates(
+/// certificate files are not offered by `ssh` and are not counted. `same_file`
+/// reports whether two paths name the same file; an `identityfile` value that
+/// equals `selected` textually or names the same file is not a candidate.
+/// A value containing `%` or `${` cannot be expanded here and is always a
+/// candidate, without consulting `exists`. The selected key's own certificate,
+/// `<selected>-cert.pub` or `<selected>-cert`, is a candidate when it exists.
+pub fn other_candidates_matching(
     config: &str,
     selected: &str,
     home: &Path,
     exists: &dyn Fn(&Path) -> bool,
+    same_file: &dyn Fn(&Path, &Path) -> bool,
 ) -> Vec<String> {
+    let is_selected = |value: &str| {
+        value == selected
+            || (is_expandable(value) && same_file(&expand(home, value), Path::new(selected)))
+    };
+    let is_present = |value: &str| !is_expandable(value) || exists(&expand(home, value));
     let mut others = Vec::new();
     for line in config.lines() {
         let line = line.trim_end_matches('\r');
@@ -37,10 +48,10 @@ pub fn other_candidates(
             continue;
         };
         match key.to_ascii_lowercase().as_str() {
-            "identityfile" if value != selected && exists(&expand(home, value)) => {
+            "identityfile" if !is_selected(value) && is_present(value) => {
                 others.push(format!("identity file {value}"));
             }
-            "certificatefile" if exists(&expand(home, value)) => {
+            "certificatefile" if is_present(value) => {
                 others.push(format!("certificate {value}"));
             }
             "pkcs11provider" if value != "none" => {
@@ -49,11 +60,18 @@ pub fn other_candidates(
             _ => {}
         }
     }
-    let own_certificate = format!("{selected}-cert.pub");
-    if exists(&expand(home, &own_certificate)) {
+    let own_certificate = ["-cert.pub", "-cert"]
+        .iter()
+        .map(|suffix| format!("{selected}{suffix}"))
+        .find(|path| exists(&expand(home, path)));
+    if let Some(own_certificate) = own_certificate {
         others.push(format!("certificate {own_certificate}"));
     }
     others
+}
+
+fn is_expandable(value: &str) -> bool {
+    !value.contains('%') && !value.contains("${")
 }
 
 fn expand(home: &Path, value: &str) -> PathBuf {
@@ -63,16 +81,47 @@ fn expand(home: &Path, value: &str) -> PathBuf {
     }
 }
 
+/// Stderr fragments of a status-255 probe that mean the host key was rejected
+/// or the connection failed, so authentication was never attempted.
+const NO_AUTHENTICATION_FAILURES: [&str; 12] = [
+    "Host key verification failed",
+    "REMOTE HOST IDENTIFICATION HAS CHANGED",
+    "Connection refused",
+    "Connection timed out",
+    "Operation timed out",
+    "Could not resolve hostname",
+    "No route to host",
+    "Network is unreachable",
+    "Connection closed by",
+    "Connection reset",
+    "kex_exchange_identification",
+    "connect to host",
+];
+
 /// Classifies a probe from its exit status and stderr, given the other candidates.
+///
+/// Exit 0 is `Installed` only when no other candidate exists and stderr shows
+/// authentication `using "publickey"` (the probe runs with `LogLevel=VERBOSE`);
+/// a server accepting another method, such as `none`, lets the probe succeed
+/// without the key. Exit 255 is `NotInstalled` on `Permission denied (`,
+/// `Failed` on a recognised host key or connection failure, and `Inconclusive`
+/// otherwise.
 pub fn classify(exit: Option<i32>, stderr: &str, others: &[String]) -> CheckResult {
     match exit {
-        Some(0) if others.is_empty() => CheckResult::Installed,
-        Some(0) => CheckResult::Inconclusive(format!(
+        Some(0) if !others.is_empty() => CheckResult::Inconclusive(format!(
             "another identity could have authenticated: {}",
             others.join(", ")
         )),
-        Some(255) if stderr.contains("Permission denied") => CheckResult::NotInstalled,
-        Some(255) => CheckResult::Failed(last_line(stderr)),
+        Some(0) if stderr.contains("using \"publickey\"") => CheckResult::Installed,
+        Some(0) => CheckResult::Inconclusive(without_selected_key(stderr)),
+        Some(255) if stderr.contains("Permission denied (") => CheckResult::NotInstalled,
+        Some(255) => match last_line(stderr) {
+            Some(line) if contains_any(stderr, &NO_AUTHENTICATION_FAILURES) => {
+                CheckResult::Failed(line)
+            }
+            Some(line) => CheckResult::Inconclusive(format!("ssh exited with status 255: {line}")),
+            None => CheckResult::Inconclusive("ssh exited with status 255".to_string()),
+        },
         Some(code) => CheckResult::Inconclusive(format!(
             "the session failed after authentication with exit status {code}"
         )),
@@ -80,12 +129,32 @@ pub fn classify(exit: Option<i32>, stderr: &str, others: &[String]) -> CheckResu
     }
 }
 
-fn last_line(text: &str) -> String {
+fn without_selected_key(stderr: &str) -> String {
+    match authenticated_method(stderr) {
+        Some(method) => {
+            format!("authentication succeeded without the selected key, using \"{method}\"")
+        }
+        None => "authentication succeeded without the selected key".to_string(),
+    }
+}
+
+fn authenticated_method(stderr: &str) -> Option<&str> {
+    stderr.lines().find_map(|line| {
+        let after = &line[line.find("Authenticated to ")?..];
+        let quoted = &after[after.find(" using \"")? + " using \"".len()..];
+        quoted.split_once('"').map(|(method, _)| method)
+    })
+}
+
+fn contains_any(text: &str, fragments: &[&str]) -> bool {
+    fragments.iter().any(|fragment| text.contains(fragment))
+}
+
+fn last_line(text: &str) -> Option<String> {
     text.lines()
         .map(|line| line.trim_end_matches('\r').trim())
         .rfind(|line| !line.is_empty())
-        .unwrap_or("ssh exited with status 255")
-        .to_string()
+        .map(str::to_string)
 }
 
 /// Whether the first line of `ssh -V` output names a tested client version.
@@ -105,7 +174,11 @@ mod tests {
     const SELECTED: &str = "C:/keys/sel";
 
     fn exists_except_own_certificate(p: &Path) -> bool {
-        p != Path::new("C:/keys/sel-cert.pub")
+        p != Path::new("C:/keys/sel-cert.pub") && p != Path::new("C:/keys/sel-cert")
+    }
+
+    fn textually_equal(a: &Path, b: &Path) -> bool {
+        a == b
     }
 
     fn exists_none(_: &Path) -> bool {
@@ -115,7 +188,16 @@ mod tests {
     #[test]
     fn c01_only_the_selected_identity() {
         let config = format!("user u\nidentityfile {SELECTED}\nidentitiesonly yes\n");
-        assert!(other_candidates(&config, SELECTED, Path::new("/h"), &exists_none).is_empty());
+        assert!(
+            other_candidates_matching(
+                &config,
+                SELECTED,
+                Path::new("/h"),
+                &exists_none,
+                &textually_equal
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -126,7 +208,13 @@ mod tests {
             seen.borrow_mut().push(p.to_path_buf());
             exists_except_own_certificate(p)
         };
-        let others = other_candidates(&config, SELECTED, Path::new("/h"), &exists);
+        let others = other_candidates_matching(
+            &config,
+            SELECTED,
+            Path::new("/h"),
+            &exists,
+            &textually_equal,
+        );
         assert_eq!(others, vec!["identity file ~/.ssh/extra_key".to_string()]);
         assert!(
             seen.borrow()
@@ -138,18 +226,28 @@ mod tests {
     fn c03_a_configured_identity_that_is_absent_is_not_a_candidate() {
         let config = format!("identityfile {SELECTED}\nidentityfile ~/.ssh/extra_key\n");
         let exists = |p: &Path| !p.ends_with("extra_key") && exists_except_own_certificate(p);
-        assert!(other_candidates(&config, SELECTED, Path::new("/h"), &exists).is_empty());
+        assert!(
+            other_candidates_matching(
+                &config,
+                SELECTED,
+                Path::new("/h"),
+                &exists,
+                &textually_equal
+            )
+            .is_empty()
+        );
     }
 
     #[test]
     fn c04_a_configured_certificate_is_a_candidate() {
         let config = format!("identityfile {SELECTED}\ncertificatefile ~/.ssh/c-cert.pub\n");
         assert_eq!(
-            other_candidates(
+            other_candidates_matching(
                 &config,
                 SELECTED,
                 Path::new("/h"),
-                &exists_except_own_certificate
+                &exists_except_own_certificate,
+                &textually_equal
             ),
             vec!["certificate ~/.ssh/c-cert.pub".to_string()]
         );
@@ -160,7 +258,13 @@ mod tests {
         let config = format!("identityfile {SELECTED}\n");
         let exists = |p: &Path| p == Path::new("C:/keys/sel-cert.pub");
         assert_eq!(
-            other_candidates(&config, SELECTED, Path::new("/h"), &exists),
+            other_candidates_matching(
+                &config,
+                SELECTED,
+                Path::new("/h"),
+                &exists,
+                &textually_equal
+            ),
             vec!["certificate C:/keys/sel-cert.pub".to_string()]
         );
     }
@@ -170,21 +274,37 @@ mod tests {
         let with = format!("identityfile {SELECTED}\npkcs11provider /lib/p11.so\n");
         let without = format!("identityfile {SELECTED}\npkcs11provider none\n");
         assert_eq!(
-            other_candidates(&with, SELECTED, Path::new("/h"), &exists_none),
+            other_candidates_matching(
+                &with,
+                SELECTED,
+                Path::new("/h"),
+                &exists_none,
+                &textually_equal
+            ),
             vec!["PKCS#11 provider /lib/p11.so".to_string()]
         );
-        assert!(other_candidates(&without, SELECTED, Path::new("/h"), &exists_none).is_empty());
+        assert!(
+            other_candidates_matching(
+                &without,
+                SELECTED,
+                Path::new("/h"),
+                &exists_none,
+                &textually_equal
+            )
+            .is_empty()
+        );
     }
 
     #[test]
     fn c07_keys_are_matched_case_insensitively_and_values_keep_spaces() {
         let config = format!("IdentityFile {SELECTED}\nidentityfile ~/my keys/k\n");
         assert_eq!(
-            other_candidates(
+            other_candidates_matching(
                 &config,
                 SELECTED,
                 Path::new("/h"),
-                &exists_except_own_certificate
+                &exists_except_own_certificate,
+                &textually_equal
             ),
             vec!["identity file ~/my keys/k".to_string()]
         );
@@ -192,7 +312,16 @@ mod tests {
 
     #[test]
     fn k01_success_with_no_other_candidate_is_installed() {
-        assert_eq!(classify(Some(0), "", &[]), CheckResult::Installed);
+        let stderr = "Authenticated to h ([127.0.0.1]:22) using \"publickey\".\r\n";
+        assert_eq!(classify(Some(0), stderr, &[]), CheckResult::Installed);
+    }
+
+    #[test]
+    fn k01b_success_without_publickey_evidence_is_inconclusive() {
+        assert!(matches!(
+            classify(Some(0), "", &[]),
+            CheckResult::Inconclusive(_)
+        ));
     }
 
     #[test]
@@ -254,6 +383,105 @@ mod tests {
             CheckResult::Failed(
                 "ssh: Could not resolve hostname nowhere: No such host is known.".to_string()
             )
+        );
+    }
+
+    #[test]
+    fn k09_success_by_another_method_is_inconclusive_naming_it() {
+        let stderr = "Authenticated to h ([127.0.0.1]:22) using \"none\".";
+        assert!(matches!(
+            classify(Some(0), stderr, &[]),
+            CheckResult::Inconclusive(reason) if reason.contains("none")
+        ));
+    }
+
+    #[test]
+    fn k10_changed_host_key_stops_the_run() {
+        let stderr = "@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@";
+        assert!(matches!(
+            classify(Some(255), stderr, &[]),
+            CheckResult::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn k11_connect_permission_denied_is_a_connection_failure() {
+        let stderr = "ssh: connect to host h port 22: Permission denied";
+        assert!(matches!(
+            classify(Some(255), stderr, &[]),
+            CheckResult::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn k12_unrecognised_status_255_is_inconclusive_with_the_last_line() {
+        assert!(matches!(
+            classify(Some(255), "something unexpected", &[]),
+            CheckResult::Inconclusive(reason) if reason.contains("something unexpected")
+        ));
+    }
+
+    #[test]
+    fn c08_an_identity_that_is_the_same_file_as_the_selected_one_is_not_a_candidate() {
+        let config = format!("identityfile {SELECTED}\nidentityfile ~/.ssh/same\n");
+        let same_file = |a: &Path, b: &Path| {
+            a == b || (a == Path::new("/h/.ssh/same") && b == Path::new(SELECTED))
+        };
+        assert!(
+            other_candidates_matching(
+                &config,
+                SELECTED,
+                Path::new("/h"),
+                &exists_except_own_certificate,
+                &same_file
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn c09_an_identity_with_a_percent_token_is_always_a_candidate() {
+        let config = format!("identityfile {SELECTED}\nidentityfile %d/.ssh/work\n");
+        assert_eq!(
+            other_candidates_matching(
+                &config,
+                SELECTED,
+                Path::new("/h"),
+                &exists_none,
+                &textually_equal
+            ),
+            vec!["identity file %d/.ssh/work".to_string()]
+        );
+    }
+
+    #[test]
+    fn c10_a_certificate_with_an_environment_reference_is_always_a_candidate() {
+        let config = format!("identityfile {SELECTED}\ncertificatefile ${{HOME}}/.ssh/c\n");
+        assert_eq!(
+            other_candidates_matching(
+                &config,
+                SELECTED,
+                Path::new("/h"),
+                &exists_none,
+                &textually_equal
+            ),
+            vec!["certificate ${HOME}/.ssh/c".to_string()]
+        );
+    }
+
+    #[test]
+    fn c11_the_selected_key_s_own_certificate_without_pub_is_a_candidate() {
+        let config = format!("identityfile {SELECTED}\n");
+        let exists = |p: &Path| p == Path::new("C:/keys/sel-cert");
+        assert_eq!(
+            other_candidates_matching(
+                &config,
+                SELECTED,
+                Path::new("/h"),
+                &exists,
+                &textually_equal
+            ),
+            vec!["certificate C:/keys/sel-cert".to_string()]
         );
     }
 

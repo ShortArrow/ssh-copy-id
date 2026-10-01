@@ -41,6 +41,8 @@ pub enum ArgsError {
     MissingIdentity,
     /// `-i` was not followed by a file name; default key selection is not available yet.
     IdentityWithoutFile,
+    /// `-i` was given more than once.
+    RepeatedIdentity,
     /// An upstream option that this release does not implement yet.
     Unsupported(char),
     /// An option upstream does not have.
@@ -86,6 +88,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, ArgsError> {
                     }
                     break;
                 }
+                'i' if identity.is_some() => return Err(ArgsError::RepeatedIdentity),
                 'i' => match args.get(index) {
                     Some(file) if !file.starts_with('-') => {
                         identity = Some(file.clone());
@@ -279,10 +282,10 @@ mod tests {
     }
 
     #[test]
-    fn p18_last_identity_wins() {
+    fn p18_repeated_identity_is_an_error() {
         assert_eq!(
             parse(&args(&["-i", "a", "-i", "b", "h"])),
-            Ok(invocation("h", "b"))
+            Err(ArgsError::RepeatedIdentity)
         );
     }
 }

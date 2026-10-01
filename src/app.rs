@@ -1,9 +1,9 @@
 //! One run of the CLI: the stage 1 flow from the selected key to the reported outcome.
 
 use crate::cli_args::{Invocation, SshOption};
-use crate::installed_check::{CheckResult, classify, is_tested_client, other_candidates};
-use crate::key_input::{InputError, prepare};
-use crate::remote_script::unix_install_command;
+use crate::installed_check::{CheckResult, classify, is_tested_client, other_candidates_matching};
+use crate::key_input::{InputError, key_lines, prepare};
+use crate::remote_script::{install_command, sh_quote};
 use crate::result_line::{Outcome, parse_report};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -33,10 +33,13 @@ pub struct Environment<'a> {
     pub has_console: bool,
     /// Whether `SSH_ASKPASS` is set.
     pub askpass_set: bool,
-    /// The home directory used to expand `~/` in `ssh -G` output.
+    /// The home directory used to expand a leading `~/` or `~\` in the `-i`
+    /// path and `~/` in `ssh -G` output.
     pub home: PathBuf,
     pub read_file: &'a dyn Fn(&Path) -> io::Result<Vec<u8>>,
     pub exists: &'a dyn Fn(&Path) -> bool,
+    /// Whether two paths name the same file.
+    pub same_file: &'a dyn Fn(&Path, &Path) -> bool,
 }
 
 /// Runs the stage 1 flow and returns the exit status: 0 when the key is installed
@@ -65,8 +68,11 @@ fn install(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), String> {
-    let public_key = invocation.public_key.display().to_string();
-    let input = (env.read_file)(&invocation.public_key)
+    let public_path = expand_home(&env.home, &invocation.public_key);
+    let private_path = expand_home(&env.home, &invocation.private_key);
+    let public_key = public_path.display().to_string();
+    let identity = private_path.display().to_string();
+    let input = (env.read_file)(&public_path)
         .map_err(|e| format!("failed to open ID file '{public_key}': {e}"))?;
     let prepared = prepare(&input).map_err(|e| input_error(&public_key, &e))?;
     if prepared.key_count > 1 {
@@ -74,6 +80,9 @@ fn install(
             "'{public_key}' contains {} keys; this release installs one key per run",
             prepared.key_count
         ));
+    }
+    if !(env.exists)(&private_path) {
+        return Err(format!("failed to open ID file '{identity}'"));
     }
     info(
         err,
@@ -98,11 +107,13 @@ fn install(
     }
 
     let common = common_args(invocation, env);
-    let identity = if (env.exists)(&invocation.private_key) {
-        invocation.private_key.display().to_string()
-    } else {
-        public_key.clone()
-    };
+    if batch_mode(env) {
+        info(
+            err,
+            "there is no console and SSH_ASKPASS is not set, so ssh runs with BatchMode=yes; \
+             password and passphrase prompts fail",
+        );
+    }
     let mut config_args = vec![
         "-G".to_string(),
         "-i".to_string(),
@@ -119,11 +130,12 @@ fn install(
             String::from_utf8_lossy(&config.stderr).trim()
         ));
     }
-    let others = other_candidates(
+    let others = other_candidates_matching(
         &String::from_utf8_lossy(&config.stdout),
         &identity,
         &env.home,
         env.exists,
+        env.same_file,
     );
     let probe_args = probe_args(&identity, &common, &invocation.destination);
 
@@ -158,11 +170,24 @@ fn install(
         err,
         "1 key(s) remain to be installed -- if you are prompted now it is to install the new keys",
     );
-    let mut install_args = common.clone();
+    let mut install_args = vec!["-o".to_string(), "RequestTTY=no".to_string()];
+    install_args.extend(common.iter().cloned());
     install_args.push(invocation.destination.clone());
-    install_args.push(unix_install_command(TARGET));
-    let installed = run_ssh(ssh, &install_args, &prepared.text, false)?;
+    install_args.push(install_command(None));
+    let installed = run_ssh(ssh, &install_args, &key_lines(&prepared), false)?;
+    if installed.status == Some(255) && !has_report_line(&installed.stdout) {
+        return Err(
+            "ssh exited with status 255 before the installation script reported \
+                    anything; if authentication failed, nothing was written"
+                .to_string(),
+        );
+    }
     let report = parse_report(&installed.stdout);
+    let target = report
+        .keys
+        .first()
+        .map(|key| String::from_utf8_lossy(&key.path).into_owned())
+        .unwrap_or_else(|| TARGET.to_string());
     let added = report
         .keys
         .iter()
@@ -172,24 +197,24 @@ fn install(
         Outcome::Installed => {}
         Outcome::Partial => {
             return Err(format!(
-                "only {added} key(s) were written to {TARGET} before the remote side failed"
+                "only {added} key(s) were written to {target} before the remote side failed"
             ));
         }
-        Outcome::Unchanged => return Err(format!("the key was not written to {TARGET}")),
+        Outcome::Unchanged => return Err(format!("the key was not written to {target}")),
         Outcome::Unknown => {
             return Err(format!(
-                "the connection ended without a result; {TARGET} may or may not have changed"
+                "the connection ended without a result; {target} may or may not have changed"
             ));
         }
     }
 
     match check(ssh, &probe_args, &others)? {
-        CheckResult::Installed => {}
+        CheckResult::Installed => info(err, "the key authenticates: it is installed and verified"),
         CheckResult::NotInstalled => warn(
             err,
             &format!(
                 "the key was installed but could not be verified: the server still rejects it; \
-                 check the permissions of {TARGET} and its directory"
+                 check the permissions of {target} and its directory"
             ),
         ),
         CheckResult::Inconclusive(reason) | CheckResult::Failed(reason) => warn(
@@ -198,17 +223,7 @@ fn install(
         ),
     }
 
-    let mut login = format!("ssh -i {}", invocation.private_key.display());
-    if let Some(port) = &invocation.port {
-        login.push_str(&format!(" -p {port}"));
-    }
-    for option in &invocation.ssh_options {
-        match option {
-            SshOption::Option(value) => login.push_str(&format!(" -o '{value}'")),
-            SshOption::Config(value) => login.push_str(&format!(" -F '{value}'")),
-        }
-    }
-    login.push_str(&format!(" '{}'", invocation.destination));
+    let login = login_command(invocation, &identity);
     let _ = write!(
         out,
         "\nNumber of key(s) added: {added}\n\n\
@@ -232,11 +247,47 @@ fn common_args(invocation: &Invocation, env: &Environment) -> Vec<String> {
         args.push(flag.to_string());
         args.push(value.clone());
     }
-    if !env.has_console && !env.askpass_set {
+    if batch_mode(env) {
         args.push("-o".to_string());
         args.push("BatchMode=yes".to_string());
     }
     args
+}
+
+fn batch_mode(env: &Environment) -> bool {
+    !env.has_console && !env.askpass_set
+}
+
+fn expand_home(home: &Path, path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\")) {
+        Some(rest) => home.join(rest),
+        None => path.to_path_buf(),
+    }
+}
+
+fn has_report_line(stdout: &[u8]) -> bool {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .any(|line| line.starts_with("ssh-copy-id:"))
+}
+
+fn login_command(invocation: &Invocation, identity: &str) -> String {
+    let mut words = vec!["ssh".to_string(), "-i".to_string(), sh_quote(identity)];
+    if let Some(port) = &invocation.port {
+        words.push("-p".to_string());
+        words.push(sh_quote(port));
+    }
+    for option in &invocation.ssh_options {
+        let (flag, value) = match option {
+            SshOption::Option(value) => ("-o", value),
+            SshOption::Config(value) => ("-F", value),
+        };
+        words.push(flag.to_string());
+        words.push(sh_quote(value));
+    }
+    words.push(sh_quote(&invocation.destination));
+    words.join(" ")
 }
 
 fn probe_args(identity: &str, common: &[String], destination: &str) -> Vec<String> {
@@ -246,7 +297,7 @@ fn probe_args(identity: &str, common: &[String], destination: &str) -> Vec<Strin
         "-o",
         "ControlPath=none",
         "-o",
-        "LogLevel=INFO",
+        "LogLevel=VERBOSE",
         "-o",
         "PreferredAuthentications=publickey",
         "-o",
@@ -309,10 +360,12 @@ fn warn(err: &mut dyn Write, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote_script::install_command;
     use std::collections::HashMap;
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== me@here";
     const DENIED: &str = "u@h: Permission denied (publickey).\r\n";
+    const ACCEPTED: &str = "Authenticated to h ([127.0.0.1]:22) using \"publickey\".\r\n";
 
     #[derive(Default)]
     struct FakeSsh {
@@ -337,8 +390,12 @@ mod tests {
             self
         }
 
-        fn installs(mut self, stdout: &str) -> FakeSsh {
-            self.install = Some(output(0, stdout, ""));
+        fn installs(self, stdout: &str) -> FakeSsh {
+            self.installs_with(0, stdout)
+        }
+
+        fn installs_with(mut self, status: i32, stdout: &str) -> FakeSsh {
+            self.install = Some(output(status, stdout, ""));
             self
         }
 
@@ -435,12 +492,14 @@ mod tests {
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))
         };
         let exists = |p: &Path| files.contains_key(p);
+        let same_file = |a: &Path, b: &Path| a == b;
         let env = Environment {
             has_console,
             askpass_set,
             home: PathBuf::from("C:/home"),
             read_file: &read_file,
             exists: &exists,
+            same_file: &same_file,
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let status = run(invocation, &env, &mut ssh, &mut out, &mut err);
@@ -458,7 +517,7 @@ mod tests {
 
     #[test]
     fn a01_installed_key_is_skipped_without_writing() {
-        let run = execute(FakeSsh::new().probe(0, ""));
+        let run = execute(FakeSsh::new().probe(0, ACCEPTED));
         assert_eq!(run.status, 0);
         assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
         assert!(run.err.contains("All keys were skipped"), "{}", run.err);
@@ -470,7 +529,7 @@ mod tests {
             FakeSsh::new()
                 .probe(255, DENIED)
                 .installs(INSTALLED)
-                .probe(0, ""),
+                .probe(0, ACCEPTED),
         );
         assert_eq!(run.status, 0, "{}", run.err);
         assert_eq!(
@@ -481,14 +540,18 @@ mod tests {
         assert_eq!(stdin, &format!("{KEY}\n").into_bytes());
         assert!(!capture_stderr);
         assert_eq!(args[args.len() - 2], "u@h");
-        assert_eq!(args.last().unwrap(), &unix_install_command(TARGET));
+        assert_eq!(args.last().unwrap(), &install_command(None));
         assert!(run.out.contains("Number of key(s) added: 1"), "{}", run.out);
         assert!(!run.err.contains("could not be verified"), "{}", run.err);
+        assert!(run.err.contains("the key authenticates"), "{}", run.err);
     }
 
     #[test]
     fn a03_another_candidate_makes_the_check_inconclusive_and_installs() {
-        let mut ssh = FakeSsh::new().probe(0, "").installs(INSTALLED).probe(0, "");
+        let mut ssh = FakeSsh::new()
+            .probe(0, ACCEPTED)
+            .installs(INSTALLED)
+            .probe(0, ACCEPTED);
         ssh.config = "identityfile C:/k/id\nidentityfile ~/.ssh/other\n".into();
         let mut files = files();
         files.insert(PathBuf::from("C:/home/.ssh/other"), Vec::new());
@@ -564,9 +627,14 @@ mod tests {
                         .any(|w| w[0] == "-o" && w[1] == "BatchMode=yes")
                 })
         };
-        let scripted = || FakeSsh::new().probe(0, "");
+        let scripted = || FakeSsh::new().probe(0, ACCEPTED);
         let no_console = execute_with(&invocation(), files(), false, false, scripted());
         assert!(has_batch(&no_console));
+        assert!(
+            no_console.err.contains("BatchMode=yes"),
+            "{}",
+            no_console.err
+        );
         let with_askpass = execute_with(&invocation(), files(), false, true, scripted());
         assert!(
             !with_askpass
@@ -583,15 +651,20 @@ mod tests {
                 .iter()
                 .any(|(a, _, _)| a.iter().any(|x| x == "BatchMode=yes"))
         );
+        assert!(
+            !with_console.err.contains("BatchMode=yes"),
+            "{}",
+            with_console.err
+        );
     }
 
     #[test]
     fn a10_untested_client_is_warned_about() {
-        let mut ssh = FakeSsh::new().probe(0, "");
+        let mut ssh = FakeSsh::new().probe(0, ACCEPTED);
         ssh.version = "OpenSSH_10.0p2, OpenSSL 3.2.4\n".into();
         let run = execute(ssh);
         assert!(run.err.contains("OpenSSH_10.0p2"), "{}", run.err);
-        let tested = execute(FakeSsh::new().probe(0, ""));
+        let tested = execute(FakeSsh::new().probe(0, ACCEPTED));
         assert!(!tested.err.contains("WARNING: OpenSSH"), "{}", tested.err);
     }
 
@@ -608,7 +681,7 @@ mod tests {
             files(),
             true,
             false,
-            FakeSsh::new().probe(0, ""),
+            FakeSsh::new().probe(0, ACCEPTED),
         );
         let (args, stdin, capture_stderr) = run.ssh.call("probe");
         let expected: Vec<String> = [
@@ -617,7 +690,7 @@ mod tests {
             "-o",
             "ControlPath=none",
             "-o",
-            "LogLevel=INFO",
+            "LogLevel=VERBOSE",
             "-o",
             "PreferredAuthentications=publickey",
             "-o",
@@ -660,18 +733,17 @@ mod tests {
     }
 
     #[test]
-    fn a14_identity_falls_back_to_the_public_key_file() {
+    fn a14_missing_private_key_stops_before_any_connection() {
         let mut files = files();
         files.remove(&PathBuf::from("C:/k/id"));
-        let run = execute_with(
-            &invocation(),
-            files,
-            true,
-            false,
-            FakeSsh::new().probe(0, ""),
+        let run = execute_with(&invocation(), files, true, false, FakeSsh::new());
+        assert_eq!(run.status, 1);
+        assert!(
+            run.err.contains("failed to open ID file 'C:/k/id'"),
+            "{}",
+            run.err
         );
-        let (args, _, _) = run.ssh.call("probe");
-        assert_eq!(args[1], "C:/k/id.pub");
+        assert!(run.ssh.calls.is_empty());
     }
 
     #[test]
@@ -680,5 +752,111 @@ mod tests {
         let run = execute(FakeSsh::new().probe(255, DENIED).installs(failed));
         assert_eq!(run.status, 1);
         assert!(!run.ssh.kinds()[4..].contains(&"probe"));
+    }
+
+    #[test]
+    fn a23_messages_name_the_target_the_remote_side_reported() {
+        let failed = "ssh-copy-id: key=1 result=failed path=/etc/dropbear/authorized_keys\nssh-copy-id: result=unchanged added=0\n";
+        let run = execute(FakeSsh::new().probe(255, DENIED).installs(failed));
+        assert_eq!(run.status, 1);
+        assert!(
+            run.err.contains("/etc/dropbear/authorized_keys"),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn a16_install_puts_request_tty_before_user_options() {
+        let mut invocation = invocation();
+        invocation.port = Some("2222".into());
+        invocation.ssh_options = vec![
+            SshOption::Option("User=x".into()),
+            SshOption::Config("cfg".into()),
+        ];
+        let run = execute_with(
+            &invocation,
+            files(),
+            false,
+            false,
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(0, ACCEPTED),
+        );
+        let (args, _, _) = run.ssh.call("install");
+        let expected: Vec<String> = [
+            "-o",
+            "RequestTTY=no",
+            "-p",
+            "2222",
+            "-o",
+            "User=x",
+            "-F",
+            "cfg",
+            "-o",
+            "BatchMode=yes",
+            "u@h",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .chain([install_command(None)])
+        .collect();
+        assert_eq!(args, &expected);
+    }
+
+    #[test]
+    fn a20_tilde_in_identity_is_expanded_with_home() {
+        let mut invocation = invocation();
+        invocation.public_key = PathBuf::from("~/k/id.pub");
+        invocation.private_key = PathBuf::from("~/k/id");
+        let home = PathBuf::from("C:/home");
+        let files = HashMap::from([
+            (home.join("k/id.pub"), format!("{KEY}\n").into_bytes()),
+            (home.join("k/id"), b"private".to_vec()),
+        ]);
+        let run = execute_with(
+            &invocation,
+            files,
+            true,
+            false,
+            FakeSsh::new().probe(0, ACCEPTED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        let (args, _, _) = run.ssh.call("probe");
+        assert!(
+            args.contains(&home.join("k/id").display().to_string()),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn a21_install_exit_255_without_report_says_nothing_was_written_if_auth_failed() {
+        let run = execute(FakeSsh::new().probe(255, DENIED).installs_with(255, ""));
+        assert_eq!(run.status, 1);
+        assert!(run.err.contains("status 255"), "{}", run.err);
+        assert!(run.err.contains("nothing was written"), "{}", run.err);
+    }
+
+    #[test]
+    fn a22_login_suggestion_quotes_every_value() {
+        let mut invocation = invocation();
+        invocation.ssh_options = vec![SshOption::Option("ProxyCommand=echo 'x'".into())];
+        let run = execute_with(
+            &invocation,
+            files(),
+            true,
+            false,
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(0, ACCEPTED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(
+            run.out.contains(r"-o 'ProxyCommand=echo '\''x'\'''"),
+            "{}",
+            run.out
+        );
     }
 }
