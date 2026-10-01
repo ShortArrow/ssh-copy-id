@@ -341,8 +341,30 @@ command as upstream does; that case belongs to stage 1.5.
 
 The Unix installation command is one line, as upstream's is, so that csh and
 tcsh login shells can run `exec sh -c '…'`: they reject a newline inside single
-quotes and expand `!` even there. A non-empty target file that cannot be read is
-not written, because its last byte cannot be checked for a final newline.
+quotes and expand `!` even there.
+
+### Recorded Difference: Targets That Cannot Be Appended Safely
+
+A target that exists but is not a regular file, such as a FIFO or a directory,
+and a non-empty target that cannot be read are not written; every key is
+reported failed. Upstream appends to an unreadable file without knowing whether
+its last line ends with a newline, which can join the new key to that line, and
+opening a FIFO waits for a reader indefinitely. Apparent intent: upstream expects
+the target to be the account's own readable file. Reason to differ: damage to
+existing data, and a run that never ends without reporting. This is difference
+D-16.
+
+### Recorded Difference: Removing a Partial Write
+
+When appending a line fails, for example on a full file system, the script
+truncates the target back to its size before that line, including a newline it
+added before the first line; a file the run created is removed. Upstream leaves
+the fragment, so the file no longer ends with a newline and the next append joins
+onto it, while the run reports that the key was not written. Apparent intent:
+upstream reports a failed append as a failed run and expects nothing to be left.
+Reason to differ: damage to existing data and a false report that nothing was
+written. When the size afterwards cannot be confirmed, the key is reported
+`uncertain` and the user is told to check the file. This is difference D-17.
 
 ### Dry-Run Behavior
 
@@ -388,10 +410,12 @@ difference [O-04](compatibility.md#destination-differences), validation row W05)
 Usage errors exit 1, as in upstream.
 
 The format is one line per key,
-`ssh-copy-id: key=<n> result=<added|skipped|failed> path=<file>`, then one
+`ssh-copy-id: key=<n> result=<added|skipped|failed|uncertain> path=<file>`, then one
 summary line as the final output,
-`ssh-copy-id: result=<unchanged|installed|partial> added=<n>`. `<n>` is the key's
-position in the input, starting at 1, without leading zeros. In `<file>`, every
+`ssh-copy-id: result=<unchanged|installed|partial|uncertain> added=<n>`. `<n>` is
+the key's position among the key lines of the input, starting at 1, without
+leading zeros. `uncertain` marks a failed write whose removal could not be
+confirmed (D-17). In `<file>`, every
 byte outside `0x21` to `0x7E`, and `%` and `=`, is written as `%XX` in uppercase
 hexadecimal; encoding bytes from `0x80` keeps a console code page from altering a
 non-ASCII path. Lines without the `ssh-copy-id: ` prefix are ignored. A prefixed
@@ -487,6 +511,14 @@ byte order mark. Reason to differ: a false success report, because a line that
 begins with one is not recognized as a key. Windows editors and PowerShell 5
 redirection produce such files. This is difference D-07, not a bug fix. Test a
 prefixed `.pub` file through both transports and forced mode.
+
+#### Recorded Difference: Counting Keys
+
+`#` comment lines and blank lines in the key file are appended as upstream
+appends them. Upstream also counts them in "Number of key(s) added" and in the
+keys that remain to be installed. Here only key lines are numbered, reported,
+and counted. Apparent intent: upstream expects one key per line. Reason to
+differ: a false report of how many keys were installed. This is difference D-18.
 
 ## Remote Operating Systems and Shells
 
@@ -589,12 +621,14 @@ Verify that the configured `AddKeysToAgent` behavior is preserved and that the
 CLI itself issues no key-addition or service-management commands.
 
 Option precedence has the same three phases as upstream, with upstream's
-overrides and nothing more.
+overrides and nothing more. Every `ssh` connection passes `-a -x` ahead of the
+user's options, as upstream's `ssh -a -x` does, so a configured `ForwardAgent`
+or `ForwardX11` does not reach a host that is only being set up.
 
 | Phase | Options this tool sets | User options |
 | --- | --- | --- |
-| Installed-key check | `ControlPath=none`, `LogLevel=VERBOSE`, `PreferredAuthentications=publickey`, `IdentitiesOnly=yes`, and `-i` with the selected key | `-o`, `-F`, `-p`, and the user's configuration are passed through after the overrides |
-| Installation | `RequestTTY=no` (D-15) | passed through after the override |
+| Installed-key check | `-a`, `-x`, `ControlPath=none`, `LogLevel=VERBOSE`, `PreferredAuthentications=publickey`, `IdentitiesOnly=yes`, and `-i` with the selected key | `-o`, `-F`, `-p`, and the user's configuration are passed through after the overrides |
+| Installation | `-a`, `-x`, `RequestTTY=no` (D-15) | passed through after the override |
 | `-s` transfer | a control master shared by the `sftp` sessions, as upstream | passed through unchanged |
 
 Upstream sets `LogLevel=INFO` for the probe; `VERBOSE` adds the authentication
@@ -665,7 +699,7 @@ input-closed modes:
 | --- | --- |
 | The CLI has a console | Prompts appear inline on that console, as upstream's do on a terminal |
 | No console (`CONIN$` cannot be opened) and `SSH_ASKPASS` is set | `ssh` uses the user's askpass program |
-| No console and no `SSH_ASKPASS` | Pass `BatchMode=yes`: key and agent authentication still work, and a password or passphrase request fails at once with a message naming the reason |
+| No console and no `SSH_ASKPASS` | Pass `BatchMode=yes` ahead of the user's options, so a configured `BatchMode no` cannot reopen the wait: key and agent authentication still work, and a password or passphrase request fails at once with a message naming the reason |
 
 Without the last rule, Windows OpenSSH waits indefinitely at a password prompt
 when there is no console, while upstream on Unix fails at once when it cannot
@@ -746,7 +780,7 @@ Argument parsing, key input validation, the installation plan, and the outcome
 states are pure functions with unit tests. The `ssh.exe` and `sftp.exe`
 invocations sit behind a backend trait with a fake for CLI-level tests.
 Integration tests run the real backend against the
-[Linux Docker fixture](../tests/prototypes/identity-isolation/README.md) and the
+[Linux Docker fixture](../tests/environments/linux/) and the
 [Windows dockur fixture](../tests/environments/windows/README.md). Compatibility
 is a golden test: the pinned upstream script and this CLI run against the same
 Linux fixture, and stdout and exit status are compared where behavior is shared.

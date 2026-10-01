@@ -12,6 +12,7 @@ result is stated in the [design](design.md).
 | Whether an inherited profile ACL alone passes sshd's check, making the explicit ACL unnecessary under profile directories | Validation row W07, first check |
 | The exact destination-detection probe command and its expected outputs | Validation row W09 |
 | How `-s` tells authentication rejection apart from other failures when the SFTP session cannot be established (D-02) | `-s` (stage 3) |
+| Whether the login hint after installation quotes the `-i` and `-p` values, which upstream prints unquoted so that a path with a space cannot be pasted as is, and how blank lines around messages and the usage-error wording follow upstream | Message parity, settled by the golden tests (stage 1.5) |
 | How a `-t` path containing `!`, CR, or LF reaches a csh or tcsh login shell, since the one-line installation command cannot quote them there | `-t` on Unix-like destinations (stage 1.5) |
 | How much concurrency `-s` supports beyond the change check before upload (D-08) | `-s` (stage 3) |
 | When to add the planned optimization that isolates the selected key, turning Inconclusive checks into conclusive ones | Selected-identity check (D-01) |

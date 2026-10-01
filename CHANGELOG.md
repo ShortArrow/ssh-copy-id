@@ -15,15 +15,20 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   matching private key must exist, and a repeated `-i` is an error. The default
   target follows upstream, including the OpenWrt and Haiku locations.
 - The key is checked first and skipped only when it alone authenticated with
-  `publickey`. Success with another configured identity, the same key file
-  under another path, a `%` token, or the `none` method is not taken as
-  installed (D-01). The key is verified after writing (D-06).
+  `publickey`. Success with another configured identity, an identity named
+  with a `%` token, or the `none` method is not taken as installed (D-01). The
+  key is verified after writing (D-06).
 - Reject private key material (D-04), CRLF line endings are normalized (D-05), a
   leading byte order mark is removed (D-07), and malformed lines are rejected
   (D-10) before anything is sent.
-- The target path is passed to the remote shell as data (D-11). The remote
-  command is one line, so a csh or tcsh login shell runs it, and a non-empty
-  target file that cannot be read is reported and left unchanged.
+- The remote command is one line, so a csh or tcsh login shell runs it. A
+  target that is not a regular file, or a non-empty one that cannot be read, is
+  reported and left unchanged (D-16), and a failed write is removed again
+  (D-17).
+- `#` comment lines and blank lines in the key file are appended as upstream
+  does; only key lines are counted (D-18).
+- Every connection uses `-a -x`, as upstream does, so a configured
+  `ForwardAgent` or `ForwardX11` does not reach the destination.
 - The installation runs without a terminal, so `RequestTTY=force` in the
   configuration cannot leave it waiting (D-15).
 - Warn when the `ssh` client version has not been tested; an unknown check
