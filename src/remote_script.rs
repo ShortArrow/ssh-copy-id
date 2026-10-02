@@ -900,6 +900,64 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn s36_partly_written_trailing_comment_is_rolled_back_and_the_key_kept() {
+        let home = Home::new();
+        let long_comment = format!("# {}", "c".repeat(2000));
+        let target = home.file(".ssh/authorized_keys");
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        fs::write(&target, "e\n").unwrap();
+        let (report, stdout) = home.run_after(
+            SMALL_FILE_LIMIT,
+            None,
+            &format!("{KEY_A}\n{long_comment}\n"),
+        );
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Partial,
+                keys: vec![added(1, b".ssh/authorized_keys")],
+            }
+        );
+        assert!(
+            stdout.ends_with("ssh-copy-id: result=partial added=1\n"),
+            "{stdout}"
+        );
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            format!("e\n{KEY_A}\n")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s37_target_shrunk_below_its_size_before_the_group_is_not_extended() {
+        let home = Home::new();
+        let (existing, long_key) = existing_and_long_line();
+        let target = home.file(".ssh/authorized_keys");
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        fs::write(&target, &existing).unwrap();
+        executable(
+            &home,
+            "bin/wc",
+            &format!(
+                "#!/bin/sh\nif [ -e \"$0.first\" ]; then [ -e \"$0.done\" ] || {{ printf 'short\\n' > {}; : > \"$0.done\"; }}; else : > \"$0.first\"; fi\nPATH=${{PATH#*:}}\nexport PATH\nexec wc \"$@\"\n",
+                sh_quote(&target.to_string_lossy())
+            ),
+        );
+        let setup = with_bin_on_path(&home, SMALL_FILE_LIMIT);
+        let (report, _) = home.run_after(&setup, None, &format!("{long_key}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Uncertain,
+                keys: vec![uncertain(1, b".ssh/authorized_keys")],
+            }
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"short\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn s35_home_that_cannot_be_entered_gets_nothing_written() {
         let home = Home::new();
         let setup = format!(

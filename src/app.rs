@@ -793,6 +793,28 @@ mod tests {
     }
 
     #[test]
+    fn a50_partial_summary_for_the_one_key_exits_1_without_verifying() {
+        let partial = "ssh-copy-id: key=1 result=added path=.ssh/authorized_keys\nssh-copy-id: result=partial added=1\n";
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(partial)
+                .probe(0, ACCEPTED),
+        );
+        assert_eq!(run.status, 1);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe", "install"]);
+        assert!(!run.err.contains("installed and verified"), "{}", run.err);
+        assert!(
+            run.err.ends_with(
+                "ssh-copy-id: ERROR: only 1 key(s) were written to \
+                 .ssh/authorized_keys before the remote side failed\n"
+            ),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
     fn a06_missing_summary_exits_1_and_says_the_state_is_unknown() {
         let run = execute(
             FakeSsh::new()
