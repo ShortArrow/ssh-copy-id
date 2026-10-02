@@ -16,5 +16,6 @@ result is stated in the [design](design.md).
 | How a `-t` path containing `!`, CR, or LF reaches a csh or tcsh login shell, since the one-line installation command cannot quote them there | `-t` on Unix-like destinations (stage 1.5) |
 | How much concurrency `-s` supports beyond the change check before upload (D-08) | `-s` (stage 3) |
 | How to report a private key that Windows OpenSSH ignores because its ACL is too open, which makes an installed key look not installed; upstream behaves the same | Installed-key check (D-01) |
+| Whether upstream treats a remote startup file that reads stdin, and so truncates the keys, as a bug or as an accepted limit; upstream's repository, Debian and Red Hat trackers, and the OpenSSH manuals have no record, while mindrot Bugzilla (behind a login) and the openssh-unix-dev archive were not searched | Key transport on stdin; this tool behaves as upstream until settled |
 | When to add the planned optimization that isolates the selected key, turning Inconclusive checks into conclusive ones | Selected-identity check (D-01) |
 | Where the self-hosted runner for the Windows fixture runs, and whether a prepared guest disk may be distributed to hosted runners | Windows fixture in CI; the evaluation image's redistribution terms |

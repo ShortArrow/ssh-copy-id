@@ -730,6 +730,18 @@ two coexist (validation row A01). Keep authentication interaction separate from
 the public key data stream; do not solve prompt handling by collecting
 credentials in this CLI or globally enabling `BatchMode=yes`.
 
+The remote script reads the keys from the same stdin after the login shell has
+run its startup files, as upstream's `cat` does ("the cat adds the keys we're
+getting via STDIN"). A startup file that reads stdin, such as a `~/.bashrc` that
+Debian's bash sources for `sshd` commands, consumes part of the keys: the rest
+may be appended as a fragment, and the post-installation verification then
+reports the key as rejected. This tool behaves as upstream here. Upstream has
+fixed other startup-file interference as bugs (`cd` in `~/.bashrc`, Debian
+#404134, and tcsh and fish syntax, behind its one-line `exec sh -c` command), but
+no upstream record found treats stdin consumption as intended or as a bug, so
+that intent is inferred; the [open questions](open-questions.md) say what would
+settle it.
+
 The prompt mode follows the console, as Sudo for Windows offers inline and
 input-closed modes:
 
