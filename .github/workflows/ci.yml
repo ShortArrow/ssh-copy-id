@@ -64,3 +64,11 @@ jobs:
         run: docker run --rm --network none ssh-copy-id-identity-probe:ci
       - name: Linux destination fixture (L02)
         run: sh tests/environments/linux/smoke.sh
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Local ~/.ssh, which the CLI needs for its scratch directory as upstream does
+        run: install -d -m 700 ~/.ssh
+      - name: CLI against the Linux fixture (stage 1 requirements)
+        run: cargo test --locked --test unix_destination -- --ignored --test-threads=1
