@@ -59,10 +59,15 @@ fn i01_an_interrupt_while_ssh_runs_exits_1_and_removes_the_scratch_directory() {
     let work = Work::new();
     let home = work.0.join("home");
     let started = work.0.join("ssh-started");
+    let release = work.0.join("ssh-release");
     let fake_ssh = work.0.join("bin/ssh");
     fs::write(
         &fake_ssh,
-        format!("#!/bin/sh\n: > '{}'\nexec sleep 30\n", started.display()),
+        format!(
+            "#!/bin/sh\n: > '{}'\nwhile [ ! -e '{}' ]; do sleep 1; done\nexit 255\n",
+            started.display(),
+            release.display()
+        ),
     )
     .unwrap();
     fs::set_permissions(&fake_ssh, fs::Permissions::from_mode(0o755)).unwrap();
@@ -89,6 +94,7 @@ fn i01_an_interrupt_while_ssh_runs_exits_1_and_removes_the_scratch_directory() {
     let pgid = cli.id();
     wait_for(|| started.exists(), "the fake ssh starts");
     signal_group(pgid, "-INT");
+    fs::write(&release, "").unwrap();
 
     let deadline = Instant::now() + TIMEOUT;
     let status = loop {
