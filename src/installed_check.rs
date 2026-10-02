@@ -33,6 +33,9 @@ pub const TESTED_CLIENTS: [&str; 3] = [
 /// certificate files are not offered by `ssh` and are not counted. `same_file`
 /// reports whether two paths name the same file; an `identityfile` value that
 /// equals `selected` textually or names the same file is not a candidate.
+/// Any other `identityfile` is a candidate when the file or its public half,
+/// the value with `.pub` appended, exists: `ssh` loads the public half and
+/// offers the agent key that matches it even with `IdentitiesOnly=yes`.
 /// A value containing `%` or `${` cannot be expanded here and is always a
 /// candidate, without consulting `exists`. The selected key's own certificate,
 /// `<selected>-cert.pub` or `<selected>-cert`, is a candidate when it exists.
@@ -48,6 +51,8 @@ pub fn other_candidates_matching(
             || (is_expandable(value) && same_file(&expand(home, value), Path::new(selected)))
     };
     let is_present = |value: &str| !is_expandable(value) || exists(&expand(home, value));
+    let is_identity_present =
+        |value: &str| is_present(value) || is_present(&format!("{value}.pub"));
     let mut others = Vec::new();
     for line in config.lines() {
         let line = line.trim_end_matches('\r');
@@ -55,7 +60,7 @@ pub fn other_candidates_matching(
             continue;
         };
         match key.to_ascii_lowercase().as_str() {
-            "identityfile" if !is_selected(value) && is_present(value) => {
+            "identityfile" if !is_selected(value) && is_identity_present(value) => {
                 others.push(format!("identity file {value}"));
             }
             "certificatefile" if is_present(value) => {
@@ -110,13 +115,16 @@ const NO_AUTHENTICATION_FAILURES: [&str; 12] = [
 ///
 /// `ssh` writes its own messages to the log, while stderr carries the server's
 /// banner and remote output, so nothing on stderr is evidence of `Installed`.
-/// Any exit status is `Installed` when no other candidate exists and the
-/// `Authenticated to ... using "<method>"` line of the log names `publickey`
-/// (the probe runs with `LogLevel=VERBOSE`); a key with `command=` makes the
-/// probe exit nonzero after authenticating. `using "publickey"` elsewhere is
-/// not evidence. A server accepting another method, such as `none`, lets the
-/// probe succeed without the key. Exit 0 with no `Authenticated to` line in the
-/// log is `Failed`, since `ssh` exits 0 only after authenticating. A process
+/// Any exit status other than 255 is `Installed` when no other candidate
+/// exists and the first `Authenticated to` line of the log names `publickey`
+/// as `using "publickey"` (the probe runs with `LogLevel=VERBOSE`); a key with
+/// `command=` makes the probe exit nonzero after authenticating. Later
+/// `Authenticated to` lines and `using "publickey"` elsewhere are not
+/// evidence. Exit 255 is never `Installed`: `ssh` writes a server's disconnect
+/// message, which may span lines, into the log before verifying the host key,
+/// and a disconnect always ends `ssh` with 255. A server accepting another
+/// method, such as `none`, lets the probe succeed without the key. Exit 0 with
+/// no `Authenticated to` line in the log is `Failed`, since `ssh` exits 0 only after authenticating. A process
 /// terminated by a signal is `Failed`. Exit 255 is `NotInstalled` on
 /// `Permission denied (`, `Failed` naming the last line with a recognised host
 /// key or connection failure, and `Inconclusive` otherwise; these patterns are
@@ -125,7 +133,11 @@ pub fn classify(exit: Option<i32>, log: &str, stderr: &str, others: &[String]) -
     let output = format!("{log}\n{stderr}");
     match exit {
         None => CheckResult::Failed("ssh was terminated before it reported a result".to_string()),
-        Some(_) if others.is_empty() && authenticated_method(log) == Some("publickey") => {
+        Some(code)
+            if code != 255
+                && others.is_empty()
+                && authenticated_method(log) == Some("publickey") =>
+        {
             CheckResult::Installed
         }
         Some(0) if !others.is_empty() => CheckResult::Inconclusive(format!(
@@ -155,11 +167,12 @@ pub fn classify(exit: Option<i32>, log: &str, stderr: &str, others: &[String]) -
 }
 
 fn authenticated_method(log: &str) -> Option<&str> {
-    log.lines().find_map(|line| {
-        let after = &line[line.find("Authenticated to ")?..];
-        let quoted = &after[after.find(" using \"")? + " using \"".len()..];
-        quoted.split_once('"').map(|(method, _)| method)
-    })
+    let line = log
+        .lines()
+        .find(|line| line.contains("Authenticated to "))?;
+    let after = &line[line.find("Authenticated to ")?..];
+    let quoted = &after[after.find(" using \"")? + " using \"".len()..];
+    quoted.split_once('"').map(|(method, _)| method)
 }
 
 fn failure_line(text: &str) -> Option<String> {
@@ -300,7 +313,11 @@ mod tests {
     #[test]
     fn c03_a_configured_identity_that_is_absent_is_not_a_candidate() {
         let config = format!("identityfile {SELECTED}\nidentityfile ~/.ssh/extra_key\n");
-        let exists = |p: &Path| !p.ends_with("extra_key") && exists_except_own_certificate(p);
+        let exists = |p: &Path| {
+            !p.ends_with("extra_key")
+                && !p.ends_with("extra_key.pub")
+                && exists_except_own_certificate(p)
+        };
         assert!(
             other_candidates_matching(
                 &config,
@@ -610,16 +627,51 @@ ssh: {fragment}
     }
 
     #[test]
-    fn k21_publickey_in_the_log_is_installed_whatever_the_exit_status() {
+    fn k21_publickey_in_the_log_is_installed_at_any_status_but_255() {
         let log = "Authenticated to h ([127.0.0.1]:22) using \"publickey\".
 ";
-        for status in [1, 127, 255] {
+        for status in [1, 127] {
             assert_eq!(
                 classify(Some(status), log, "", &[]),
                 CheckResult::Installed,
                 "{status}"
             );
         }
+        assert_ne!(classify(Some(255), log, "", &[]), CheckResult::Installed);
+    }
+
+    #[test]
+    fn k23_a_publickey_line_planted_by_a_disconnect_message_is_not_installed() {
+        let log = "Received disconnect from 127.0.0.1 port 22:11: bye
+Authenticated to h ([127.0.0.1]:22) using \"publickey\".
+Disconnected from 127.0.0.1 port 22
+";
+        assert!(matches!(
+            classify(Some(255), log, "", &[]),
+            CheckResult::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn k24_only_the_first_authenticated_line_counts() {
+        let log = "Authenticated to h ([127.0.0.1]:22) using \"none\".
+Authenticated to h ([127.0.0.1]:22) using \"publickey\".
+";
+        assert!(matches!(
+            classify(Some(1), log, "", &[]),
+            CheckResult::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn k25_a_first_authenticated_line_without_a_method_hides_later_ones() {
+        let log = "Authenticated to h ([127.0.0.1]:22)
+Authenticated to h ([127.0.0.1]:22) using \"publickey\".
+";
+        assert!(matches!(
+            classify(Some(1), log, "", &[]),
+            CheckResult::Inconclusive(_)
+        ));
     }
 
     #[test]
@@ -694,6 +746,26 @@ ssh: {fragment}
                 &textually_equal
             ),
             vec!["certificate C:/keys/sel-cert".to_string()]
+        );
+    }
+
+    #[test]
+    fn c12_an_identity_whose_public_half_alone_exists_is_a_candidate() {
+        let config = format!(
+            "identityfile {SELECTED}
+identityfile ~/.ssh/agent_key
+"
+        );
+        let exists = |p: &Path| p == Path::new("/h").join(".ssh/agent_key.pub");
+        assert_eq!(
+            other_candidates_matching(
+                &config,
+                SELECTED,
+                Path::new("/h"),
+                &exists,
+                &textually_equal
+            ),
+            vec!["identity file ~/.ssh/agent_key".to_string()]
         );
     }
 
