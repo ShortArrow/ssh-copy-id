@@ -39,11 +39,14 @@ fn wait_for(condition: impl Fn() -> bool, what: &str) {
     }
 }
 
+/// Sends `signal` to the process group with the `kill` program, not a shell
+/// builtin: dash's builtin rejects `--` and sends nothing.
 fn signal_group(pgid: u32, signal: &str) {
-    let _ = Command::new("sh")
-        .arg("-c")
-        .arg(format!("kill {signal} -- -{pgid}"))
-        .status();
+    let status = Command::new("kill")
+        .args([signal, "--", &format!("-{pgid}")])
+        .status()
+        .expect("kill must be on PATH for this test");
+    assert!(status.success(), "kill {signal} -- -{pgid} failed");
 }
 
 fn scratch_entries(ssh_dir: &Path) -> Vec<String> {
