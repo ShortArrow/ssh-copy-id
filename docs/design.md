@@ -30,7 +30,12 @@ Every decision in this document follows four commitments.
 
 1. Read the pinned upstream script and manual first, and state what its behavior
    appears to intend, before deciding whether to differ. No difference exists
-   without that reading.
+   without that reading. Whether a behavior is intended or a flaw is settled
+   from evidence, not from how it looks: the script and its comments, its
+   commit history, the manual, and upstream's issue tracker. The evidence is
+   cited next to the apparent intent; an intent found in none of them is marked
+   as inferred, and what would settle it goes to the
+   [open questions](open-questions.md).
 2. Differ from upstream only for a reason on this list: a false success or false
    failure report, damage to data the user did not ask to change, transmission of
    private material, an operation that a supported platform cannot perform, or
@@ -246,11 +251,17 @@ The probe runs with `LogLevel=VERBOSE` and `-E` naming a file in a fresh
 directory under the local `~/.ssh`, created with mode 700 like upstream's scratch
 directory and removed when the run ends; when it cannot be created, the run stops
 before connecting with upstream's message. `ssh` then writes `Authenticated to …
-using "publickey"` to that file; every tested client does. Banners and remote output stay on stderr, so a
-server cannot forge the line; text on stderr is never evidence of an installed
-key, while the `Permission denied` and connection patterns are matched on both.
+using "publickey"` to that file (`sshconnect2.c`); every tested client does.
+Banners and remote output stay on stderr, and text on stderr is never evidence
+of an installed key, while the `Permission denied` and connection patterns are
+matched on both. The log is not free of server text either: `ssh` logs a
+received disconnect message with its text, newlines kept (`packet.c`,
+`log.c`), so a peer can plant a line there before the host key is checked. A
+disconnect always ends `ssh` with status 255, so a probe that exits 255 is never
+Installed, and only the first `Authenticated to` line in the log counts.
 A log that cannot be read makes the check Inconclusive. The line decides even
-when the probe exits nonzero, as it does for a key restricted by `command=`;
+when the probe exits with another nonzero status, as it does for a key
+restricted by `command=`;
 upstream stops there with an error on every run after the first installation. A
 probe that exits 0 without any `Authenticated to` line has not authenticated, and
 the run stops as a failure. Without the `publickey` line a successful probe is
@@ -259,7 +270,9 @@ an empty password and `PermitEmptyPasswords yes`, lets the probe exit 0 with no
 key at all, and upstream then skips the key without installing it.
 
 Whether other candidates exist is read from `ssh -G`: every `identityfile` other
-than the selected key whose file exists, every `certificatefile` whose file
+than the selected key whose file or `.pub` file exists (OpenSSH loads the public
+half and pairs a matching agent key with it even under `IdentitiesOnly=yes`),
+every `certificatefile` whose file
 exists, the selected key's own `-cert.pub` or `-cert` file, and a `pkcs11provider`
 other than `none`. An `identityfile` that names the same file as the selected key
 by another path, such as `~/.ssh/id_ed25519` against an absolute `-i`, is the
@@ -736,7 +749,10 @@ Once the arguments are parsed, the CLI does not end on a console Ctrl-C: while
 returned. The interrupt then ends the run with status 1, as it ends upstream's
 script: before the installation nothing is written, and after it the outcome
 is reported and the verification is skipped. The exit status of an interrupted
-`ssh` is not evidence; Windows OpenSSH can exit 0. With Git for Windows'
+`ssh` is not evidence; Windows OpenSSH can exit 0. As upstream, the CLI sets no
+timeout of its own: a server that accepts the connection and never answers, or
+a key whose `command=` never ends, keeps `ssh` waiting until Ctrl-C or until a
+`ConnectTimeout` the user passes with `-o` or sets in the configuration. With Git for Windows'
 client, Ctrl-C reaches the CLI as well as `ssh`; ending first would leave the
 outcome unreported. The Windows OpenSSH agent refuses keys added with
 confirmation (`ssh-add -c` answers `agent refused operation`), so no

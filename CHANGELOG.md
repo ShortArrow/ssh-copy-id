@@ -15,8 +15,10 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   matching private key must exist, and a repeated `-i` is an error. The default
   target follows upstream, including the OpenWrt and Haiku locations.
 - The key is checked first and skipped only when it alone authenticated with
-  `publickey`, as recorded in the client's own log rather than in output a
-  server can write, also when a `command=` option makes the check exit nonzero. Success with another configured identity, an identity named
+  `publickey`, as recorded first in the client's own log, also when a
+  `command=` option makes the check exit nonzero; a check that ends with status
+  255 is never taken as installed, since a server's disconnect text reaches that
+  log. Success with another configured identity, an identity named
   with a `%` token, or the `none` method is not taken as installed (D-01). The
   key is verified after writing (D-06).
 - Reject private key material (D-04), CRLF line endings are normalized (D-05), a
