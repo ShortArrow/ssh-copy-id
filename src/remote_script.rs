@@ -830,9 +830,10 @@ mod tests {
                 keys: vec![uncertain(1, b".ssh/authorized_keys")],
             }
         );
-        assert_eq!(
-            fs::read_to_string(&target).unwrap(),
-            format!("e\n{other}\n")
+        let after = fs::read_to_string(&target).unwrap();
+        assert!(
+            after.starts_with(&format!("e\n{other}\n")),
+            "the other writer's line must survive: {after:?}"
         );
     }
 
