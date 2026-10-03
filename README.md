@@ -5,7 +5,7 @@ This is `ssh-copy-id` for Windows.
 > [!WARNING]
 > This project is experimental until it reaches `v1.0.0`,
 > and is subject to breaking changes in any release before then.
-> It is not released yet, and it installs only one explicitly selected key on a Unix-like host.
+> It has no release yet, and it installs only one explicitly selected key on a Unix-like host.
 > Do not rely on it for access to machines you cannot reach another way.
 
 ## Summary
@@ -24,8 +24,9 @@ Differences from upstream: [English](docs/compatibility.md) | [日本語](docs/c
 
 ## Install
 
-Not published yet. The first release, v0.0.1, will be published to crates.io
-and as a GitHub release; see the [delivery plan](docs/design.md#delivery-plan). The current
+No release yet. Version 0.0.0 on crates.io only reserves the crate name; the
+first release, v0.0.1, will be published to crates.io and as a GitHub release;
+see the [delivery plan](docs/design.md#delivery-plan). The current
 source installs one explicitly selected key on a Unix-like host
 (`ssh-copy-id -i ~/.ssh/id_ed25519.pub user@host`). To build it, with Rust installed:
 

@@ -152,7 +152,7 @@ alias ssh-copy-id=ssh-copy-id-rs
 - リリースは `main` 上の署名付き注釈付きタグ `vX.Y.Z` とし、`git tag -s` で作って `git tag -v` で確かめる。runexが求めている手順で、runexのv0.1.20までのタグは注釈付きだったが署名はなかった。`v0.0.1-pre` のように `-` を含むタグは、gitreantと同じくプレリリースとし、これも署名する。プレリリースはcrates.ioへ公開せずにリリース手順を試すために使う。gitreantではタグのコミットに `[skip publish]` を書かない限り公開されるが、ここでは `-` を含むタグでは公開のジョブを必ず飛ばす。crates.ioでは一度公開した版番号を再利用できないためだ。プレリリースは、版を上げるコミットを作らず、`main` にある版のまま付ける。リリースのワークフローは、どのタグも `main` 上にあることと、正式版のタグが `Cargo.toml` の版と一致することを確かめる。
 - `CHANGELOG.md` はrunexと同じくKeep a Changelogの形式にする。gitreantには変更履歴がない。利用者に見える変更は `[Unreleased]` に項目を足し、リリースでその見出しを版番号と日付に変える。項目には、追加・変更した差異のIDを書く。
 - `release.yml` はrunexとgitreantを元にする。Linux・Windows・macOSのテストと、ここではLinux環境の統合テストも関門にし、ビルド、GitHubのリリース、OIDCによるTrusted Publishingでのcrates.ioへの公開を行う。GitHubのリリースには `ssh-copy-id.exe`・`LICENSE`・`README.md` を入れた `ssh-copy-id-x86_64-pc-windows-msvc.zip` を1つ載せ、他のターゲットは対応したときに加える。ビルドの来歴は、gitreantと同じくリポジトリが公開されている間だけ証明する。リリースのチェックリストは、runexと同じく `CONTRIBUTING.md` に置く。クレートはrunexと同じくMITまたはApache-2.0のデュアルライセンスとする。クレート名は `ssh-copy-id` とする。`ssh-copy-id` と `ssh-copy-id-rs` は、2026-09-30と2026-10-01にcrates.ioのAPIで404を返した。
-- v0.0.1はcrates.ioとGitHubのリリースだけで公開する。公開するまで、READMEには何も公開していないことを明記し、ソースからのビルド手順を載せる。
+- v0.0.1はcrates.ioとGitHubのリリースだけで公開する。その前に、クレート名を確保するためだけに、版0.0.0を短命なトークンを使った手元の `cargo publish` で一度公開する。crates.ioは既に存在するクレートにしかTrusted Publisherを登録できないためだ。0.0.0にはタグもGitHubのリリースも作らない。v0.0.1までは、READMEにリリースがないことを明記し、ソースからのビルド手順を載せる。
 
 ## Linux版との互換性
 
