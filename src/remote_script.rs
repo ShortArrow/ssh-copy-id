@@ -43,6 +43,12 @@ pub fn sh_quote(text: &str) -> String {
 /// When the truncation is skipped or cannot be confirmed, the group's key is
 /// reported `uncertain` and the summary is `uncertain`, whatever was added
 /// before.
+///
+/// Each write runs in a subshell whose output is the target. bash 3.2, the
+/// `/bin/sh` of macOS, keeps the unwritten part of a failed `printf` buffered
+/// and writes it to the next output; inside the subshell that output is the
+/// target again, so the remainder cannot reach the size check or the result
+/// lines.
 pub fn install_command(target: Option<&str>) -> String {
     let script = format!("{} {}", target_selection(target), one_line(INSTALL_SCRIPT));
     format!("exec sh -c {}", sh_quote(&script))
@@ -102,10 +108,10 @@ hex() {
 append() {
     if [ "$wrote" -eq 0 ] && [ -s "$f" ]; then
         last=$(tail -c 1 -- "$f" | hex);
-        case $last in 0a) ;; *) tried=${tried}0a; printf '\n' >> "$f" || return 1 ;; esac;
+        case $last in 0a) ;; *) tried=${tried}0a; ( printf '\n' ) >> "$f" || return 1 ;; esac;
     fi;
     tried=$tried$(printf '%s\n' "$1" | hex);
-    printf '%s\n' "$1" >> "$f";
+    ( printf '%s\n' "$1" ) >> "$f";
 };
 roll_back() {
     if [ -z "$1" ]; then rm -f -- "$f"; else dd if=/dev/null of="$f" bs=1 seek="$1" 2>/dev/null; fi;
@@ -713,7 +719,7 @@ mod tests {
     #[test]
     fn s24_short_key_after_a_failed_comment_is_not_written() {
         let home = Home::new();
-        let long_comment = format!("# {}", "c".repeat(600));
+        let long_comment = format!("# {}", "c".repeat(1200));
         let (report, _) = home.run_after(
             "trap '' XFSZ; ulimit -f 1;",
             None,
@@ -815,7 +821,8 @@ mod tests {
         fs::write(&target, "e\n").unwrap();
         append_once_before(&home, "tail", "*", &line_of(&other));
         let setup = with_bin_on_path(&home, "trap '' XFSZ; ulimit -S -f 2;");
-        let (report, _) = home.run_after(&setup, None, &format!("{KEY_A}\n"));
+        let long_key = format!("{KEY_A} {}", "c".repeat(3000));
+        let (report, _) = home.run_after(&setup, None, &format!("{long_key}\n"));
         assert_eq!(
             report,
             Report {
@@ -823,9 +830,10 @@ mod tests {
                 keys: vec![uncertain(1, b".ssh/authorized_keys")],
             }
         );
-        assert_eq!(
-            fs::read_to_string(&target).unwrap(),
-            format!("e\n{other}\n")
+        let after = fs::read_to_string(&target).unwrap();
+        assert!(
+            after.starts_with(&format!("e\n{other}\n")),
+            "the other writer's line must survive: {after:?}"
         );
     }
 
@@ -1019,7 +1027,7 @@ mod tests {
     #[test]
     fn s31_rollback_compares_bytes_not_characters() {
         let home = Home::new();
-        let wide_key = format!("{KEY_A} {}", "あ".repeat(500));
+        let wide_key = format!("{KEY_A} {}", "あ".repeat(1000));
         let (report, _) = home.run_after(
             "LC_ALL=C.UTF-8; export LC_ALL; trap '' XFSZ; ulimit -f 2;",
             None,
