@@ -719,7 +719,7 @@ mod tests {
     #[test]
     fn s24_short_key_after_a_failed_comment_is_not_written() {
         let home = Home::new();
-        let long_comment = format!("# {}", "c".repeat(600));
+        let long_comment = format!("# {}", "c".repeat(1200));
         let (report, _) = home.run_after(
             "trap '' XFSZ; ulimit -f 1;",
             None,
@@ -821,7 +821,8 @@ mod tests {
         fs::write(&target, "e\n").unwrap();
         append_once_before(&home, "tail", "*", &line_of(&other));
         let setup = with_bin_on_path(&home, "trap '' XFSZ; ulimit -S -f 2;");
-        let (report, _) = home.run_after(&setup, None, &format!("{KEY_A}\n"));
+        let long_key = format!("{KEY_A} {}", "c".repeat(3000));
+        let (report, _) = home.run_after(&setup, None, &format!("{long_key}\n"));
         assert_eq!(
             report,
             Report {
@@ -1025,7 +1026,7 @@ mod tests {
     #[test]
     fn s31_rollback_compares_bytes_not_characters() {
         let home = Home::new();
-        let wide_key = format!("{KEY_A} {}", "あ".repeat(500));
+        let wide_key = format!("{KEY_A} {}", "あ".repeat(1000));
         let (report, _) = home.run_after(
             "LC_ALL=C.UTF-8; export LC_ALL; trap '' XFSZ; ulimit -f 2;",
             None,
