@@ -98,5 +98,7 @@ pipeline at the version `main` already carries and never publishes to crates.io.
 
 Publishing uses crates.io trusted publishing: the crate's settings on crates.io
 name the repository `ShortArrow/ssh-copy-id` and the workflow `release.yml`, so
-no token is stored. A rerun after a partial failure skips the publish when the
+no token is stored. crates.io accepts that setting only for a crate that exists,
+so version 0.0.0 was published once with `cargo login` and `cargo publish`
+using a short-lived token, which was then revoked. A rerun after a partial failure skips the publish when the
 version is already on crates.io.
