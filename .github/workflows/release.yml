@@ -174,10 +174,18 @@ jobs:
           set -eu
           version="${GITHUB_REF_NAME#v}"
           status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -A "ssh-copy-id release workflow (https://github.com/$GITHUB_REPOSITORY)" \
             "https://crates.io/api/v1/crates/ssh-copy-id/$version" || echo 000)
-          if [ "$status" = 200 ]; then
-            echo "ssh-copy-id $version is already on crates.io; nothing to publish"
-            exit 0
-          fi
+          case "$status" in
+            200)
+              echo "ssh-copy-id $version is already on crates.io; nothing to publish"
+              exit 0
+              ;;
+            404) ;;
+            *)
+              echo "crates.io answered $status for ssh-copy-id $version; not publishing" >&2
+              exit 1
+              ;;
+          esac
           cargo publish --locked --dry-run
           cargo publish --locked
