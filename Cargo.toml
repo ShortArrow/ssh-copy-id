@@ -2,5 +2,12 @@
 name = "ssh-copy-id"
 version = "0.0.0"
 edition = "2024"
+description = "ssh-copy-id for Windows: installs an SSH public key on a remote account through the system OpenSSH client"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ShortArrow/ssh-copy-id"
+readme = "README.md"
+keywords = ["ssh", "ssh-copy-id", "openssh", "windows", "cli"]
+categories = ["command-line-utilities"]
+include = ["/src/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE", "/CHANGELOG.md"]
 
 [dependencies]
