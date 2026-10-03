@@ -43,6 +43,12 @@ pub fn sh_quote(text: &str) -> String {
 /// When the truncation is skipped or cannot be confirmed, the group's key is
 /// reported `uncertain` and the summary is `uncertain`, whatever was added
 /// before.
+///
+/// Each write runs in a subshell whose output is the target. bash 3.2, the
+/// `/bin/sh` of macOS, keeps the unwritten part of a failed `printf` buffered
+/// and writes it to the next output; inside the subshell that output is the
+/// target again, so the remainder cannot reach the size check or the result
+/// lines.
 pub fn install_command(target: Option<&str>) -> String {
     let script = format!("{} {}", target_selection(target), one_line(INSTALL_SCRIPT));
     format!("exec sh -c {}", sh_quote(&script))
@@ -102,10 +108,10 @@ hex() {
 append() {
     if [ "$wrote" -eq 0 ] && [ -s "$f" ]; then
         last=$(tail -c 1 -- "$f" | hex);
-        case $last in 0a) ;; *) tried=${tried}0a; printf '\n' >> "$f" || return 1 ;; esac;
+        case $last in 0a) ;; *) tried=${tried}0a; ( printf '\n' ) >> "$f" || return 1 ;; esac;
     fi;
     tried=$tried$(printf '%s\n' "$1" | hex);
-    printf '%s\n' "$1" >> "$f";
+    ( printf '%s\n' "$1" ) >> "$f";
 };
 roll_back() {
     if [ -z "$1" ]; then rm -f -- "$f"; else dd if=/dev/null of="$f" bs=1 seek="$1" 2>/dev/null; fi;
