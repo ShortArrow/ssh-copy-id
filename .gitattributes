@@ -2,3 +2,5 @@
 tests/environments/linux/** text eol=lf
 tests/prototypes/**/*.py text eol=lf
 tests/prototypes/**/Dockerfile text eol=lf
+# The pinned upstream script is compared by SHA-256 and must stay byte-identical.
+tests/upstream/ssh-copy-id text eol=lf

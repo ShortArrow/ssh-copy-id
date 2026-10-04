@@ -72,3 +72,5 @@ jobs:
         run: install -d -m 700 ~/.ssh
       - name: CLI against the Linux fixture (stage 1 requirements)
         run: cargo test --locked --test unix_destination -- --ignored --test-threads=1
+      - name: Difference report against the pinned upstream script (P01; fails only on harness errors)
+        run: cargo test --locked --test p01_golden -- --ignored --nocapture
