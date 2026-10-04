@@ -44,8 +44,9 @@ pub struct Environment<'a> {
     pub home: PathBuf,
     pub read_file: &'a dyn Fn(&Path) -> io::Result<Vec<u8>>,
     pub exists: &'a dyn Fn(&Path) -> bool,
-    /// Whether a path names a regular file this process can open for reading.
-    pub readable_file: &'a dyn Fn(&Path) -> bool,
+    /// Opens a path for reading and succeeds when it is a regular file; otherwise
+    /// returns why it cannot be read.
+    pub readable_file: &'a dyn Fn(&Path) -> io::Result<()>,
     /// Whether two paths name the same file.
     pub same_file: &'a dyn Fn(&Path, &Path) -> bool,
     /// Creates a new directory, readable only by its owner, inside the given
@@ -87,11 +88,41 @@ pub fn run(
 ) -> i32 {
     match install(invocation, env, ssh, out, err) {
         Ok(()) => 0,
-        Err(message) => {
+        Err(Stop::Error(message)) => {
             let _ = writeln!(err, "ssh-copy-id: ERROR: {message}");
             1
         }
+        Err(Stop::ErrorAfterBlankLine(message)) => {
+            let _ = writeln!(err, "\nssh-copy-id: ERROR: {message}");
+            1
+        }
+        Err(Stop::Relayed(lines)) => {
+            let relayed: Vec<String> = lines.iter().map(|line| format!("ERROR: {line}")).collect();
+            let _ = write!(err, "\nssh-copy-id: {}\n\n", relayed.join("\n"));
+            1
+        }
     }
+}
+
+/// Why a run stopped, each printed to stderr in upstream's form for it.
+enum Stop {
+    /// `ssh-copy-id: ERROR: <message>`.
+    Error(String),
+    /// The same line after a blank line, as upstream reports a key file it cannot open.
+    ErrorAfterBlankLine(String),
+    /// `ssh`'s own lines, as upstream relays a failed probe: each prefixed with
+    /// `ERROR: `, the first also with `ssh-copy-id: `, between blank lines.
+    Relayed(Vec<String>),
+}
+
+impl From<String> for Stop {
+    fn from(message: String) -> Stop {
+        Stop::Error(message)
+    }
+}
+
+fn stop<T>(message: impl Into<String>) -> Result<T, Stop> {
+    Err(Stop::Error(message.into()))
 }
 
 fn install(
@@ -100,23 +131,20 @@ fn install(
     ssh: &mut dyn Ssh,
     out: &mut dyn Write,
     err: &mut dyn Write,
-) -> Result<(), String> {
+) -> Result<(), Stop> {
     let public_path = expand_home(&env.home, &invocation.public_key);
     let private_path = expand_home(&env.home, &invocation.private_key);
     let public_key = public_path.display().to_string();
     let identity = private_path.display().to_string();
-    let input = (env.read_file)(&public_path)
-        .map_err(|e| format!("failed to open ID file '{public_key}': {e}"))?;
+    let input = (env.read_file)(&public_path).map_err(|e| unopenable(&public_key, &e))?;
     let prepared = prepare(&input).map_err(|e| input_error(&public_key, &e))?;
     if prepared.key_count > 1 {
-        return Err(format!(
+        return stop(format!(
             "'{public_key}' contains {} keys; this release installs one key per run",
             prepared.key_count
         ));
     }
-    if !(env.readable_file)(&private_path) {
-        return Err(format!("failed to open ID file '{identity}'"));
-    }
+    (env.readable_file)(&private_path).map_err(|e| unopenable(&identity, &e))?;
     info(
         err,
         &format!("Source of key(s) to be installed: \"{public_key}\""),
@@ -169,7 +197,7 @@ fn install(
     let config = run_ssh(ssh, &config_args, b"", true)?;
     stop_if_interrupted(env, NOTHING_WRITTEN)?;
     if config.status != Some(0) {
-        return Err(format!(
+        return stop(format!(
             "ssh -G failed: {}",
             String::from_utf8_lossy(&config.stderr).trim()
         ));
@@ -199,13 +227,22 @@ fn install(
     stop_if_interrupted(env, NOTHING_WRITTEN)?;
     match checked {
         CheckResult::Installed => {
-            warn(
+            let _ = write!(
                 err,
-                "All keys were skipped because they already exist on the remote system.",
+                "\nssh-copy-id: WARNING: All keys were skipped because they already exist \
+                 on the remote system.\n\n"
             );
             return Ok(());
         }
-        CheckResult::Failed(message) => return Err(message),
+        CheckResult::NotAttempted { messages, .. } if !messages.is_empty() => {
+            return Err(Stop::Relayed(messages));
+        }
+        CheckResult::Failed(message)
+        | CheckResult::NotAttempted {
+            failure: message, ..
+        } => {
+            return stop(message);
+        }
         CheckResult::Inconclusive(reason) => warn(
             err,
             &format!(
@@ -226,7 +263,7 @@ fn install(
     install_args.push(install_command(None));
     let installed = run_ssh(ssh, &install_args, &prepared.text, false)?;
     if installed.status == Some(255) && !has_report_line(&installed.stdout) {
-        return Err(
+        return stop(
             "ssh exited with status 255 before the installation script reported \
                     anything; if authentication failed, nothing was written"
                 .to_string(),
@@ -244,7 +281,7 @@ fn install(
         .filter(|k| k.status == crate::result_line::KeyStatus::Added)
         .count();
     if report.outcome != Outcome::Unknown && report.keys.len() != prepared.key_count {
-        return Err(format!(
+        return stop(format!(
             "the remote side reported {} key(s) for {} sent; {target} may or may not have changed",
             report.keys.len(),
             prepared.key_count
@@ -253,18 +290,18 @@ fn install(
     match report.outcome {
         Outcome::Installed => {}
         Outcome::Partial => {
-            return Err(format!(
+            return stop(format!(
                 "only {added} key(s) were written to {target} before the remote side failed"
             ));
         }
-        Outcome::Unchanged => return Err(format!("the key was not written to {target}")),
+        Outcome::Unchanged => return stop(format!("the key was not written to {target}")),
         Outcome::Uncertain => {
-            return Err(format!(
+            return stop(format!(
                 "writing to {target} failed and the partial line could not be removed; check the file"
             ));
         }
         Outcome::Unknown => {
-            return Err(format!(
+            return stop(format!(
                 "the connection ended without a result; {target} may or may not have changed"
             ));
         }
@@ -273,12 +310,12 @@ fn install(
     let login = login_command(invocation, &identity);
     if (env.interrupted)() {
         summary(out, added, &login);
-        return Err("interrupted".to_string());
+        return stop("interrupted".to_string());
     }
     let verified = probe(ssh, "verify.log")?;
     if (env.interrupted)() {
         summary(out, added, &login);
-        return Err("interrupted before the key was verified".to_string());
+        return stop("interrupted before the key was verified".to_string());
     }
     match verified {
         CheckResult::Installed => info(err, "the key authenticates: it is installed and verified"),
@@ -289,7 +326,11 @@ fn install(
                  check the permissions of {target} and its directory"
             ),
         ),
-        CheckResult::Inconclusive(reason) | CheckResult::Failed(reason) => warn(
+        CheckResult::Inconclusive(reason)
+        | CheckResult::Failed(reason)
+        | CheckResult::NotAttempted {
+            failure: reason, ..
+        } => warn(
             err,
             &format!("the key was installed but could not be verified: {reason}"),
         ),
@@ -355,11 +396,13 @@ fn has_report_line(stdout: &[u8]) -> bool {
         .any(|line| line.starts_with("ssh-copy-id:"))
 }
 
+/// The suggested login command, as upstream's: `-i` and `-p` with their values
+/// unquoted, then each `-o` and `-F` and the destination single-quoted.
 fn login_command(invocation: &Invocation, identity: &str) -> String {
-    let mut words = vec!["ssh".to_string(), "-i".to_string(), sh_quote(identity)];
+    let mut words = vec!["ssh".to_string(), "-i".to_string(), identity.to_string()];
     if let Some(port) = &invocation.port {
         words.push("-p".to_string());
-        words.push(sh_quote(port));
+        words.push(port.clone());
     }
     for option in &invocation.ssh_options {
         let (flag, value) = match option {
@@ -442,6 +485,28 @@ fn input_error(file: &str, error: &InputError) -> String {
         }
         InputError::Malformed { line } => format!("'{file}' line {line} is not a public key"),
         InputError::NoKeys => format!("No identities found in '{file}'"),
+    }
+}
+
+/// Upstream's report of a key file that cannot be opened, without its hint
+/// about `-f`, which this release does not have.
+fn unopenable(file: &str, error: &io::Error) -> Stop {
+    Stop::ErrorAfterBlankLine(format!(
+        "failed to open ID file '{file}': {}",
+        reason(error)
+    ))
+}
+
+/// The text of `error` without the ` (os error N)` that `io::Error` appends to
+/// an operating system error, so that it reads as the system's own message.
+fn reason(error: &io::Error) -> String {
+    let text = error.to_string();
+    match error.raw_os_error() {
+        Some(code) => text
+            .strip_suffix(&format!(" (os error {code})"))
+            .unwrap_or(&text)
+            .to_string(),
+        None => text,
     }
 }
 
@@ -683,10 +748,24 @@ mod tests {
                 .get(p)
                 .cloned()
                 .or_else(|| logs.borrow().get(p).cloned())
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No such file or directory"))
         };
         let exists = |p: &Path| files.contains_key(p);
-        let readable_file = |p: &Path| files.contains_key(p) && !unreadable.contains(p);
+        let readable_file = |p: &Path| {
+            if unreadable.contains(p) {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Permission denied",
+                ))
+            } else if files.contains_key(p) {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "No such file or directory",
+                ))
+            }
+        };
         let same_file = |a: &Path, b: &Path| a == b;
         let create_scratch_dir = |parent: &Path| {
             scratch_parents.borrow_mut().push(parent.to_path_buf());
@@ -1331,7 +1410,7 @@ mod tests {
     }
 
     #[test]
-    fn a22_login_suggestion_quotes_every_value() {
+    fn a22_login_suggestion_quotes_the_options() {
         let mut invocation = invocation();
         invocation.ssh_options = vec![SshOption::Option("ProxyCommand=echo 'x'".into())];
         let run = execute_with(
@@ -1507,5 +1586,133 @@ mod tests {
             run.err
         );
         assert!(run.out.contains("Number of key(s) added: 1"), "{}", run.out);
+    }
+
+    const ATTEMPTING: &str = "ssh-copy-id: INFO: attempting to log in with the new key(s), \
+                              to filter out any that are already installed\n";
+
+    #[test]
+    fn a51_login_hint_leaves_the_identity_and_port_unquoted_as_upstream() {
+        let mut invocation = invocation();
+        invocation.port = Some("2222".into());
+        invocation.ssh_options = vec![
+            SshOption::Option("User=x".into()),
+            SshOption::Config("cfg".into()),
+        ];
+        let run = execute_with(
+            &invocation,
+            files(),
+            true,
+            false,
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(0, ACCEPTED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(
+            run.out,
+            "\nNumber of key(s) added: 1\n\n\
+             Now try logging into the machine, with: \
+             \"ssh -i C:/k/id -p 2222 -o 'User=x' -F 'cfg' 'u@h'\"\n\
+             and check to make sure that only the key(s) you wanted were added.\n\n"
+        );
+    }
+
+    #[test]
+    fn a52_a_missing_private_key_is_reported_as_upstream_without_the_f_hint() {
+        let mut files = files();
+        files.remove(&PathBuf::from("C:/k/id"));
+        let run = execute_with(&invocation(), files, true, false, FakeSsh::new());
+        assert_eq!(run.status, 1);
+        assert_eq!(
+            run.err,
+            "\nssh-copy-id: ERROR: failed to open ID file 'C:/k/id': No such file or directory\n"
+        );
+    }
+
+    #[test]
+    fn a53_an_unreadable_private_key_names_the_reason() {
+        let run = execute_in(
+            &invocation(),
+            files(),
+            HashSet::from([PathBuf::from("C:/k/id")]),
+            true,
+            false,
+            FakeSsh::new(),
+        );
+        assert_eq!(
+            run.err,
+            "\nssh-copy-id: ERROR: failed to open ID file 'C:/k/id': Permission denied\n"
+        );
+    }
+
+    #[test]
+    fn a54_a_missing_public_key_is_reported_as_upstream() {
+        let run = execute_with(&invocation(), HashMap::new(), true, false, FakeSsh::new());
+        assert_eq!(run.status, 1);
+        assert_eq!(
+            run.err,
+            "\nssh-copy-id: ERROR: failed to open ID file 'C:/k/id.pub': No such file or directory\n"
+        );
+    }
+
+    #[test]
+    fn a55_an_os_error_is_named_without_its_code() {
+        let error = io::Error::from_raw_os_error(2);
+        let full = error.to_string();
+        assert_eq!(
+            reason(&error),
+            full.strip_suffix(" (os error 2)")
+                .expect("Display ends with the code")
+        );
+        assert_eq!(
+            reason(&io::Error::other("Is a directory")),
+            "Is a directory"
+        );
+    }
+
+    #[test]
+    fn a56_skipped_keys_are_reported_between_blank_lines_without_the_f_hint() {
+        let run = execute(FakeSsh::new().probe(0, ACCEPTED));
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(
+            run.err.ends_with(&format!(
+                "{ATTEMPTING}\nssh-copy-id: WARNING: All keys were skipped because \
+                 they already exist on the remote system.\n\n"
+            )),
+            "{:?}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn a57_a_probe_that_never_authenticated_relays_ssh_s_messages_as_upstream() {
+        let log = "@@@@\r\nHost key verification failed.\r\n";
+        let run = execute(FakeSsh::new().probe(255, log));
+        assert_eq!(run.status, 1);
+        assert!(!run.ssh.kinds().contains(&"install"));
+        assert!(
+            run.err.ends_with(&format!(
+                "{ATTEMPTING}\nssh-copy-id: ERROR: @@@@\r\nERROR: Host key verification failed.\r\n\n"
+            )),
+            "{:?}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn a58_a_failure_with_nothing_to_relay_is_named() {
+        let log = "kex_exchange_identification: Connection closed by remote host\r\n";
+        let run = execute(FakeSsh::new().probe(255, log));
+        assert_eq!(run.status, 1);
+        assert!(
+            run.err.ends_with(&format!(
+                "{ATTEMPTING}ssh-copy-id: ERROR: \
+                 kex_exchange_identification: Connection closed by remote host\n"
+            )),
+            "{:?}",
+            run.err
+        );
     }
 }

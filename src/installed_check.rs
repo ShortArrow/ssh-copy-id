@@ -11,8 +11,18 @@ pub enum CheckResult {
     NotInstalled,
     /// The probe cannot tell; the key is installed with this reason as a warning.
     Inconclusive(String),
-    /// The probe could not reach a verdict about authentication, such as a host
-    /// key mismatch or a connection failure; the run stops with this message.
+    /// Authentication was never attempted: the host key was rejected or the
+    /// connection failed, and `ssh` exited with status 255. The run stops.
+    /// `failure` is the line naming the failure; `messages` are `ssh`'s lines,
+    /// those of the log and then those of stderr, each without its `\n` but
+    /// with any `\r`, leaving out the lines that only `LogLevel=VERBOSE` writes,
+    /// so that they are what upstream's `LogLevel=INFO` probe prints.
+    NotAttempted {
+        failure: String,
+        messages: Vec<String>,
+    },
+    /// The probe could not reach a verdict about authentication for another
+    /// reason; the run stops with this message.
     Failed(String),
 }
 
@@ -126,9 +136,9 @@ const NO_AUTHENTICATION_FAILURES: [&str; 12] = [
 /// method, such as `none`, lets the probe succeed without the key. Exit 0 with
 /// no `Authenticated to` line in the log is `Failed`, since `ssh` exits 0 only after authenticating. A process
 /// terminated by a signal is `Failed`. Exit 255 is `NotInstalled` on
-/// `Permission denied (`, `Failed` naming the last line with a recognised host
-/// key or connection failure, and `Inconclusive` otherwise; these patterns are
-/// matched on the log and stderr together.
+/// `Permission denied (`, `NotAttempted` naming the last line with a recognised
+/// host key or connection failure, and `Inconclusive` otherwise; these patterns
+/// are matched on the log and stderr together.
 pub fn classify(exit: Option<i32>, log: &str, stderr: &str, others: &[String]) -> CheckResult {
     let output = format!("{log}\n{stderr}");
     match exit {
@@ -154,7 +164,10 @@ pub fn classify(exit: Option<i32>, log: &str, stderr: &str, others: &[String]) -
         },
         Some(255) if output.contains("Permission denied (") => CheckResult::NotInstalled,
         Some(255) => match (failure_line(&output), last_line(&output)) {
-            (Some(line), _) => CheckResult::Failed(line),
+            (Some(line), _) => CheckResult::NotAttempted {
+                failure: line,
+                messages: relayed_messages(log, stderr),
+            },
             (None, Some(line)) => {
                 CheckResult::Inconclusive(format!("ssh exited with status 255: {line}"))
             }
@@ -164,6 +177,38 @@ pub fn classify(exit: Option<i32>, log: &str, stderr: &str, others: &[String]) -
             "the session failed after authentication with exit status {code}"
         )),
     }
+}
+
+/// The starts of the messages the OpenSSH client logs at `VERBOSE`, the level
+/// above upstream's `LogLevel=INFO`, from the call sites a probe can reach:
+/// `sshconnect2.c` (authentication), `clientloop.c` (session end), `ssh.c`
+/// (hostname canonicalization), `kex.c` (identification exchange) and
+/// `hostfile.c` (`known_hosts` parsing). The log carries no level, so a line is
+/// recognised by how it starts.
+const VERBOSE_ONLY_MESSAGES: [&str; 11] = [
+    "Authenticated to ",
+    "Authenticated using \"",
+    "Transferred: sent ",
+    "Bytes per second: sent ",
+    "Killed by signal ",
+    "Canonicalized DNS aliased hostname ",
+    "kex_exchange_identification: Connection closed by remote host",
+    "kex_exchange_identification: banner line contains invalid characters",
+    "kex_exchange_identification: banner line too long",
+    "hostkeys_foreach_file: invalid marker at ",
+    "hostkeys_foreach_file: truncated line at ",
+];
+
+fn relayed_messages(log: &str, stderr: &str) -> Vec<String> {
+    log.split_terminator('\n')
+        .chain(stderr.split_terminator('\n'))
+        .filter(|line| {
+            !VERBOSE_ONLY_MESSAGES
+                .iter()
+                .any(|start| line.starts_with(start))
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 fn authenticated_method(log: &str) -> Option<&str> {
@@ -271,6 +316,20 @@ mod tests {
 
     fn exists_none(_: &Path) -> bool {
         false
+    }
+
+    fn failure(result: CheckResult) -> Option<String> {
+        match result {
+            CheckResult::NotAttempted { failure, .. } => Some(failure),
+            _ => None,
+        }
+    }
+
+    fn messages(result: CheckResult) -> Vec<String> {
+        match result {
+            CheckResult::NotAttempted { messages, .. } => messages,
+            other => panic!("not NotAttempted: {other:?}"),
+        }
     }
 
     #[test]
@@ -444,7 +503,10 @@ mod tests {
         let stderr = "Host key verification failed.\r\n";
         assert_eq!(
             classify(Some(255), stderr, "", &[]),
-            CheckResult::Failed("Host key verification failed.".to_string())
+            CheckResult::NotAttempted {
+                failure: "Host key verification failed.".to_string(),
+                messages: vec!["Host key verification failed.\r".to_string()],
+            }
         );
     }
 
@@ -453,7 +515,7 @@ mod tests {
         let stderr = "ssh: connect to host 127.0.0.1 port 1: Connection refused\r\n";
         assert!(matches!(
             classify(Some(255), stderr, "", &[]),
-            CheckResult::Failed(_)
+            CheckResult::NotAttempted { .. }
         ));
     }
 
@@ -477,10 +539,8 @@ mod tests {
     fn k08_failed_message_is_the_last_line_naming_the_failure() {
         let stderr = "debug noise\r\nssh: Could not resolve hostname nowhere: No such host is known.\r\n\r\n";
         assert_eq!(
-            classify(Some(255), stderr, "", &[]),
-            CheckResult::Failed(
-                "ssh: Could not resolve hostname nowhere: No such host is known.".to_string()
-            )
+            failure(classify(Some(255), stderr, "", &[])).as_deref(),
+            Some("ssh: Could not resolve hostname nowhere: No such host is known.")
         );
     }
 
@@ -498,7 +558,7 @@ mod tests {
         let stderr = "@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@";
         assert!(matches!(
             classify(Some(255), stderr, "", &[]),
-            CheckResult::Failed(_)
+            CheckResult::NotAttempted { .. }
         ));
     }
 
@@ -507,7 +567,7 @@ mod tests {
         let stderr = "ssh: connect to host h port 22: Permission denied";
         assert!(matches!(
             classify(Some(255), stderr, "", &[]),
-            CheckResult::Failed(_)
+            CheckResult::NotAttempted { .. }
         ));
     }
 
@@ -563,8 +623,8 @@ ssh: {fragment}
 "
             );
             assert_eq!(
-                classify(Some(255), &stderr, "", &[]),
-                CheckResult::Failed(format!("ssh: {fragment}")),
+                failure(classify(Some(255), &stderr, "", &[])),
+                Some(format!("ssh: {fragment}")),
                 "{fragment}"
             );
         }
@@ -609,8 +669,8 @@ ssh: {fragment}
         let stderr = "Host key verification failed.
 ";
         assert_eq!(
-            classify(Some(255), log, stderr, &[]),
-            CheckResult::Failed("Host key verification failed.".to_string())
+            failure(classify(Some(255), log, stderr, &[])).as_deref(),
+            Some("Host key verification failed.")
         );
     }
 
@@ -621,8 +681,59 @@ ssh: {fragment}
         let stderr = "Goodbye.
 ";
         assert_eq!(
-            classify(Some(255), log, stderr, &[]),
-            CheckResult::Failed("ssh: connect to host h port 22: Connection refused".to_string())
+            failure(classify(Some(255), log, stderr, &[])).as_deref(),
+            Some("ssh: connect to host h port 22: Connection refused")
+        );
+    }
+
+    #[test]
+    fn k26_ssh_s_messages_are_relayed_in_order_with_their_carriage_returns() {
+        let log = "@@@@\r\nIT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!\r\n\
+                   The fingerprint for the ED25519 key sent by the remote host is\n\
+                   SHA256:abc.\r\nHost key verification failed.\r\n";
+        assert_eq!(
+            messages(classify(Some(255), log, "", &[])),
+            [
+                "@@@@\r",
+                "IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!\r",
+                "The fingerprint for the ED25519 key sent by the remote host is",
+                "SHA256:abc.\r",
+                "Host key verification failed.\r",
+            ]
+        );
+    }
+
+    #[test]
+    fn k27_lines_only_log_level_verbose_writes_are_not_relayed() {
+        let log = "Authenticated to h ([127.0.0.1]:22) using \"publickey\".\r\n\
+                   Authenticated to h (via proxy) using \"publickey\".\r\n\
+                   Authenticated using \"publickey\" with partial success.\r\n\
+                   Transferred: sent 3644, received 4004 bytes, in 0.1 seconds\r\n\
+                   Bytes per second: sent 65149.9, received 71586.2\r\n\
+                   Killed by signal 15.\r\n\
+                   Canonicalized DNS aliased hostname \"a\" => \"b\"\r\n\
+                   kex_exchange_identification: Connection closed by remote host\r\n\
+                   kex_exchange_identification: banner line contains invalid characters\r\n\
+                   kex_exchange_identification: banner line too long\r\n\
+                   hostkeys_foreach_file: invalid marker at /k:1\r\n\
+                   hostkeys_foreach_file: truncated line at /k:2\r\n\
+                   Connection closed by 127.0.0.1 port 22\r\n";
+        assert_eq!(
+            messages(classify(Some(255), log, "", &[])),
+            ["Connection closed by 127.0.0.1 port 22\r"]
+        );
+    }
+
+    #[test]
+    fn k28_stderr_lines_are_relayed_after_the_log_lines() {
+        let log = "ssh: connect to host h port 22: Connection refused\r\n";
+        let stderr = "Goodbye.\n";
+        assert_eq!(
+            messages(classify(Some(255), log, stderr, &[])),
+            [
+                "ssh: connect to host h port 22: Connection refused\r",
+                "Goodbye."
+            ]
         );
     }
 
