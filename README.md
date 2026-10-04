@@ -1,5 +1,7 @@
 # ssh-copy-id for windows
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ShortArrow/ssh-copy-id)
+
 This is `ssh-copy-id` for Windows.
 
 > [!WARNING]
