@@ -33,8 +33,11 @@ cargo install ssh-copy-id
 Or download `ssh-copy-id-x86_64-pc-windows-msvc.zip` from the
 [latest release](https://github.com/ShortArrow/ssh-copy-id/releases/latest) and
 put `ssh-copy-id.exe` on `PATH`. The system OpenSSH client (`ssh.exe`) is
-required. Version 0.0.1 installs one explicitly selected key on a Unix-like
-host:
+required.
+
+## Usage
+
+Version 0.0.1 installs one explicitly selected key on a Unix-like host:
 
 ```powershell
 ssh-copy-id -i ~/.ssh/id_ed25519.pub user@host
@@ -42,6 +45,6 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub user@host
 
 The remaining features follow the [delivery plan](docs/design.md#delivery-plan).
 
-## LICENSE
+## License
 
-MIT, Apache 2.0
+MIT OR Apache-2.0; see [LICENSE](LICENSE).
