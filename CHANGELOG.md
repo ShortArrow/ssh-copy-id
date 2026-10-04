@@ -19,6 +19,9 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 - When `ssh` ends before the installation script reports anything, the extra
   line saying nothing was written if authentication failed is a recorded
   difference (D-19).
+- A selected key file holding more than one key is still rejected before
+  anything is sent, now with the rule it breaks: the file must hold the one
+  public key of its private key (D-21).
 
 ## [0.0.1] - 2026-10-04
 

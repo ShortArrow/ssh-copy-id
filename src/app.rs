@@ -140,7 +140,8 @@ fn install(
     let prepared = prepare(&input).map_err(|e| input_error(&public_key, &e))?;
     if prepared.key_count > 1 {
         return stop(format!(
-            "'{public_key}' contains {} keys; this release installs one key per run",
+            "'{public_key}' holds {} keys; a selected key file must hold one key, \
+             the public half of '{identity}'",
             prepared.key_count
         ));
     }
@@ -1046,6 +1047,11 @@ mod tests {
         let run = execute_with(&invocation(), files, true, false, FakeSsh::new());
         assert_eq!(run.status, 1);
         assert!(run.ssh.calls.is_empty());
+        assert_eq!(
+            run.err,
+            "ssh-copy-id: ERROR: 'C:/k/id.pub' holds 2 keys; a selected key file must hold \
+             one key, the public half of 'C:/k/id'\n"
+        );
     }
 
     #[test]

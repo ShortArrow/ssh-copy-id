@@ -322,6 +322,24 @@ fn n13_a_difference_outside_the_table_is_named() {
 }
 
 #[test]
+fn n15_exit_status_and_authorized_keys_differ_only_where_the_table_says() {
+    let mut up = outcome("", "");
+    let mut cli = outcome("", "");
+    up.authorized_keys = Some(b"k\n".to_vec());
+    cli.status = Some(1);
+    assert_eq!(
+        unexpected_differences(8, &up, &cli),
+        ["exit status", "authorized_keys"]
+    );
+}
+
+#[test]
+fn n16_a_whole_replacement_applies_only_when_the_text_differs() {
+    assert_eq!(apply(&Edit::Whole("x"), "y").as_deref(), Some("x"));
+    assert_eq!(apply(&Edit::Whole("x"), "x"), None);
+}
+
+#[test]
 fn n14_every_scenario_lists_a_rule_only_for_scenarios_that_exist() {
     for rule in &EXPECTED {
         for number in rule.scenarios {
@@ -356,6 +374,8 @@ enum KeyFile {
     Generated,
     PrivateMissing,
     CommentAndBlankLineFirst,
+    /// The generated key's line followed by the line of another generated key.
+    TwoKeys,
 }
 
 #[derive(Clone, Copy)]
@@ -392,7 +412,7 @@ const BASE: Scenario = Scenario {
     runs_before: 0,
 };
 
-const SCENARIOS: [Scenario; 10] = [
+const SCENARIOS: [Scenario; 11] = [
     Scenario {
         title: "-h (no destination)",
         arguments: Arguments::Help,
@@ -445,6 +465,11 @@ const SCENARIOS: [Scenario; 10] = [
         ),
         ..BASE
     },
+    Scenario {
+        title: "-i file holding two keys",
+        key_file: KeyFile::TwoKeys,
+        ..BASE
+    },
 ];
 
 /// Upstream's usage, which the CLI's matches only from stage 1.5.
@@ -468,8 +493,12 @@ This release installs one explicitly selected key on a Unix-like host.
 
 #[derive(Clone, Copy, PartialEq)]
 enum Field {
+    /// The exit status as the report shows it.
+    ExitStatus,
     Stdout,
     Stderr,
+    /// pwuser's `authorized_keys` as the report shows it.
+    AuthorizedKeys,
 }
 
 /// How an expected difference is taken out of one tool's output.
@@ -481,6 +510,8 @@ enum Edit {
     RemoveLine(&'static str, &'static str),
     /// Replaces the first occurrence of the first text with the second.
     Replace(&'static str, &'static str),
+    /// Replaces the whole text, for an outcome the design prevents altogether.
+    Whole(&'static str),
 }
 
 /// A difference between the tools that the design expects, tagged with the
@@ -497,7 +528,7 @@ struct Expected {
     always: bool,
 }
 
-const EXPECTED: [Expected; 11] = [
+const EXPECTED: [Expected; 16] = [
     Expected {
         tag: "D-06",
         scenarios: &[5, 9, 10],
@@ -546,6 +577,48 @@ const EXPECTED: [Expected; 11] = [
         edit: Edit::Remove(
             "ssh-copy-id: ERROR: ssh exited with status 255 before the installation script reported anything; if authentication failed, nothing was written\n",
         ),
+        always: true,
+    },
+    Expected {
+        tag: "D-21",
+        scenarios: &[11],
+        field: Field::ExitStatus,
+        tool: Tool::Upstream,
+        edit: Edit::Replace("0", "1"),
+        always: true,
+    },
+    Expected {
+        tag: "D-21",
+        scenarios: &[11],
+        field: Field::Stdout,
+        tool: Tool::Upstream,
+        edit: Edit::Whole(""),
+        always: true,
+    },
+    Expected {
+        tag: "D-21",
+        scenarios: &[11],
+        field: Field::Stderr,
+        tool: Tool::Upstream,
+        edit: Edit::Whole(""),
+        always: true,
+    },
+    Expected {
+        tag: "D-21",
+        scenarios: &[11],
+        field: Field::Stderr,
+        tool: Tool::Cli,
+        edit: Edit::Remove(
+            "ssh-copy-id: ERROR: '<KEY>.pub' holds 2 keys; a selected key file must hold one key, the public half of '<KEY>'\n",
+        ),
+        always: true,
+    },
+    Expected {
+        tag: "D-21",
+        scenarios: &[11],
+        field: Field::AuthorizedKeys,
+        tool: Tool::Upstream,
+        edit: Edit::Whole("(absent)"),
         always: true,
     },
     Expected {
@@ -613,6 +686,7 @@ fn apply(edit: &Edit, text: &str) -> Option<String> {
             .contains(removed)
             .then(|| text.replacen(removed, "", 1)),
         Edit::Replace(from, to) => text.contains(from).then(|| text.replacen(from, to, 1)),
+        Edit::Whole(to) => (text != to).then(|| to.to_string()),
         Edit::RemoveLine(starts, ends) => {
             let kept: String = text
                 .split_inclusive('\n')
@@ -649,12 +723,21 @@ fn without_expected(text: &str, number: usize, field: Field, tool: Tool) -> Reco
 /// that did not appear.
 fn unexpected_differences(number: usize, up: &Outcome, cli: &Outcome) -> Vec<String> {
     let mut found = Vec::new();
-    if up.status != cli.status {
-        found.push("exit status".to_string());
-    }
     for (name, field, up_text, cli_text) in [
+        (
+            "exit status",
+            Field::ExitStatus,
+            &status_text(up.status),
+            &status_text(cli.status),
+        ),
         ("stdout", Field::Stdout, &up.stdout, &cli.stdout),
         ("stderr", Field::Stderr, &up.stderr, &cli.stderr),
+        (
+            "authorized_keys",
+            Field::AuthorizedKeys,
+            &keys_text(&up.authorized_keys),
+            &keys_text(&cli.authorized_keys),
+        ),
     ] {
         let up_side = without_expected(up_text, number, field, Tool::Upstream);
         let cli_side = without_expected(cli_text, number, field, Tool::Cli);
@@ -664,9 +747,6 @@ fn unexpected_differences(number: usize, up: &Outcome, cli: &Outcome) -> Vec<Str
         for tag in up_side.missing.iter().chain(&cli_side.missing) {
             found.push(format!("{name}: missing {tag}"));
         }
-    }
-    if up.authorized_keys != cli.authorized_keys {
-        found.push("authorized_keys".to_string());
     }
     found
 }
@@ -713,6 +793,11 @@ impl Harness {
             KeyFile::CommentAndBlankLineFirst => {
                 let line = public_line(&key);
                 fs::write(key.with_extension("pub"), format!("# comment\n\n{line}\n")).unwrap();
+            }
+            KeyFile::TwoKeys => {
+                let other = keygen(&dir, "other", "other@test");
+                let lines = format!("{}\n{}\n", public_line(&key), public_line(&other));
+                fs::write(key.with_extension("pub"), lines).unwrap();
             }
         }
         key
