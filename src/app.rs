@@ -1,6 +1,6 @@
 //! One run of the CLI: from the selected keys to the reported outcome.
 
-use crate::cli_args::{Invocation, KeySelection, SshOption};
+use crate::cli_args::{Force, Invocation, KeySelection, SshOption};
 use crate::default_key::{DirEntryTime, newest_public_key};
 use crate::installed_check::{
     CheckResult, classify, is_certificate, is_tested_client, other_candidates_matching,
@@ -163,16 +163,41 @@ struct SelectedKey {
 
 const AGENT_SOURCE: &str = "ssh-add -L";
 
+/// What the login hint says about `-i`, as upstream's
+/// `${SEEN_OPT_I:+-i${PRIV_ID_FILE:+ $PRIV_ID_FILE} }`.
+enum HintIdentity<'a> {
+    /// `-i` was not given: nothing.
+    Absent,
+    /// `-i` was given with `-f`, under which upstream leaves the private key
+    /// unset: `-i` without a value.
+    Bare,
+    /// `-i` was given: `-i` and the private key file.
+    Named(&'a str),
+}
+
 impl Selection {
-    /// The private key the login hint names, when `-i` selected it.
-    fn hint_identity(&self) -> Option<&str> {
+    /// What the login hint says about `-i`: the private key when `-i` selected
+    /// it, and `-i` alone when `-f` preceded that selection.
+    fn hint_identity(&self, force: Force) -> HintIdentity<'_> {
         match self {
+            Selection::File {
+                named_by_option: true,
+                ..
+            } if force == Force::BeforeKeySelection => HintIdentity::Bare,
             Selection::File {
                 identity,
                 named_by_option: true,
                 ..
-            } => Some(identity),
-            _ => None,
+            } => HintIdentity::Named(identity),
+            _ => HintIdentity::Absent,
+        }
+    }
+
+    /// The lines of every selected key, in order, as they are sent.
+    fn texts(&self) -> Vec<Vec<u8>> {
+        match self {
+            Selection::File { text, .. } => vec![text.clone()],
+            Selection::Agent(lines) => lines.clone(),
         }
     }
 
@@ -226,17 +251,15 @@ fn install(
         })?,
         remove: env.remove_dir,
     };
+    let common = common_args(invocation, env);
+    if invocation.force.is_on() {
+        announce_batch_mode(env, err);
+        return install_unchecked(invocation, env, ssh, out, &selection, &common);
+    }
     let keys = selection.keys(&scratch.path, env)?;
 
     warn_about_an_untested_client(ssh, env, err)?;
-    let common = common_args(invocation, env);
-    if batch_mode(env) {
-        info(
-            err,
-            "there is no console and SSH_ASKPASS is not set, so ssh runs with BatchMode=yes; \
-             password and passphrase prompts fail",
-        );
-    }
+    announce_batch_mode(env, err);
     let mut candidates = Vec::new();
     for key in &keys {
         let others = other_candidates(ssh, env, &common, &invocation.destination, &key.identity)?;
@@ -286,7 +309,8 @@ fn install(
         let _ = write!(
             err,
             "\nssh-copy-id: WARNING: All keys were skipped because they already exist \
-             on the remote system.\n\n"
+             on the remote system.\n\
+             \t\t(if you think this is a mistake, you may want to use -f option)\n\n"
         );
         return Ok(());
     }
@@ -302,11 +326,79 @@ fn install(
         .iter()
         .flat_map(|(key, _)| key.text.iter().copied())
         .collect();
+    let Written { added, target } = write_keys(ssh, invocation, &common, &text, remaining.len())?;
+
+    let login = login_command(invocation, selection.hint_identity(invocation.force));
+    if (env.interrupted)() {
+        summary(out, added, &login);
+        return stop("interrupted".to_string());
+    }
+    for (key, others) in &remaining {
+        let verified = probe(ssh, key, others, "verify")?;
+        if (env.interrupted)() {
+            summary(out, added, &login);
+            return stop("interrupted before the key was verified".to_string());
+        }
+        report_verification(err, &key.label, verified, &target);
+    }
+
+    summary(out, added, &login);
+    Ok(())
+}
+
+/// Installs every selected key without the installed-key check or the
+/// verification, as `-f` asks; duplicates may result.
+fn install_unchecked(
+    invocation: &Invocation,
+    env: &Environment,
+    ssh: &mut dyn Ssh,
+    out: &mut dyn Write,
+    selection: &Selection,
+    common: &[String],
+) -> Result<(), Stop> {
+    let texts = selection.texts();
+    let Written { added, .. } = write_keys(ssh, invocation, common, &texts.concat(), texts.len())?;
+    summary(
+        out,
+        added,
+        &login_command(invocation, selection.hint_identity(invocation.force)),
+    );
+    Ok(stop_if_interrupted(env, "interrupted")?)
+}
+
+fn announce_batch_mode(env: &Environment, err: &mut dyn Write) {
+    if batch_mode(env) {
+        info(
+            err,
+            "there is no console and SSH_ASKPASS is not set, so ssh runs with BatchMode=yes; \
+             password and passphrase prompts fail",
+        );
+    }
+}
+
+/// What the installation script reported for a complete write.
+struct Written {
+    /// The key lines it appended.
+    added: usize,
+    /// The file it wrote, as it reported it.
+    target: String,
+}
+
+/// Sends `text`, holding `sent` key lines, to the installation script and
+/// returns its report when every key was written; any other outcome stops the
+/// run with what may have changed.
+fn write_keys(
+    ssh: &mut dyn Ssh,
+    invocation: &Invocation,
+    common: &[String],
+    text: &[u8],
+    sent: usize,
+) -> Result<Written, Stop> {
     let mut install_args = vec!["-o".to_string(), "RequestTTY=no".to_string()];
     install_args.extend(common.iter().cloned());
     install_args.push(invocation.destination.clone());
     install_args.push(install_command(None));
-    let installed = run_ssh(ssh, &install_args, &text, false)?;
+    let installed = run_ssh(ssh, &install_args, text, false)?;
     if installed.status == Some(255) && !has_report_line(&installed.stdout) {
         return stop(
             "ssh exited with status 255 before the installation script reported \
@@ -325,54 +417,31 @@ fn install(
         .iter()
         .filter(|k| k.status == crate::result_line::KeyStatus::Added)
         .count();
-    if report.outcome != Outcome::Unknown && report.keys.len() != remaining.len() {
+    if report.outcome != Outcome::Unknown && report.keys.len() != sent {
         return stop(format!(
-            "the remote side reported {} key(s) for {} sent; {target} may or may not have changed",
-            report.keys.len(),
-            remaining.len()
+            "the remote side reported {} key(s) for {sent} sent; {target} may or may not have changed",
+            report.keys.len()
         ));
     }
     match report.outcome {
-        Outcome::Installed => {}
-        Outcome::Partial => {
-            return stop(format!(
-                "only {added} key(s) were written to {target} before the remote side failed"
-            ));
-        }
-        Outcome::Unchanged => return stop(format!("the key was not written to {target}")),
-        Outcome::Uncertain => {
-            return stop(format!(
-                "writing to {target} failed and the partial line could not be removed; check the file"
-            ));
-        }
-        Outcome::Unknown => {
-            return stop(format!(
-                "the connection ended without a result; {target} may or may not have changed"
-            ));
-        }
+        Outcome::Installed => Ok(Written { added, target }),
+        Outcome::Partial => stop(format!(
+            "only {added} key(s) were written to {target} before the remote side failed"
+        )),
+        Outcome::Unchanged => stop(format!("the key was not written to {target}")),
+        Outcome::Uncertain => stop(format!(
+            "writing to {target} failed and the partial line could not be removed; check the file"
+        )),
+        Outcome::Unknown => stop(format!(
+            "the connection ended without a result; {target} may or may not have changed"
+        )),
     }
-
-    let login = login_command(invocation, selection.hint_identity());
-    if (env.interrupted)() {
-        summary(out, added, &login);
-        return stop("interrupted".to_string());
-    }
-    for (key, others) in &remaining {
-        let verified = probe(ssh, key, others, "verify")?;
-        if (env.interrupted)() {
-            summary(out, added, &login);
-            return stop("interrupted before the key was verified".to_string());
-        }
-        report_verification(err, &key.label, verified, &target);
-    }
-
-    summary(out, added, &login);
-    Ok(())
 }
 
 /// Selects the keys and prints upstream's Source line: without `-i`, the keys
 /// `ssh-add -L` lists, whatever `SSH_AUTH_SOCK` holds (D-20); otherwise, and
-/// when the agent lists none, the selected key file after its checks.
+/// when the agent lists none, the selected key file after its checks, of
+/// which `-f` before the key selection skips only the private key's.
 fn select_keys(
     invocation: &Invocation,
     env: &Environment,
@@ -400,7 +469,10 @@ fn select_keys(
             prepared.key_count
         ));
     }
-    (env.readable_file)(&key_file.private).map_err(|e| unopenable(&identity, &e))?;
+    if invocation.force != Force::BeforeKeySelection {
+        (env.readable_file)(&key_file.private)
+            .map_err(|e| unopenable_private_key(&identity, &public_key, &e))?;
+    }
     info(
         err,
         &format!("Source of key(s) to be installed: \"{public_key}\""),
@@ -637,11 +709,15 @@ fn has_report_line(stdout: &[u8]) -> bool {
 
 /// The suggested login command, as upstream's: `-i` when `-i` was given and `-p`, with their values
 /// unquoted, then each `-o` and `-F` and the destination single-quoted.
-fn login_command(invocation: &Invocation, identity: Option<&str>) -> String {
+fn login_command(invocation: &Invocation, identity: HintIdentity) -> String {
     let mut words = vec!["ssh".to_string()];
-    if let Some(identity) = identity {
-        words.push("-i".to_string());
-        words.push(identity.to_string());
+    match identity {
+        HintIdentity::Absent => {}
+        HintIdentity::Bare => words.push("-i".to_string()),
+        HintIdentity::Named(identity) => {
+            words.push("-i".to_string());
+            words.push(identity.to_string());
+        }
     }
     if let Some(port) = &invocation.port {
         words.push("-p".to_string());
@@ -731,11 +807,20 @@ fn input_error(file: &str, error: &InputError) -> String {
     }
 }
 
-/// Upstream's report of a key file that cannot be opened, without its hint
-/// about `-f`, which this release does not have.
+/// Upstream's report of a key file that cannot be opened.
 fn unopenable(file: &str, error: &io::Error) -> Stop {
     Stop::ErrorAfterBlankLine(format!(
         "failed to open ID file '{file}': {}",
+        reason(error)
+    ))
+}
+
+/// Upstream's report of a private key file that cannot be opened, with its
+/// hint that `-f` installs the public key file without it.
+fn unopenable_private_key(private_key: &str, public_key: &str, error: &io::Error) -> Stop {
+    Stop::ErrorAfterBlankLine(format!(
+        "failed to open ID file '{private_key}': {}\n\
+         \t(to install the contents of '{public_key}' anyway, look at the -f option)",
         reason(error)
     ))
 }
@@ -971,6 +1056,7 @@ mod tests {
             },
             port: None,
             ssh_options: Vec::new(),
+            force: Force::Off,
         }
     }
 
@@ -1115,7 +1201,6 @@ mod tests {
         assert_eq!(run.status, 0);
         assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
         assert!(run.err.contains("All keys were skipped"), "{}", run.err);
-        assert!(!run.err.contains("-f"), "{}", run.err);
     }
 
     #[test]
@@ -1934,14 +2019,15 @@ mod tests {
     }
 
     #[test]
-    fn a52_a_missing_private_key_is_reported_as_upstream_without_the_f_hint() {
+    fn a52_a_missing_private_key_is_reported_as_upstream_with_the_f_hint() {
         let mut files = files();
         files.remove(&PathBuf::from("C:/k/id"));
         let run = execute_with(&invocation(), files, true, false, FakeSsh::new());
         assert_eq!(run.status, 1);
         assert_eq!(
             run.err,
-            "\nssh-copy-id: ERROR: failed to open ID file 'C:/k/id': No such file or directory\n"
+            "\nssh-copy-id: ERROR: failed to open ID file 'C:/k/id': No such file or directory\n\
+             \t(to install the contents of 'C:/k/id.pub' anyway, look at the -f option)\n"
         );
     }
 
@@ -1957,7 +2043,8 @@ mod tests {
         );
         assert_eq!(
             run.err,
-            "\nssh-copy-id: ERROR: failed to open ID file 'C:/k/id': Permission denied\n"
+            "\nssh-copy-id: ERROR: failed to open ID file 'C:/k/id': Permission denied\n\
+             \t(to install the contents of 'C:/k/id.pub' anyway, look at the -f option)\n"
         );
     }
 
@@ -1987,13 +2074,14 @@ mod tests {
     }
 
     #[test]
-    fn a56_skipped_keys_are_reported_between_blank_lines_without_the_f_hint() {
+    fn a56_skipped_keys_are_reported_between_blank_lines_with_the_f_hint() {
         let run = execute(FakeSsh::new().probe(0, ACCEPTED));
         assert_eq!(run.status, 0, "{}", run.err);
         assert!(
             run.err.ends_with(&format!(
                 "{ATTEMPTING}\nssh-copy-id: WARNING: All keys were skipped because \
-                 they already exist on the remote system.\n\n"
+                 they already exist on the remote system.\n\
+                 \t\t(if you think this is a mistake, you may want to use -f option)\n\n"
             )),
             "{:?}",
             run.err
@@ -2236,8 +2324,10 @@ mod tests {
         assert_eq!(
             run.err,
             format!(
-                "\nssh-copy-id: ERROR: failed to open ID file '{}': No such file or directory\n",
-                home_ssh("id_ed25519").display()
+                "\nssh-copy-id: ERROR: failed to open ID file '{}': No such file or directory\n\
+                 \t(to install the contents of '{}' anyway, look at the -f option)\n",
+                home_ssh("id_ed25519").display(),
+                home_ssh("id_ed25519.pub").display()
             )
         );
         assert_eq!(run.ssh.kinds(), ["agent"]);
@@ -2556,5 +2646,253 @@ mod tests {
                 log_in_scratch("verify-2.log")
             ]
         );
+    }
+
+    fn forced(invocation: Invocation) -> Invocation {
+        Invocation {
+            force: Force::BeforeKeySelection,
+            ..invocation
+        }
+    }
+
+    fn forced_after_identity(invocation: Invocation) -> Invocation {
+        Invocation {
+            force: Force::AfterIdentity,
+            ..invocation
+        }
+    }
+
+    #[test]
+    fn e01_force_after_identity_still_needs_the_private_key_as_upstream() {
+        let mut files = files();
+        files.remove(&PathBuf::from("C:/k/id"));
+        let run = execute_with(
+            &forced_after_identity(invocation()),
+            files,
+            true,
+            false,
+            FakeSsh::new(),
+        );
+        assert_eq!(run.status, 1);
+        assert_eq!(
+            run.err,
+            "\nssh-copy-id: ERROR: failed to open ID file 'C:/k/id': No such file or directory\n\
+             \t(to install the contents of 'C:/k/id.pub' anyway, look at the -f option)\n"
+        );
+        assert!(run.ssh.calls.is_empty());
+    }
+
+    #[test]
+    fn e02_force_after_identity_installs_without_checks_and_names_the_private_key() {
+        let run = execute_with(
+            &forced_after_identity(invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new().installs(INSTALLED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["install"]);
+        assert_eq!(run.err, source_line(Path::new("C:/k/id.pub")));
+        assert_eq!(run.out, summary_naming("ssh -i C:/k/id 'u@h'", 1));
+    }
+
+    #[test]
+    fn e03_force_after_identity_without_a_file_needs_the_default_private_key() {
+        let mut files = default_key_files();
+        files.remove(&home_ssh("id_ed25519"));
+        let run = execute_with(
+            &forced_after_identity(selecting(KeySelection::DefaultFile)),
+            files,
+            true,
+            false,
+            with_default_key_listing(FakeSsh::new()),
+        );
+        assert_eq!(run.status, 1);
+        assert!(run.err.contains("look at the -f option"), "{}", run.err);
+        assert!(run.ssh.calls.is_empty());
+    }
+
+    fn summary_naming(login: &str, added: usize) -> String {
+        format!(
+            "\nNumber of key(s) added: {added}\n\n\
+             Now try logging into the machine, with: \"{login}\"\n\
+             and check to make sure that only the key(s) you wanted were added.\n\n"
+        )
+    }
+
+    #[test]
+    fn d01_force_installs_without_any_check_or_verification() {
+        let run = execute_with(
+            &forced(invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new().installs(INSTALLED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["install"]);
+        let (_, stdin, _) = run.ssh.call("install");
+        assert_eq!(stdin, &format!("{KEY}\n").into_bytes());
+        assert_eq!(run.err, source_line(Path::new("C:/k/id.pub")));
+        removed_only_the_scratch_directory(&run);
+    }
+
+    #[test]
+    fn d02_force_does_not_need_the_private_key() {
+        let mut files = files();
+        files.remove(&PathBuf::from("C:/k/id"));
+        let run = execute_with(
+            &forced(invocation()),
+            files,
+            true,
+            false,
+            FakeSsh::new().installs(INSTALLED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["install"]);
+    }
+
+    #[test]
+    fn d03_force_login_hint_names_identity_without_a_file_as_upstream() {
+        let mut invocation = forced(invocation());
+        invocation.port = Some("2222".into());
+        let run = execute_with(
+            &invocation,
+            files(),
+            true,
+            false,
+            FakeSsh::new().installs(INSTALLED),
+        );
+        assert_eq!(run.out, summary_naming("ssh -i -p 2222 'u@h'", 1));
+    }
+
+    #[test]
+    fn d04_force_still_rejects_private_key_input() {
+        let mut files = files();
+        files.insert(
+            PathBuf::from("C:/k/id.pub"),
+            b"-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n".to_vec(),
+        );
+        let run = execute_with(&forced(invocation()), files, true, false, FakeSsh::new());
+        assert_eq!(run.status, 1);
+        assert!(run.ssh.calls.is_empty());
+        assert!(run.err.contains("private key material"), "{}", run.err);
+    }
+
+    #[test]
+    fn d05_force_still_rejects_a_key_file_with_two_keys() {
+        let mut files = files();
+        files.insert(
+            PathBuf::from("C:/k/id.pub"),
+            format!("{KEY}\n{KEY2}\n").into_bytes(),
+        );
+        let run = execute_with(&forced(invocation()), files, true, false, FakeSsh::new());
+        assert_eq!(run.status, 1);
+        assert!(run.ssh.calls.is_empty());
+    }
+
+    #[test]
+    fn d06_force_installs_every_agent_key_without_writing_key_files() {
+        let run = execute_with(
+            &forced(selecting(KeySelection::Unspecified)),
+            default_key_files(),
+            true,
+            false,
+            with_default_key_listing(two_agent_keys(FakeSsh::new().installs(INSTALLED_TWO))),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["agent", "install"]);
+        let (_, stdin, _) = run.ssh.call("install");
+        assert_eq!(stdin, &format!("{KEY}\n{KEY2}\n").into_bytes());
+        assert_eq!(run.err, AGENT_SOURCE);
+        assert_eq!(run.out, summary_naming("ssh 'u@h'", 2));
+        assert!(run.ssh.written.borrow().is_empty());
+    }
+
+    #[test]
+    fn d07_force_installs_the_default_key_file_without_its_private_key() {
+        let mut files = default_key_files();
+        files.remove(&home_ssh("id_ed25519"));
+        let run = execute_with(
+            &forced(selecting(KeySelection::Unspecified)),
+            files,
+            true,
+            false,
+            with_default_key_listing(FakeSsh::new().installs(INSTALLED)),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["agent", "install"]);
+        assert_eq!(run.out, summary_naming("ssh 'u@h'", 1));
+    }
+
+    #[test]
+    fn d08_force_installs_a_certificate_without_a_warning() {
+        let mut files = files();
+        files.insert(
+            PathBuf::from("C:/k/id.pub"),
+            format!("{CERTIFICATE}\n").into_bytes(),
+        );
+        let run = execute_with(
+            &forced(invocation()),
+            files,
+            true,
+            false,
+            FakeSsh::new().installs(INSTALLED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["install"]);
+        assert!(!run.err.contains("WARNING"), "{}", run.err);
+    }
+
+    #[test]
+    fn d09_force_reports_a_failed_write_as_without_force() {
+        let failed = "ssh-copy-id: key=1 result=failed path=.ssh/authorized_keys\nssh-copy-id: result=unchanged added=0\n";
+        let run = execute_with(
+            &forced(invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new().installs(failed),
+        );
+        assert_eq!(run.status, 1);
+        assert!(
+            run.err
+                .ends_with("ssh-copy-id: ERROR: the key was not written to .ssh/authorized_keys\n"),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn d10_force_reports_an_interrupt_during_the_installation_after_the_summary() {
+        let mut ssh = FakeSsh::new().installs(INSTALLED);
+        ssh.interrupt_during = Some(0);
+        let run = execute_with(&forced(invocation()), files(), true, false, ssh);
+        assert_eq!(run.status, 1);
+        assert!(run.out.contains("Number of key(s) added: 1"), "{}", run.out);
+        assert!(
+            run.err.ends_with("ssh-copy-id: ERROR: interrupted\n"),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn d11_force_still_runs_in_batch_mode_without_a_console() {
+        let run = execute_with(
+            &forced(invocation()),
+            files(),
+            false,
+            false,
+            FakeSsh::new().installs(INSTALLED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        let (args, _, _) = run.ssh.call("install");
+        assert!(
+            args.windows(2).any(|w| w == ["-o", "BatchMode=yes"]),
+            "{args:?}"
+        );
+        assert!(run.err.contains("BatchMode=yes"), "{}", run.err);
     }
 }

@@ -1,4 +1,4 @@
-//! Behavior against the L02 Linux fixture: requirements 1, 2, 3, 7, and 8,
+//! Behavior against the L02 Linux fixture: requirements 1, 2, 3, 5, 7, and 8,
 //! design D-01, D-15, D-16, D-17, D-18, and D-20, and default key selection.
 //! Every run of the CLI must leave no `ssh-copy-id.*` scratch directory in the
 //! local `~/.ssh` it uses.
@@ -587,5 +587,43 @@ fn i22_d20_agent_keys_are_checked_alone_and_only_the_missing_one_is_appended() {
         !fixture
             .authorized_keys("pwuser")
             .contains(&public_line(&default_key))
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i23_requirement_5_force_before_identity_installs_from_the_public_key_alone() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let held = key.with_extension("held");
+    fs::rename(&key, &held).unwrap();
+    let home = fixture.work.join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    let public = key.with_extension("pub").display().to_string();
+    let run = fixture.copy_id_from_home(&home, None, &["-f", "-i", &public], "pwuser");
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(!stderr.contains("attempting to log in"), "{stderr}");
+    assert!(text(&run.stdout).contains("Number of key(s) added: 1"));
+    assert_eq!(
+        fixture.authorized_keys("pwuser"),
+        format!("{}\n", public_line(&key))
+    );
+    fs::rename(&held, &key).unwrap();
+    assert!(fixture.logs_in_with(&key, "pwuser"));
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i24_requirement_5_force_after_identity_appends_an_installed_key_again() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    assert_eq!(fixture.copy_id(&key, "pwuser", &[]).status.code(), Some(0));
+    let again = fixture.copy_id(&key, "pwuser", &["-f"]);
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    assert!(text(&again.stdout).contains("Number of key(s) added: 1"));
+    assert_eq!(
+        fixture.authorized_keys("pwuser"),
+        format!("{}\n{}\n", public_line(&key), public_line(&key))
     );
 }
