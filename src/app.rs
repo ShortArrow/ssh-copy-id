@@ -302,11 +302,49 @@ fn install(
         .iter()
         .flat_map(|(key, _)| key.text.iter().copied())
         .collect();
+    let Written { added, target } = write_keys(ssh, invocation, &common, &text, remaining.len())?;
+
+    let login = login_command(invocation, selection.hint_identity());
+    if (env.interrupted)() {
+        summary(out, added, &login);
+        return stop("interrupted".to_string());
+    }
+    for (key, others) in &remaining {
+        let verified = probe(ssh, key, others, "verify")?;
+        if (env.interrupted)() {
+            summary(out, added, &login);
+            return stop("interrupted before the key was verified".to_string());
+        }
+        report_verification(err, &key.label, verified, &target);
+    }
+
+    summary(out, added, &login);
+    Ok(())
+}
+
+/// What the installation script reported for a complete write.
+struct Written {
+    /// The key lines it appended.
+    added: usize,
+    /// The file it wrote, as it reported it.
+    target: String,
+}
+
+/// Sends `text`, holding `sent` key lines, to the installation script and
+/// returns its report when every key was written; any other outcome stops the
+/// run with what may have changed.
+fn write_keys(
+    ssh: &mut dyn Ssh,
+    invocation: &Invocation,
+    common: &[String],
+    text: &[u8],
+    sent: usize,
+) -> Result<Written, Stop> {
     let mut install_args = vec!["-o".to_string(), "RequestTTY=no".to_string()];
     install_args.extend(common.iter().cloned());
     install_args.push(invocation.destination.clone());
     install_args.push(install_command(None));
-    let installed = run_ssh(ssh, &install_args, &text, false)?;
+    let installed = run_ssh(ssh, &install_args, text, false)?;
     if installed.status == Some(255) && !has_report_line(&installed.stdout) {
         return stop(
             "ssh exited with status 255 before the installation script reported \
@@ -325,49 +363,25 @@ fn install(
         .iter()
         .filter(|k| k.status == crate::result_line::KeyStatus::Added)
         .count();
-    if report.outcome != Outcome::Unknown && report.keys.len() != remaining.len() {
+    if report.outcome != Outcome::Unknown && report.keys.len() != sent {
         return stop(format!(
-            "the remote side reported {} key(s) for {} sent; {target} may or may not have changed",
-            report.keys.len(),
-            remaining.len()
+            "the remote side reported {} key(s) for {sent} sent; {target} may or may not have changed",
+            report.keys.len()
         ));
     }
     match report.outcome {
-        Outcome::Installed => {}
-        Outcome::Partial => {
-            return stop(format!(
-                "only {added} key(s) were written to {target} before the remote side failed"
-            ));
-        }
-        Outcome::Unchanged => return stop(format!("the key was not written to {target}")),
-        Outcome::Uncertain => {
-            return stop(format!(
-                "writing to {target} failed and the partial line could not be removed; check the file"
-            ));
-        }
-        Outcome::Unknown => {
-            return stop(format!(
-                "the connection ended without a result; {target} may or may not have changed"
-            ));
-        }
+        Outcome::Installed => Ok(Written { added, target }),
+        Outcome::Partial => stop(format!(
+            "only {added} key(s) were written to {target} before the remote side failed"
+        )),
+        Outcome::Unchanged => stop(format!("the key was not written to {target}")),
+        Outcome::Uncertain => stop(format!(
+            "writing to {target} failed and the partial line could not be removed; check the file"
+        )),
+        Outcome::Unknown => stop(format!(
+            "the connection ended without a result; {target} may or may not have changed"
+        )),
     }
-
-    let login = login_command(invocation, selection.hint_identity());
-    if (env.interrupted)() {
-        summary(out, added, &login);
-        return stop("interrupted".to_string());
-    }
-    for (key, others) in &remaining {
-        let verified = probe(ssh, key, others, "verify")?;
-        if (env.interrupted)() {
-            summary(out, added, &login);
-            return stop("interrupted before the key was verified".to_string());
-        }
-        report_verification(err, &key.label, verified, &target);
-    }
-
-    summary(out, added, &login);
-    Ok(())
 }
 
 /// Selects the keys and prints upstream's Source line: without `-i`, the keys
