@@ -33,7 +33,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for destination detection (D-12); include a login shell that prints a banner. |
 | U01 | Stage 1: CLI installs one key on a Unix-like destination; requirements 1, 2, 3, 7, and 8 | Passed | [Stage 1 run](#stage-1-on-a-unix-like-destination-2026-10-01): 19 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, also run in CI. |
 | A01 | Password and passphrase prompts with public keys on stdin, cancellation, no terminal, agent confirmation | Passed | [Prompt experiment](../tests/prototypes/ssh-prompt/README.md): prompts and cancellation pass with both tested Windows clients; no-terminal behavior differs by client; the Windows agent refuses keys with confirmation. |
-| A02 | Agent-selected identities | Pending | Stage 1.5: default key selection from the agent and the selected-identity check with agent keys. |
+| A02 | Agent-selected identities | Partial | Linux: a private `ssh-agent` with two keys, one installed, appends only the other (`unix_destination` i22 and golden scenario 16). Pending: the Windows OpenSSH agent without `SSH_AUTH_SOCK` (D-20), checked by hand without changing the user's agent. |
 | F01 | Interrupted writes and uncertain remote state | Pending | Inject disconnects and record actual file state and exit status. |
 | P01 | Rust CLI behavior versus pinned upstream | Pending | Implement the CLI before claiming product conformance. |
 

@@ -257,3 +257,53 @@ pub fn public_line(key: &Path) -> String {
         .trim_end()
         .to_string()
 }
+
+/// A private `ssh-agent` listening on a socket in its own directory, killed when dropped.
+pub struct Agent {
+    pub socket: PathBuf,
+    child: Child,
+}
+
+impl Agent {
+    /// Starts `ssh-agent -D -a <dir>/agent.sock` and waits for the socket.
+    pub fn start(dir: &Path) -> Agent {
+        let socket = dir.join("agent.sock");
+        let child = Command::new("ssh-agent")
+            .arg("-D")
+            .arg("-a")
+            .arg(&socket)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let agent = Agent { socket, child };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !agent.socket.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "ssh-agent did not create its socket"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        agent
+    }
+
+    /// Adds the private key `key` to this agent.
+    pub fn add(&self, key: &Path) {
+        let added = Command::new("ssh-add")
+            .arg(key)
+            .env("SSH_AUTH_SOCK", &self.socket)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(added.status.success(), "ssh-add: {}", text(&added.stderr));
+    }
+}
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}

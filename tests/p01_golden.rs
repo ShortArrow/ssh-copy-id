@@ -19,7 +19,7 @@
 
 mod common;
 
-use common::{Fixture, keygen, public_line, text, wait_with_deadline};
+use common::{Agent, Fixture, keygen, public_line, text, wait_with_deadline};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -322,6 +322,24 @@ fn n13_a_difference_outside_the_table_is_named() {
 }
 
 #[test]
+fn n15_exit_status_and_authorized_keys_differ_only_where_the_table_says() {
+    let mut up = outcome("", "");
+    let mut cli = outcome("", "");
+    up.authorized_keys = Some(b"k\n".to_vec());
+    cli.status = Some(1);
+    assert_eq!(
+        unexpected_differences(8, &up, &cli),
+        ["exit status", "authorized_keys"]
+    );
+}
+
+#[test]
+fn n16_a_whole_replacement_applies_only_when_the_text_differs() {
+    assert_eq!(apply(&Edit::Whole("x"), "y").as_deref(), Some("x"));
+    assert_eq!(apply(&Edit::Whole("x"), "x"), None);
+}
+
+#[test]
 fn n14_every_scenario_lists_a_rule_only_for_scenarios_that_exist() {
     for rule in &EXPECTED {
         for number in rule.scenarios {
@@ -349,6 +367,10 @@ enum Arguments {
     Install,
     /// `-i` with the `.pub` path, the fixture options, and pwuser.
     InstallNamingPublic,
+    /// The fixture options and pwuser, without `-i`.
+    DefaultKey,
+    /// `-i` without a file, the fixture options, and pwuser.
+    IdentityWithoutFile,
 }
 
 #[derive(Clone, Copy)]
@@ -356,6 +378,8 @@ enum KeyFile {
     Generated,
     PrivateMissing,
     CommentAndBlankLineFirst,
+    /// The generated key's line followed by the line of another generated key.
+    TwoKeys,
 }
 
 #[derive(Clone, Copy)]
@@ -380,6 +404,11 @@ struct Scenario {
     remote_setup: Option<&'static str>,
     /// Runs of the same tool against the same container before the recorded one.
     runs_before: usize,
+    /// Whether the local `~/.ssh` holds the scenario's key as `id_ed25519`.
+    default_key_file: bool,
+    /// Whether a private agent holds the scenario's key and a second key, and
+    /// pwuser's `authorized_keys` already holds the scenario's key.
+    agent: bool,
 }
 
 const BASE: Scenario = Scenario {
@@ -390,9 +419,11 @@ const BASE: Scenario = Scenario {
     known_hosts: KnownHosts::Empty,
     remote_setup: None,
     runs_before: 0,
+    default_key_file: false,
+    agent: false,
 };
 
-const SCENARIOS: [Scenario; 10] = [
+const SCENARIOS: [Scenario; 16] = [
     Scenario {
         title: "-h (no destination)",
         arguments: Arguments::Help,
@@ -445,6 +476,39 @@ const SCENARIOS: [Scenario; 10] = [
         ),
         ..BASE
     },
+    Scenario {
+        title: "-i file holding two keys",
+        key_file: KeyFile::TwoKeys,
+        ..BASE
+    },
+    Scenario {
+        title: "no -i: the default key file",
+        arguments: Arguments::DefaultKey,
+        default_key_file: true,
+        ..BASE
+    },
+    Scenario {
+        title: "-i without a file: the default key file",
+        arguments: Arguments::IdentityWithoutFile,
+        default_key_file: true,
+        ..BASE
+    },
+    Scenario {
+        title: "no -i and no default key file",
+        arguments: Arguments::DefaultKey,
+        ..BASE
+    },
+    Scenario {
+        title: "-i without a file and no default key file",
+        arguments: Arguments::IdentityWithoutFile,
+        ..BASE
+    },
+    Scenario {
+        title: "no -i: two agent keys, the first already installed",
+        arguments: Arguments::DefaultKey,
+        agent: true,
+        ..BASE
+    },
 ];
 
 /// Upstream's usage, which the CLI's matches only from stage 1.5.
@@ -456,20 +520,24 @@ const UPSTREAM_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-s|-x] [-i [identi
 \t-h|-?: print this help
 ";
 
-/// The stage 1 usage.
-const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?] -i identity_file [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+/// The CLI's usage.
+const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
 \t-i: the public key to install; '.pub' is added when absent
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
 \t-h|-?: print this help
-This release installs one explicitly selected key on a Unix-like host.
--f, -n, -s, -t, -x, and -i without a file are not available yet.
+This release installs keys on a Unix-like host.
+-f, -n, -s, -t, and -x are not available yet.
 ";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Field {
+    /// The exit status as the report shows it.
+    ExitStatus,
     Stdout,
     Stderr,
+    /// pwuser's `authorized_keys` as the report shows it.
+    AuthorizedKeys,
 }
 
 /// How an expected difference is taken out of one tool's output.
@@ -481,6 +549,8 @@ enum Edit {
     RemoveLine(&'static str, &'static str),
     /// Replaces the first occurrence of the first text with the second.
     Replace(&'static str, &'static str),
+    /// Replaces the whole text, for an outcome the design prevents altogether.
+    Whole(&'static str),
 }
 
 /// A difference between the tools that the design expects, tagged with the
@@ -497,10 +567,10 @@ struct Expected {
     always: bool,
 }
 
-const EXPECTED: [Expected; 11] = [
+const EXPECTED: [Expected; 17] = [
     Expected {
         tag: "D-06",
-        scenarios: &[5, 9, 10],
+        scenarios: &[5, 9, 10, 12, 13],
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::Remove(
@@ -509,8 +579,18 @@ const EXPECTED: [Expected; 11] = [
         always: true,
     },
     Expected {
+        tag: "D-06",
+        scenarios: &[16],
+        field: Field::Stderr,
+        tool: Tool::Cli,
+        edit: Edit::Remove(
+            "ssh-copy-id: INFO: key 2 from ssh-add -L: the key authenticates: it is installed and verified\n",
+        ),
+        always: true,
+    },
+    Expected {
         tag: "D-13",
-        scenarios: &[5, 6, 7, 8, 9, 10],
+        scenarios: &[5, 6, 7, 8, 9, 10, 12, 13, 16],
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::RemoveLine(
@@ -546,6 +626,48 @@ const EXPECTED: [Expected; 11] = [
         edit: Edit::Remove(
             "ssh-copy-id: ERROR: ssh exited with status 255 before the installation script reported anything; if authentication failed, nothing was written\n",
         ),
+        always: true,
+    },
+    Expected {
+        tag: "D-21",
+        scenarios: &[11],
+        field: Field::ExitStatus,
+        tool: Tool::Upstream,
+        edit: Edit::Replace("0", "1"),
+        always: true,
+    },
+    Expected {
+        tag: "D-21",
+        scenarios: &[11],
+        field: Field::Stdout,
+        tool: Tool::Upstream,
+        edit: Edit::Whole(""),
+        always: true,
+    },
+    Expected {
+        tag: "D-21",
+        scenarios: &[11],
+        field: Field::Stderr,
+        tool: Tool::Upstream,
+        edit: Edit::Whole(""),
+        always: true,
+    },
+    Expected {
+        tag: "D-21",
+        scenarios: &[11],
+        field: Field::Stderr,
+        tool: Tool::Cli,
+        edit: Edit::Remove(
+            "ssh-copy-id: ERROR: '<KEY>.pub' holds 2 keys; a selected key file must hold one key, the public half of '<KEY>'\n",
+        ),
+        always: true,
+    },
+    Expected {
+        tag: "D-21",
+        scenarios: &[11],
+        field: Field::AuthorizedKeys,
+        tool: Tool::Upstream,
+        edit: Edit::Whole("(absent)"),
         always: true,
     },
     Expected {
@@ -613,6 +735,7 @@ fn apply(edit: &Edit, text: &str) -> Option<String> {
             .contains(removed)
             .then(|| text.replacen(removed, "", 1)),
         Edit::Replace(from, to) => text.contains(from).then(|| text.replacen(from, to, 1)),
+        Edit::Whole(to) => (text != to).then(|| to.to_string()),
         Edit::RemoveLine(starts, ends) => {
             let kept: String = text
                 .split_inclusive('\n')
@@ -649,12 +772,21 @@ fn without_expected(text: &str, number: usize, field: Field, tool: Tool) -> Reco
 /// that did not appear.
 fn unexpected_differences(number: usize, up: &Outcome, cli: &Outcome) -> Vec<String> {
     let mut found = Vec::new();
-    if up.status != cli.status {
-        found.push("exit status".to_string());
-    }
     for (name, field, up_text, cli_text) in [
+        (
+            "exit status",
+            Field::ExitStatus,
+            &status_text(up.status),
+            &status_text(cli.status),
+        ),
         ("stdout", Field::Stdout, &up.stdout, &cli.stdout),
         ("stderr", Field::Stderr, &up.stderr, &cli.stderr),
+        (
+            "authorized_keys",
+            Field::AuthorizedKeys,
+            &keys_text(&up.authorized_keys),
+            &keys_text(&cli.authorized_keys),
+        ),
     ] {
         let up_side = without_expected(up_text, number, field, Tool::Upstream);
         let cli_side = without_expected(cli_text, number, field, Tool::Cli);
@@ -664,9 +796,6 @@ fn unexpected_differences(number: usize, up: &Outcome, cli: &Outcome) -> Vec<Str
         for tag in up_side.missing.iter().chain(&cli_side.missing) {
             found.push(format!("{name}: missing {tag}"));
         }
-    }
-    if up.authorized_keys != cli.authorized_keys {
-        found.push("authorized_keys".to_string());
     }
     found
 }
@@ -714,6 +843,14 @@ impl Harness {
                 let line = public_line(&key);
                 fs::write(key.with_extension("pub"), format!("# comment\n\n{line}\n")).unwrap();
             }
+            KeyFile::TwoKeys => {
+                let other = keygen(&dir, "other", "other@test");
+                let lines = format!("{}\n{}\n", public_line(&key), public_line(&other));
+                fs::write(key.with_extension("pub"), lines).unwrap();
+            }
+        }
+        if scenario.agent {
+            keygen(&dir, "other", "other@test");
         }
         key
     }
@@ -727,10 +864,29 @@ impl Harness {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(home.join(".ssh"), fs::Permissions::from_mode(0o700)).unwrap();
         }
+        if scenario.default_key_file {
+            let default = home.join(".ssh").join("id_ed25519");
+            fs::copy(key, &default).unwrap();
+            fs::copy(key.with_extension("pub"), default.with_extension("pub")).unwrap();
+        }
         if let Some(script) = scenario.remote_setup {
             let setup = fixture.exec(USER, script);
             assert!(setup.status.success(), "{}", text(&setup.stderr));
         }
+        let agent = scenario.agent.then(|| {
+            let agent = Agent::start(&fixture.work);
+            agent.add(key);
+            agent.add(&key.with_file_name("other"));
+            let setup = fixture.exec(
+                USER,
+                &format!(
+                    "umask 077 && mkdir -p .ssh && printf '%s\\n' '{}' > .ssh/authorized_keys",
+                    public_line(key)
+                ),
+            );
+            assert!(setup.status.success(), "{}", text(&setup.stderr));
+            agent
+        });
         if let KnownHosts::Mismatch = scenario.known_hosts {
             let other = keygen(&fixture.work, "fake_host", "fake");
             fs::write(
@@ -762,6 +918,7 @@ impl Harness {
                 .env("LC_ALL", "C")
                 .env("SSH_ASKPASS", &askpass)
                 .env("SSH_ASKPASS_REQUIRE", "force")
+                .envs(agent.iter().map(|agent| ("SSH_AUTH_SOCK", &agent.socket)))
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -802,16 +959,17 @@ impl Drop for Harness {
 }
 
 fn arguments(arguments: Arguments, fixture: &Fixture, key: &Path) -> Vec<String> {
-    let identity = match arguments {
+    let identity: Vec<String> = match arguments {
         Arguments::Help => return vec!["-h".into()],
         Arguments::Nothing => return vec![],
         Arguments::UnknownOption => return vec!["-z".into(), "host".into()],
-        Arguments::Install => display(key),
-        Arguments::InstallNamingPublic => display(&key.with_extension("pub")),
+        Arguments::Install => vec!["-i".into(), display(key)],
+        Arguments::InstallNamingPublic => vec!["-i".into(), display(&key.with_extension("pub"))],
+        Arguments::DefaultKey => vec![],
+        Arguments::IdentityWithoutFile => vec!["-i".into()],
     };
-    vec![
-        "-i".into(),
-        identity,
+    let mut words = identity;
+    words.extend([
         "-p".into(),
         fixture.port.clone(),
         "-F".into(),
@@ -823,7 +981,8 @@ fn arguments(arguments: Arguments, fixture: &Fixture, key: &Path) -> Vec<String>
         "-o".into(),
         "ConnectTimeout=5".into(),
         format!("{USER}@127.0.0.1"),
-    ]
+    ]);
+    words
 }
 
 /// pwuser's `authorized_keys` read as root, or `None` when it does not exist.

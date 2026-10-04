@@ -8,6 +8,21 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+### Added
+
+- Without `-i`, and with `-i` not followed by a file, the most recently
+  modified `~/.ssh/id*.pub` other than a `*-cert.pub` is installed, as
+  upstream selects it; its private key must exist. When there is none, the run
+  stops with upstream's `No identities found` or `no ID file found`. The login
+  hint names the key only when `-i` was given, as upstream's does.
+- Without `-i`, the keys `ssh-add -L` lists are installed, also when
+  `SSH_AUTH_SOCK` is unset, so the Windows agent is used (D-20); when it lists
+  none or fails, the default key file is used. Each agent key is checked alone
+  from a one-line public key file in the scratch directory, the keys not yet
+  installed are appended in one run, and each written key is verified (D-06).
+- A file-less `-i` followed only by a readable file containing `ssh` is
+  reported as a missing hostname with upstream's `-i --` suggestion.
+
 ### Changed
 
 - Messages follow the pinned upstream `ssh-copy-id` where the behavior is
@@ -19,6 +34,9 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 - When `ssh` ends before the installation script reports anything, the extra
   line saying nothing was written if authentication failed is a recorded
   difference (D-19).
+- A selected key file holding more than one key is still rejected before
+  anything is sent, now with the rule it breaks: the file must hold the one
+  public key of its private key (D-21).
 
 ## [0.0.1] - 2026-10-04
 

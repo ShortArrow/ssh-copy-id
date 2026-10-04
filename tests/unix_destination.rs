@@ -1,6 +1,7 @@
-//! Stage 1 behavior against the L02 Linux fixture: requirements 1, 2, 3, 7, and 8,
-//! and design D-01, D-15, D-16, D-17, and D-18. Every run of the CLI must leave
-//! no `ssh-copy-id.*` scratch directory in the local `~/.ssh`.
+//! Behavior against the L02 Linux fixture: requirements 1, 2, 3, 7, and 8,
+//! design D-01, D-15, D-16, D-17, D-18, and D-20, and default key selection.
+//! Every run of the CLI must leave no `ssh-copy-id.*` scratch directory in the
+//! local `~/.ssh` it uses.
 //!
 //! Each test starts its own container from the `ssh-copy-id-l02:local` image on a
 //! free loopback port. Build the image first and run these tests explicitly:
@@ -12,7 +13,7 @@
 
 mod common;
 
-use common::{Fixture, keygen, public_line, text, wait_with_deadline};
+use common::{Agent, Fixture, keygen, public_line, text, wait_with_deadline};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -70,6 +71,51 @@ impl Fixture {
             .spawn()
             .unwrap();
         wait_with_deadline(child, COPY_ID_TIMEOUT)
+    }
+
+    /// Runs the CLI as `copy_id` does, with `identity` in place of `-i <key>`,
+    /// `HOME` set to `home`, and `SSH_AUTH_SOCK` set to `agent` or removed, and
+    /// fails the test when a scratch directory remains in `home/.ssh`.
+    fn copy_id_from_home(
+        &self,
+        home: &Path,
+        agent: Option<&Path>,
+        identity: &[&str],
+        user: &str,
+    ) -> Output {
+        let mut args: Vec<String> = identity.iter().map(|s| s.to_string()).collect();
+        args.extend(self.base_ssh_args());
+        args.push(format!("{user}@127.0.0.1"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ssh-copy-id"));
+        command
+            .args(&args)
+            .env("HOME", home)
+            .env("SSH_ASKPASS", self.askpass(&self.password))
+            .env("SSH_ASKPASS_REQUIRE", "force")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        match agent {
+            Some(socket) => command.env("SSH_AUTH_SOCK", socket),
+            None => command.env_remove("SSH_AUTH_SOCK"),
+        };
+        let output = wait_with_deadline(command.spawn().unwrap(), COPY_ID_TIMEOUT);
+        let left: Vec<String> = fs::read_dir(home.join(".ssh"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("ssh-copy-id."))
+            .collect();
+        assert!(left.is_empty(), "scratch directories left: {left:?}");
+        output
+    }
+
+    /// Creates a local home directory in the work directory whose `.ssh` holds
+    /// the default key `id_ed25519`, and returns the home and that key.
+    fn home_with_default_key(&self) -> (PathBuf, PathBuf) {
+        let home = self.work.join("home");
+        fs::create_dir_all(home.join(".ssh")).unwrap();
+        let key = keygen(&home.join(".ssh"), "id_ed25519", "default@test");
+        (home, key)
     }
 
     /// Starts a container whose `/home/pwuser/.ssh` is a 16 KiB tmpfs.
@@ -448,4 +494,98 @@ fn i19_d01_a_key_whose_command_exits_nonzero_is_found_installed() {
     assert_eq!(again.status.code(), Some(0), "{stderr}");
     assert!(stderr.contains("All keys were skipped"), "{stderr}");
     assert_eq!(fixture.authorized_keys("pwuser"), format!("{line}\n"));
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i20_without_identity_or_agent_the_default_key_file_is_installed() {
+    let fixture = Fixture::start();
+    let (home, key) = fixture.home_with_default_key();
+    let run = fixture.copy_id_from_home(&home, None, &[], "pwuser");
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "Source of key(s) to be installed: \"{}.pub\"",
+            key.display()
+        )),
+        "{stderr}"
+    );
+    assert!(
+        text(&run.stdout).contains("Now try logging into the machine, with: \"ssh -p "),
+        "{}",
+        text(&run.stdout)
+    );
+    assert_eq!(
+        fixture.authorized_keys("pwuser"),
+        format!("{}\n", public_line(&key))
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i21_identity_without_a_file_installs_the_default_key_file() {
+    let fixture = Fixture::start();
+    let (home, key) = fixture.home_with_default_key();
+    let run = fixture.copy_id_from_home(&home, None, &["-i"], "pwuser");
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(
+        text(&run.stdout).contains(&format!(
+            "Now try logging into the machine, with: \"ssh -i {} -p ",
+            key.display()
+        )),
+        "{}",
+        text(&run.stdout)
+    );
+    assert_eq!(
+        fixture.authorized_keys("pwuser"),
+        format!("{}\n", public_line(&key))
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i22_d20_agent_keys_are_checked_alone_and_only_the_missing_one_is_appended() {
+    let fixture = Fixture::start();
+    let (home, default_key) = fixture.home_with_default_key();
+    let installed = keygen(&fixture.work, "installed", "installed@test");
+    let missing = keygen(&fixture.work, "missing", "missing@test");
+    let agent = Agent::start(&fixture.work);
+    agent.add(&installed);
+    agent.add(&missing);
+    let setup = fixture.exec(
+        "pwuser",
+        &format!(
+            "umask 077 && mkdir -p .ssh && printf '%s\n' '{}' > .ssh/authorized_keys",
+            public_line(&installed)
+        ),
+    );
+    assert!(setup.status.success(), "{}", text(&setup.stderr));
+    let run = fixture.copy_id_from_home(&home, Some(&agent.socket), &[], "pwuser");
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("Source of key(s) to be installed: ssh-add -L\n"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("INFO: 1 key(s) remain to be installed"),
+        "{stderr}"
+    );
+    assert!(
+        stderr
+            .contains("key 2 from ssh-add -L: the key authenticates: it is installed and verified"),
+        "{stderr}"
+    );
+    assert!(text(&run.stdout).contains("Number of key(s) added: 1\n"));
+    assert_eq!(
+        fixture.authorized_keys("pwuser"),
+        format!("{}\n{}\n", public_line(&installed), public_line(&missing))
+    );
+    assert!(
+        !fixture
+            .authorized_keys("pwuser")
+            .contains(&public_line(&default_key))
+    );
 }

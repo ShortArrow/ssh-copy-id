@@ -1,5 +1,6 @@
 //! Console detection, interrupt handling, and the files the CLI opens on the local machine.
 
+use crate::default_key::DirEntryTime;
 use std::fs::OpenOptions;
 use std::hash::{BuildHasher, Hasher};
 use std::io;
@@ -45,6 +46,17 @@ pub fn create_scratch_dir(parent: &Path) -> io::Result<PathBuf> {
         io::ErrorKind::AlreadyExists,
         "every generated name already exists",
     ))
+}
+
+/// The name and modification time of every entry in `dir`, in no particular
+/// order. A symbolic link is listed with its own time, as `ls -d` lists it.
+pub fn modification_times(dir: &Path) -> io::Result<Vec<DirEntryTime>> {
+    std::fs::read_dir(dir)?
+        .map(|entry| {
+            let entry = entry?;
+            Ok((entry.file_name(), entry.metadata()?.modified()?))
+        })
+        .collect()
 }
 
 /// Removes a directory and everything in it; a failure is ignored.
@@ -183,6 +195,7 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -284,6 +297,30 @@ mod tests {
         assert!(!interrupted());
         imp::simulate_interrupt();
         assert!(interrupted());
+    }
+
+    #[test]
+    fn p12_modification_times_lists_every_entry_with_its_time() {
+        let dir = scratch("p12");
+        std::fs::write(dir.join("id_a.pub"), b"key").unwrap();
+        std::fs::create_dir(dir.join("id_dir.pub")).unwrap();
+        let mut listed = modification_times(&dir).unwrap();
+        listed.sort();
+        let names: Vec<&OsString> = listed.iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["id_a.pub", "id_dir.pub"]);
+        let file_time = std::fs::metadata(dir.join("id_a.pub"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(listed[0].1, file_time);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn p13_modification_times_of_a_missing_directory_is_an_error() {
+        let dir = scratch("p13");
+        assert!(modification_times(&dir.join("absent")).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]

@@ -205,8 +205,8 @@ compatibility suite is part of stage 1.5.
 | Operation or argument | Target behavior |
 | --- | --- |
 | `[user@]host` | Accept the destination, including host aliases from SSH configuration |
-| `-i [identity_file]` | Select the specified public key file, adding `.pub` if absent. The private key file, the same path without `.pub`, must exist unless `-f` is given, as upstream requires. A leading `~/` or `~\` is expanded with the home directory, because the Windows shells do not expand it. A second `-i` is an error, as upstream. As upstream, when only one argument follows `-i`, that argument is the destination and `-i` has no file, and a readable file containing `ssh` there is reported as a missing hostname (in stage 1 without upstream's suggestion of `-i --`, which needs `-i` without a file); otherwise `-i` takes the next argument unless it looks like one of the options `-[iopFtfnsxh?-]` |
-| No `-i` | Prefer public keys from the agent; otherwise select the most recently modified `~/.ssh/id*.pub`, excluding `*-cert.pub` |
+| `-i [identity_file]` | Select the specified public key file, adding `.pub` if absent. The private key file, the same path without `.pub`, must exist unless `-f` is given, as upstream requires. A leading `~/` or `~\` is expanded with the home directory, because the Windows shells do not expand it. A second `-i` is an error, as upstream. As upstream, when only one argument follows `-i`, that argument is the destination and `-i` has no file, and a readable file containing `ssh` there is reported as a missing hostname with upstream's suggestion of `-i --`. `-i` without a file selects the default key file of the next row, without asking the agent; otherwise `-i` takes the next argument unless it looks like one of the options `-[iopFtfnsxh?-]` |
+| No `-i` | Prefer every public key `ssh-add -L` lists, also when `SSH_AUTH_SOCK` is unset (D-20); otherwise select the most recently modified `~/.ssh/id*.pub`, excluding `*-cert.pub`, as upstream. `ls -d` order is followed: a directory can be the newest entry, equal times are ordered by name in byte order, and an unreadable default counts as none. The login hint after installation names `-i` only when `-i` was given |
 | `-p port` | Set the destination port |
 | `-o option`, `-F config` | Specify SSH options or a configuration file. Allow repeated `-o` arguments |
 | `-f` | Skip the installed-key check. Allow installation with only the public key; duplicates may result |
@@ -222,6 +222,27 @@ authenticate. Do not substitute a text comparison against `authorized_keys`.
 Avoid false positives caused by authentication with another key or reuse of an
 existing multiplexed connection. Do not interpret connection failures or host key
 errors as evidence that a key is not installed.
+
+Each key is checked alone, as upstream does. A key read from a file whose
+private key exists is checked with that private key. A key from the agent is
+written as a one-line public key file in the scratch directory and passed with
+`-i`; `ssh` then authenticates with the agent's matching private key, and the
+other rules of the check are unchanged. The files are `agent-key-<n>.pub`, and
+the probe logs `check-<n>.log` and `verify-<n>.log`, all in the scratch
+directory; with several keys, each warning and verification line starts with
+`key <n> from ssh-add -L:`.
+
+### Recorded Difference: Agent Without `SSH_AUTH_SOCK`
+
+Without `-i`, upstream asks the agent for keys only when `SSH_AUTH_SOCK` is set.
+This tool runs `ssh-add -L` whatever the variable holds and uses the keys it
+lists; when it fails or lists none, the default key file is used, as upstream.
+Apparent intent: use the keys of an agent that is available, and
+`SSH_AUTH_SOCK` is how a Unix agent announces itself. Reason to differ: the
+Windows OpenSSH agent listens on a fixed named pipe and leaves `SSH_AUTH_SOCK`
+unset, so upstream's condition would never use it on a supported platform. On
+Unix, `ssh-add -L` fails without the variable and the result is upstream's. This
+is difference D-20.
 
 ### Recorded Difference: Identity Used for the Installed-Key Check
 
@@ -545,6 +566,20 @@ quotes, where `\"` escapes a quote. Apparent intent of upstream, which appends
 such lines: input comes from `ssh-keygen` or `ssh-add` and is well formed. Reason
 to differ: a false success report, since sshd ignores a malformed line that
 upstream counts as added. This is difference D-10.
+
+#### Recorded Difference: One Key per Selected File
+
+A selected public key file, given with `-i` or chosen as the default, holds one
+key line, the public half of the private key that the same path without `.pub`
+names. A file with more key lines
+is rejected before anything is sent. Upstream accepts it and checks every line
+with that one private key, because its probe passes only the private key and
+never the line; when that key is not installed yet, every line is appended, and
+keys the user did not select get login access to the account. Apparent intent:
+one key per `-i` file, as the comment above upstream's probe assumes. Reason to
+differ: a change the user did not ask for. Several keys are installed only when
+they come from the agent, and each of them is checked alone. This is difference
+D-21.
 
 Certificate lines, whose type ends in `-cert-v01@openssh.com`, and
 `cert-authority` lines are passed through as upstream does. sshd does not accept
