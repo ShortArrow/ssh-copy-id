@@ -38,6 +38,7 @@ is in the [validation matrix](validation.md#matrix).
 | D-18 | Counts `#` comment lines and blank lines of the key file as keys added. | Appends those lines too, but numbers, reports, and counts key lines only. | [Counting keys](design.md#recorded-difference-counting-keys) |
 | D-19 | Exits 1 with only `ssh`'s messages when `ssh` fails before the script reports anything, also after a connection drop that follows the write. | Adds a line saying the script reported nothing and nothing was written if authentication failed. | [Exit before any result line](design.md#recorded-difference-exit-before-any-result-line) |
 | D-20 | Without `-i`, asks the agent only when `SSH_AUTH_SOCK` is set. | Runs `ssh-add -L` whatever `SSH_AUTH_SOCK` holds, so the Windows agent's keys are used. | [Agent without `SSH_AUTH_SOCK`](design.md#recorded-difference-agent-without-ssh_auth_sock) |
+| D-21 | Accepts a `-i` file with several key lines, checks them all with its one private key, and appends them all when that key is not installed. | Rejects a `-i` file with more than one key line before anything is sent. | [One key per selected file](design.md#recorded-difference-one-key-per-selected-file) |
 
 ## Destination Differences
 

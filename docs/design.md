@@ -564,6 +564,19 @@ such lines: input comes from `ssh-keygen` or `ssh-add` and is well formed. Reaso
 to differ: a false success report, since sshd ignores a malformed line that
 upstream counts as added. This is difference D-10.
 
+#### Recorded Difference: One Key per Selected File
+
+A public key file given with `-i` holds one key line, the public half of the
+private key that the same path without `.pub` names. A file with more key lines
+is rejected before anything is sent. Upstream accepts it and checks every line
+with that one private key, because its probe passes only the private key and
+never the line; when that key is not installed yet, every line is appended, and
+keys the user did not select get login access to the account. Apparent intent:
+one key per `-i` file, as the comment above upstream's probe assumes. Reason to
+differ: a change the user did not ask for. Several keys are installed only when
+they come from the agent, and each of them is checked alone. This is difference
+D-21.
+
 Certificate lines, whose type ends in `-cert-v01@openssh.com`, and
 `cert-authority` lines are passed through as upstream does. sshd does not accept
 a certificate line in an authorized-keys file for login, so for such a selected
