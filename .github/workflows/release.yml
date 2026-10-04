@@ -148,9 +148,12 @@ jobs:
 
   publish-crates:
     # crates.io versions cannot be reused, so a prerelease tag never publishes.
+    # The release environment waits for the owner's approval and admits only v*
+    # tags; crates.io accepts tokens only from runs in that environment.
     name: Publish to crates.io (OIDC)
     needs: release
     if: ${{ !contains(github.ref_name, '-') }}
+    environment: release
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
