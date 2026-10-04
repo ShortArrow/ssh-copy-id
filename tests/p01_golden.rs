@@ -2,9 +2,12 @@
 //! scenarios against the L02 Linux fixture, and the report lists, per scenario,
 //! both exit statuses, both normalized outputs, and both `authorized_keys` files.
 //!
-//! Step 1 asserts no parity. The report test fails only on harness errors: a
-//! fixture that does not start, a pinned script whose SHA-256 differs, or a tool
-//! that cannot start or does not finish. Each tool gets a fresh container per
+//! The report test asserts parity: per scenario, the exit statuses, both
+//! outputs and both `authorized_keys` files are equal once the differences in
+//! `EXPECTED` are taken out, and every difference marked `always` there appears.
+//! It also fails on harness errors: a fixture that does not start, a pinned
+//! script whose SHA-256 differs, or a tool that cannot start or does not finish.
+//! The report is printed and written first. Each tool gets a fresh container per
 //! scenario, the same arguments, and the same environment. Run it on Linux:
 //!
 //! ```text
@@ -246,6 +249,91 @@ fn n07_text_without_run_specific_parts_is_unchanged() {
     assert_eq!(normalize(text, &substitutions()), text);
 }
 
+const D19_LINE: &str = "ssh-copy-id: ERROR: ssh exited with status 255 before the installation script reported anything; if authentication failed, nothing was written\n";
+const D06_LINE: &str = "ssh-copy-id: INFO: the key authenticates: it is installed and verified\n";
+const D13_LINE: &str = "ssh-copy-id: WARNING: OpenSSH_10.3p1, OpenSSL 3.6.3 9 Jun 2026 has not been tested with this release; output it cannot classify makes the installed-key check inconclusive\n";
+
+fn outcome(stdout: &str, stderr: &str) -> Outcome {
+    Outcome {
+        arguments: String::new(),
+        status: Some(0),
+        stdout: stdout.into(),
+        stderr: stderr.into(),
+        authorized_keys: None,
+    }
+}
+
+#[test]
+fn n08_an_expected_difference_is_removed() {
+    let reconciled = without_expected(&format!("a\n{D19_LINE}"), 7, Field::Stderr, Tool::Cli);
+    assert_eq!(reconciled.text, "a\n");
+    assert!(reconciled.missing.is_empty(), "{:?}", reconciled.missing);
+}
+
+#[test]
+fn n09_a_required_difference_that_is_absent_is_named_by_its_tag() {
+    let reconciled = without_expected("a\n", 7, Field::Stderr, Tool::Cli);
+    assert_eq!(reconciled.missing, ["D-19"]);
+}
+
+#[test]
+fn n10_the_untested_client_warning_may_be_absent() {
+    let with = without_expected(
+        &format!("{D13_LINE}{D06_LINE}"),
+        5,
+        Field::Stderr,
+        Tool::Cli,
+    );
+    let without = without_expected(D06_LINE, 5, Field::Stderr, Tool::Cli);
+    assert_eq!(with.text, "");
+    assert_eq!(without.text, "");
+    assert!(without.missing.is_empty(), "{:?}", without.missing);
+}
+
+#[test]
+fn n11_either_shell_s_getopts_line_from_upstream_becomes_bash_s() {
+    for line in ["ssh-copy-id: illegal option -- z\n", "Illegal option -z\n"] {
+        let reconciled = without_expected(
+            &format!("{line}{UPSTREAM_USAGE}"),
+            3,
+            Field::Stderr,
+            Tool::Upstream,
+        );
+        assert_eq!(
+            reconciled.text, "ssh-copy-id: illegal option -- z\n",
+            "{line:?}"
+        );
+        assert!(reconciled.missing.is_empty(), "{:?}", reconciled.missing);
+    }
+}
+
+#[test]
+fn n12_the_cli_must_print_bash_s_getopts_line() {
+    let up = outcome("", &format!("Illegal option -z\n{UPSTREAM_USAGE}"));
+    let cli = outcome("", &format!("Illegal option -z\n{CLI_USAGE}"));
+    assert_eq!(unexpected_differences(3, &up, &cli), ["stderr"]);
+}
+
+#[test]
+fn n13_a_difference_outside_the_table_is_named() {
+    let up = outcome("x\n", UPSTREAM_USAGE);
+    let cli = outcome("y\n", CLI_USAGE);
+    assert_eq!(unexpected_differences(1, &up, &cli), ["stdout"]);
+}
+
+#[test]
+fn n14_every_scenario_lists_a_rule_only_for_scenarios_that_exist() {
+    for rule in &EXPECTED {
+        for number in rule.scenarios {
+            assert!(
+                (1..=SCENARIOS.len()).contains(number),
+                "{} names scenario {number}",
+                rule.tag
+            );
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Tool {
     Upstream,
@@ -358,6 +446,230 @@ const SCENARIOS: [Scenario; 10] = [
         ..BASE
     },
 ];
+
+/// Upstream's usage, which the CLI's matches only from stage 1.5.
+const UPSTREAM_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-s|-x] [-i [identity_file]] [-t target_path] [-F ssh_config] [[-o ssh_option] ...] [-p port] [user@]hostname
+\t-f: force mode -- copy keys without trying to check if they are already installed
+\t-n: dry run    -- no keys are actually copied
+\t-s: use sftp   -- use sftp instead of executing remote-commands. Can be useful if the remote only allows sftp
+\t-x: debug      -- enables -x in this shell, for debugging
+\t-h|-?: print this help
+";
+
+/// The stage 1 usage.
+const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?] -i identity_file [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+\t-i: the public key to install; '.pub' is added when absent
+\t-p: port of the remote host
+\t-F, -o: passed to ssh unchanged
+\t-h|-?: print this help
+This release installs one explicitly selected key on a Unix-like host.
+-f, -n, -s, -t, -x, and -i without a file are not available yet.
+";
+
+#[derive(Clone, Copy, PartialEq)]
+enum Field {
+    Stdout,
+    Stderr,
+}
+
+/// How an expected difference is taken out of one tool's output.
+enum Edit {
+    /// Removes the first occurrence of this text.
+    Remove(&'static str),
+    /// Removes every line that starts with the first text and ends with the
+    /// second, its newline included.
+    RemoveLine(&'static str, &'static str),
+    /// Replaces the first occurrence of the first text with the second.
+    Replace(&'static str, &'static str),
+}
+
+/// A difference between the tools that the design expects, tagged with the
+/// reason: a recorded difference (`D-nn`), the options stage 1.5 adds
+/// (`STAGE-1.5`), or the shell that runs upstream (`SHELL`).
+struct Expected {
+    tag: &'static str,
+    scenarios: &'static [usize],
+    field: Field,
+    tool: Tool,
+    edit: Edit,
+    /// Whether the difference appears in every listed scenario on every
+    /// machine; a missing one fails the test.
+    always: bool,
+}
+
+const EXPECTED: [Expected; 11] = [
+    Expected {
+        tag: "D-06",
+        scenarios: &[5, 9, 10],
+        field: Field::Stderr,
+        tool: Tool::Cli,
+        edit: Edit::Remove(
+            "ssh-copy-id: INFO: the key authenticates: it is installed and verified\n",
+        ),
+        always: true,
+    },
+    Expected {
+        tag: "D-13",
+        scenarios: &[5, 6, 7, 8, 9, 10],
+        field: Field::Stderr,
+        tool: Tool::Cli,
+        edit: Edit::RemoveLine(
+            "ssh-copy-id: WARNING: ",
+            " has not been tested with this release; output it cannot classify makes the installed-key check inconclusive",
+        ),
+        always: false,
+    },
+    Expected {
+        tag: "D-18",
+        scenarios: &[9],
+        field: Field::Stderr,
+        tool: Tool::Upstream,
+        edit: Edit::Replace(
+            "ssh-copy-id: INFO: 3 key(s) remain to be installed",
+            "ssh-copy-id: INFO: 1 key(s) remain to be installed",
+        ),
+        always: true,
+    },
+    Expected {
+        tag: "D-18",
+        scenarios: &[9],
+        field: Field::Stdout,
+        tool: Tool::Upstream,
+        edit: Edit::Replace("Number of key(s) added: 3\n", "Number of key(s) added: 1\n"),
+        always: true,
+    },
+    Expected {
+        tag: "D-19",
+        scenarios: &[7],
+        field: Field::Stderr,
+        tool: Tool::Cli,
+        edit: Edit::Remove(
+            "ssh-copy-id: ERROR: ssh exited with status 255 before the installation script reported anything; if authentication failed, nothing was written\n",
+        ),
+        always: true,
+    },
+    Expected {
+        tag: "STAGE-1.5",
+        scenarios: &[1, 2, 3],
+        field: Field::Stderr,
+        tool: Tool::Upstream,
+        edit: Edit::Remove(UPSTREAM_USAGE),
+        always: true,
+    },
+    Expected {
+        tag: "STAGE-1.5",
+        scenarios: &[1, 2, 3],
+        field: Field::Stderr,
+        tool: Tool::Cli,
+        edit: Edit::Remove(CLI_USAGE),
+        always: true,
+    },
+    Expected {
+        tag: "STAGE-1.5",
+        scenarios: &[4],
+        field: Field::Stderr,
+        tool: Tool::Upstream,
+        edit: Edit::Remove(
+            "\t(to install the contents of '<KEY>.pub' anyway, look at the -f option)\n",
+        ),
+        always: true,
+    },
+    Expected {
+        tag: "STAGE-1.5",
+        scenarios: &[6],
+        field: Field::Stderr,
+        tool: Tool::Upstream,
+        edit: Edit::Remove("\t\t(if you think this is a mistake, you may want to use -f option)\n"),
+        always: true,
+    },
+    Expected {
+        tag: "SHELL",
+        scenarios: &[3],
+        field: Field::Stderr,
+        tool: Tool::Upstream,
+        edit: Edit::Replace("Illegal option -z\n", "ssh-copy-id: illegal option -- z\n"),
+        always: false,
+    },
+    Expected {
+        tag: "SHELL",
+        scenarios: &[4],
+        field: Field::Stderr,
+        tool: Tool::Upstream,
+        edit: Edit::Replace("': No such file\n", "': No such file or directory\n"),
+        always: false,
+    },
+];
+
+/// One tool's output with the expected differences taken out, and the tags of
+/// the differences marked `always` that were not found.
+struct Reconciled {
+    text: String,
+    missing: Vec<&'static str>,
+}
+
+fn apply(edit: &Edit, text: &str) -> Option<String> {
+    match *edit {
+        Edit::Remove(removed) => text
+            .contains(removed)
+            .then(|| text.replacen(removed, "", 1)),
+        Edit::Replace(from, to) => text.contains(from).then(|| text.replacen(from, to, 1)),
+        Edit::RemoveLine(starts, ends) => {
+            let kept: String = text
+                .split_inclusive('\n')
+                .filter(|line| {
+                    let body = line.strip_suffix('\n').unwrap_or(line);
+                    !(body.starts_with(starts) && body.ends_with(ends))
+                })
+                .collect();
+            (kept != text).then_some(kept)
+        }
+    }
+}
+
+fn without_expected(text: &str, number: usize, field: Field, tool: Tool) -> Reconciled {
+    let mut reconciled = Reconciled {
+        text: text.to_string(),
+        missing: Vec::new(),
+    };
+    for rule in EXPECTED
+        .iter()
+        .filter(|rule| rule.scenarios.contains(&number) && rule.field == field && rule.tool == tool)
+    {
+        match apply(&rule.edit, &reconciled.text) {
+            Some(text) => reconciled.text = text,
+            None if rule.always => reconciled.missing.push(rule.tag),
+            None => {}
+        }
+    }
+    reconciled
+}
+
+/// The fields of one scenario that differ once the expected differences are
+/// taken out, each named, with `missing <tag>` for an expected difference
+/// that did not appear.
+fn unexpected_differences(number: usize, up: &Outcome, cli: &Outcome) -> Vec<String> {
+    let mut found = Vec::new();
+    if up.status != cli.status {
+        found.push("exit status".to_string());
+    }
+    for (name, field, up_text, cli_text) in [
+        ("stdout", Field::Stdout, &up.stdout, &cli.stdout),
+        ("stderr", Field::Stderr, &up.stderr, &cli.stderr),
+    ] {
+        let up_side = without_expected(up_text, number, field, Tool::Upstream);
+        let cli_side = without_expected(cli_text, number, field, Tool::Cli);
+        if up_side.text != cli_side.text {
+            found.push(name.to_string());
+        }
+        for tag in up_side.missing.iter().chain(&cli_side.missing) {
+            found.push(format!("{name}: missing {tag}"));
+        }
+    }
+    if up.authorized_keys != cli.authorized_keys {
+        found.push("authorized_keys".to_string());
+    }
+    found
+}
 
 /// What one tool left behind in one scenario, normalized.
 struct Outcome {
@@ -601,24 +913,37 @@ fn p01_difference_report() {
         upstream_shell()
     );
     let mut summary = String::from(
-        "| # | scenario | exit | stdout | stderr | authorized_keys |\n|---|---|---|---|---|---|\n",
+        "| # | scenario | exit | stdout | stderr | authorized_keys | expected differences | unexpected |\n|---|---|---|---|---|---|---|---|\n",
     );
     let mut sections = String::new();
+    let mut failures = Vec::new();
     for (index, scenario) in SCENARIOS.iter().enumerate() {
         let number = index + 1;
         let key = harness.prepare_key(number, scenario);
         let up = harness.outcome(Tool::Upstream, scenario, &key);
         let cli = harness.outcome(Tool::Cli, scenario, &key);
+        let unexpected = unexpected_differences(number, &up, &cli);
         let _ = writeln!(
             summary,
-            "| {number} | {} | {} | {} | {} | {} |",
+            "| {number} | {} | {} | {} | {} | {} | {} | {} |",
             scenario.title,
             same(up.status == cli.status),
             same(up.stdout == cli.stdout),
             same(up.stderr == cli.stderr),
-            same(up.authorized_keys == cli.authorized_keys)
+            same(up.authorized_keys == cli.authorized_keys),
+            expected_tags(number),
+            if unexpected.is_empty() {
+                "none".to_string()
+            } else {
+                unexpected.join(", ")
+            }
         );
         section(&mut sections, number, scenario, &up, &cli);
+        failures.extend(
+            unexpected
+                .into_iter()
+                .map(|difference| format!("scenario {number}: {difference}")),
+        );
     }
     let _ = writeln!(report, "{summary}\n{sections}");
     let path = Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -628,4 +953,28 @@ fn p01_difference_report() {
     fs::write(&path, &report).unwrap();
     println!("{report}");
     println!("report written to {}", path.display());
+    assert!(
+        failures.is_empty(),
+        "differences not in EXPECTED:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// The tags of the expected differences listed for a scenario, in table order
+/// without repeats, or `none`.
+fn expected_tags(number: usize) -> String {
+    let mut tags: Vec<&str> = Vec::new();
+    for rule in EXPECTED
+        .iter()
+        .filter(|rule| rule.scenarios.contains(&number))
+    {
+        if !tags.contains(&rule.tag) {
+            tags.push(rule.tag);
+        }
+    }
+    if tags.is_empty() {
+        "none".to_string()
+    } else {
+        tags.join(", ")
+    }
 }

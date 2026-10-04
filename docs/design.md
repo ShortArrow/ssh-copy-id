@@ -349,7 +349,15 @@ insufficient access.
 Exit statuses are 0 and 1 as in upstream, including usage errors; the mapping is
 in [installation outcome](#installation-outcome). Messages match upstream's
 wording where the behavior is shared, and the golden tests compare them. Never
-report a failed write as success.
+report a failed write as success. The login hint after installation prints the
+`-i` and `-p` values unquoted and the other options quoted, as upstream does. A
+missing destination prints only the usage; an unknown option prints
+`ssh-copy-id: illegal option -- <letter>` before it, the form bash and macOS's
+`sh` give upstream's `getopts`. dash words that line differently, so the golden
+tests treat it as dependent on the shell. The same holds for the reason after a
+key file that cannot be opened: upstream takes it from the shell's own error,
+dash's "No such file" where bash and this tool print the system's "No such file
+or directory".
 
 `-x` prints each client command line and the remote script to stderr before
 running them, the closest equivalent of upstream's `set -x`. Apparent intent of
@@ -456,6 +464,16 @@ line that does not parse, including one that is not UTF-8, makes the outcome
 Unknown, as does any prefixed line after the summary. Per-key lines show which
 keys were written before a partial write. These lines are not shown to the user;
 the user sees upstream's messages.
+
+### Recorded Difference: Exit Before Any Result Line
+
+When `ssh` ends the installation with status 255 before the script printed any
+result line, the CLI prints, after `ssh`'s own messages, that the installation
+script reported nothing and that nothing was written if authentication failed.
+Upstream exits 1 with only `ssh`'s messages. Apparent intent: any `ssh` failure
+is the run's failure. Reason to differ: a false failure report, since the same
+status also follows a connection that drops after the script wrote the key, and
+then the file may have changed. This is difference D-19.
 
 ### Recorded Difference: Post-Installation Verification
 

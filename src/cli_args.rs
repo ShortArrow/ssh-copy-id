@@ -48,7 +48,9 @@ pub enum ArgsError {
     RepeatedIdentity,
     /// An upstream option that this release does not implement yet.
     Unsupported(char),
-    /// An option upstream does not have.
+    /// An option letter upstream's `getopts` does not accept.
+    IllegalOption(char),
+    /// A long option, which upstream does not have.
     Unknown(String),
 }
 
@@ -106,7 +108,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, ArgsError> {
                 },
                 'h' | '?' => return Err(ArgsError::Help),
                 'f' | 'n' | 's' | 't' | 'x' => return Err(ArgsError::Unsupported(flag)),
-                _ => return Err(ArgsError::Unknown(format!("-{flag}"))),
+                _ => return Err(ArgsError::IllegalOption(flag)),
             }
         }
     }
@@ -257,7 +259,7 @@ mod tests {
     fn p12_unknown_option() {
         assert_eq!(
             parse(&args(&["-z", "-i", "k", "h"])),
-            Err(ArgsError::Unknown("-z".into()))
+            Err(ArgsError::IllegalOption('z'))
         );
     }
 

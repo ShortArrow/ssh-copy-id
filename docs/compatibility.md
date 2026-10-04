@@ -36,6 +36,7 @@ is in the [validation matrix](validation.md#matrix).
 | D-16 | Appends to an unreadable target without checking its final newline; a FIFO target waits indefinitely; a failed `cd` leaves the target relative to the server's working directory. | Does not write a non-empty target it cannot read, a target that is not a regular file, or anything when `cd` fails; reports the keys failed. | [Unsafe targets](design.md#recorded-difference-targets-that-cannot-be-appended-safely) |
 | D-17 | A failed append can leave a fragment of the key line, and the run reports that the key was not written. | Truncates the target back to its size before the failed key's group of lines, unless another writer appended meanwhile; reports `uncertain` when that is not confirmed. | [Partial write](design.md#recorded-difference-removing-a-partial-write) |
 | D-18 | Counts `#` comment lines and blank lines of the key file as keys added. | Appends those lines too, but numbers, reports, and counts key lines only. | [Counting keys](design.md#recorded-difference-counting-keys) |
+| D-19 | Exits 1 with only `ssh`'s messages when `ssh` fails before the script reports anything, also after a connection drop that follows the write. | Adds a line saying the script reported nothing and nothing was written if authentication failed. | [Exit before any result line](design.md#recorded-difference-exit-before-any-result-line) |
 
 ## Destination Differences
 

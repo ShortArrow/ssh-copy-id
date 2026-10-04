@@ -8,6 +8,18 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+### Changed
+
+- Messages follow the pinned upstream `ssh-copy-id` where the behavior is
+  shared: the login hint leaves the `-i` and `-p` values unquoted, a key file
+  that cannot be opened is reported with the reason, the skipped-keys warning
+  has upstream's blank lines, a host key or connection failure relays `ssh`'s
+  own messages, a missing destination prints only the usage, and an unknown
+  option prints `illegal option -- <letter>`.
+- When `ssh` ends before the installation script reports anything, the extra
+  line saying nothing was written if authentication failed is a recorded
+  difference (D-19).
+
 ## [0.0.1] - 2026-10-04
 
 ### Added

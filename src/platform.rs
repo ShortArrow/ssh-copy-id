@@ -6,11 +6,25 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// Whether `path` names a regular file this process can open for reading.
-pub fn is_readable_file(path: &Path) -> bool {
-    std::fs::File::open(path)
-        .and_then(|file| file.metadata())
-        .is_ok_and(|metadata| metadata.is_file())
+/// Opens `path` for reading, as upstream's `: < "$f"` does, and succeeds when it
+/// is a regular file. Otherwise returns why not: the error from opening it, an
+/// `IsADirectory` error for a directory, which opens on Unix, or an
+/// `InvalidInput` error for any other file that is not a regular file.
+pub fn open_readable_file(path: &Path) -> io::Result<()> {
+    let metadata = std::fs::File::open(path)?.metadata()?;
+    if metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::IsADirectory,
+            "Is a directory",
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Not a regular file",
+        ));
+    }
+    Ok(())
 }
 
 /// Creates a new directory named `ssh-copy-id.<random>` inside `parent` and
@@ -185,21 +199,24 @@ mod tests {
         let dir = scratch("p01");
         let file = dir.join("key");
         std::fs::write(&file, b"private").unwrap();
-        assert!(is_readable_file(&file));
+        assert!(open_readable_file(&file).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn p02_a_directory_is_not_a_readable_file() {
         let dir = scratch("p02");
-        assert!(!is_readable_file(&dir));
+        assert!(open_readable_file(&dir).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn p03_a_missing_path_is_not_a_readable_file() {
         let dir = scratch("p03");
-        assert!(!is_readable_file(&dir.join("absent")));
+        assert_eq!(
+            open_readable_file(&dir.join("absent")).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -280,7 +297,10 @@ mod tests {
         let file = dir.join("key");
         std::fs::write(&file, b"private").unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
-        assert!(!is_readable_file(&file));
+        assert_eq!(
+            open_readable_file(&file).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
