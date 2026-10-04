@@ -497,7 +497,7 @@ struct Expected {
     always: bool,
 }
 
-const EXPECTED: [Expected; 10] = [
+const EXPECTED: [Expected; 11] = [
     Expected {
         tag: "D-06",
         scenarios: &[5, 9, 10],
@@ -588,6 +588,14 @@ const EXPECTED: [Expected; 10] = [
         field: Field::Stderr,
         tool: Tool::Upstream,
         edit: Edit::Replace("Illegal option -z\n", "ssh-copy-id: illegal option -- z\n"),
+        always: false,
+    },
+    Expected {
+        tag: "SHELL",
+        scenarios: &[4],
+        field: Field::Stderr,
+        tool: Tool::Upstream,
+        edit: Edit::Replace("': No such file\n", "': No such file or directory\n"),
         always: false,
     },
 ];

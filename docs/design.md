@@ -354,7 +354,10 @@ report a failed write as success. The login hint after installation prints the
 missing destination prints only the usage; an unknown option prints
 `ssh-copy-id: illegal option -- <letter>` before it, the form bash and macOS's
 `sh` give upstream's `getopts`. dash words that line differently, so the golden
-tests treat it as dependent on the shell.
+tests treat it as dependent on the shell. The same holds for the reason after a
+key file that cannot be opened: upstream takes it from the shell's own error,
+dash's "No such file" where bash and this tool print the system's "No such file
+or directory".
 
 `-x` prints each client command line and the remote script to stderr before
 running them, the closest equivalent of upstream's `set -x`. Apparent intent of
