@@ -371,6 +371,10 @@ enum Arguments {
     DefaultKey,
     /// `-i` without a file, the fixture options, and pwuser.
     IdentityWithoutFile,
+    /// `-f`, then `-i` with the private key path, the fixture options, and pwuser.
+    ForceInstall,
+    /// `-f`, then `-i` with the `.pub` path, the fixture options, and pwuser.
+    ForceInstallNamingPublic,
 }
 
 #[derive(Clone, Copy)]
@@ -423,7 +427,7 @@ const BASE: Scenario = Scenario {
     agent: false,
 };
 
-const SCENARIOS: [Scenario; 16] = [
+const SCENARIOS: [Scenario; 19] = [
     Scenario {
         title: "-h (no destination)",
         arguments: Arguments::Help,
@@ -509,6 +513,23 @@ const SCENARIOS: [Scenario; 16] = [
         agent: true,
         ..BASE
     },
+    Scenario {
+        title: "-f: install into a missing authorized_keys",
+        arguments: Arguments::ForceInstall,
+        ..BASE
+    },
+    Scenario {
+        title: "-f: second run after a -f run, adding the key again",
+        arguments: Arguments::ForceInstall,
+        runs_before: 1,
+        ..BASE
+    },
+    Scenario {
+        title: "-f -i <pub> whose private key file is missing",
+        arguments: Arguments::ForceInstallNamingPublic,
+        key_file: KeyFile::PrivateMissing,
+        ..BASE
+    },
 ];
 
 /// Upstream's usage, which the CLI's matches only from stage 1.5.
@@ -521,13 +542,14 @@ const UPSTREAM_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-s|-x] [-i [identi
 ";
 
 /// The CLI's usage.
-const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+\t-f: force mode -- copy keys without trying to check if they are already installed
 \t-i: the public key to install; '.pub' is added when absent
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
 \t-h|-?: print this help
 This release installs keys on a Unix-like host.
--f, -n, -s, -t, and -x are not available yet.
+-n, -s, -t, and -x are not available yet.
 ";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -567,7 +589,7 @@ struct Expected {
     always: bool,
 }
 
-const EXPECTED: [Expected; 17] = [
+const EXPECTED: [Expected; 15] = [
     Expected {
         tag: "D-06",
         scenarios: &[5, 9, 10, 12, 13],
@@ -684,24 +706,6 @@ const EXPECTED: [Expected; 17] = [
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::Remove(CLI_USAGE),
-        always: true,
-    },
-    Expected {
-        tag: "STAGE-1.5",
-        scenarios: &[4],
-        field: Field::Stderr,
-        tool: Tool::Upstream,
-        edit: Edit::Remove(
-            "\t(to install the contents of '<KEY>.pub' anyway, look at the -f option)\n",
-        ),
-        always: true,
-    },
-    Expected {
-        tag: "STAGE-1.5",
-        scenarios: &[6],
-        field: Field::Stderr,
-        tool: Tool::Upstream,
-        edit: Edit::Remove("\t\t(if you think this is a mistake, you may want to use -f option)\n"),
         always: true,
     },
     Expected {
@@ -967,6 +971,12 @@ fn arguments(arguments: Arguments, fixture: &Fixture, key: &Path) -> Vec<String>
         Arguments::InstallNamingPublic => vec!["-i".into(), display(&key.with_extension("pub"))],
         Arguments::DefaultKey => vec![],
         Arguments::IdentityWithoutFile => vec!["-i".into()],
+        Arguments::ForceInstall => vec!["-f".into(), "-i".into(), display(key)],
+        Arguments::ForceInstallNamingPublic => vec![
+            "-f".into(),
+            "-i".into(),
+            display(&key.with_extension("pub")),
+        ],
     };
     let mut words = identity;
     words.extend([

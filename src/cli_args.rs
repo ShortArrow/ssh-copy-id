@@ -39,6 +39,9 @@ pub struct Invocation {
     pub port: Option<String>,
     /// `-o` and `-F` options in their original order.
     pub ssh_options: Vec<SshOption>,
+    /// `-f`, wherever it appears among the options: skip the installed-key check
+    /// and the verification, and do not require the private key file.
+    pub force: bool,
 }
 
 /// Why the arguments do not form an invocation. Every variant exits 1, as upstream's usage does.
@@ -80,6 +83,7 @@ pub fn parse(
     let mut key = None;
     let mut port = None;
     let mut ssh_options = Vec::new();
+    let mut force = false;
     let mut index = 0;
     while let Some(arg) = args.get(index) {
         index += 1;
@@ -126,7 +130,8 @@ pub fn parse(
                     })
                 }
                 'h' | '?' => return Err(ArgsError::Help),
-                'f' | 'n' | 's' | 't' | 'x' => return Err(ArgsError::Unsupported(flag)),
+                'f' => force = true,
+                'n' | 's' | 't' | 'x' => return Err(ArgsError::Unsupported(flag)),
                 _ => return Err(ArgsError::IllegalOption(flag)),
             }
         }
@@ -142,6 +147,7 @@ pub fn parse(
         key: key.unwrap_or(KeySelection::Unspecified),
         port,
         ssh_options,
+        force,
     })
 }
 
@@ -183,6 +189,7 @@ mod tests {
             key,
             port: None,
             ssh_options: Vec::new(),
+            force: false,
         }
     }
 
@@ -289,7 +296,7 @@ mod tests {
 
     #[test]
     fn p11_later_stage_options_are_unsupported() {
-        for flag in ['f', 'n', 's', 't', 'x'] {
+        for flag in ['n', 's', 't', 'x'] {
             let given = args(&[&format!("-{flag}"), "-i", "k", "h"]);
             assert_eq!(
                 parse_plain(&given),
@@ -342,7 +349,7 @@ mod tests {
     fn p17_grouped_flags_report_the_first_unsupported() {
         assert_eq!(
             parse_plain(&args(&["-fn", "-i", "k", "h"])),
-            Err(ArgsError::Unsupported('f'))
+            Err(ArgsError::Unsupported('n'))
         );
     }
 
@@ -431,5 +438,23 @@ mod tests {
     #[test]
     fn p25_identity_as_the_only_argument_leaves_no_destination() {
         assert_eq!(parse_plain(&args(&["-i"])), Err(ArgsError::NoDestination));
+    }
+
+    #[test]
+    fn p26_force_is_off_unless_given() {
+        assert!(!parse_plain(&args(&["-i", "k", "h"])).unwrap().force);
+    }
+
+    #[test]
+    fn p27_force_is_on_wherever_it_is_given() {
+        for given in [
+            args(&["-f", "-i", "k", "h"]),
+            args(&["-i", "k", "-f", "h"]),
+            args(&["-fi", "k", "h"]),
+        ] {
+            let parsed = parse_plain(&given).unwrap();
+            assert!(parsed.force, "{given:?}");
+            assert_eq!(parsed.key, invocation("h", "k").key, "{given:?}");
+        }
     }
 }

@@ -22,6 +22,12 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   installed are appended in one run, and each written key is verified (D-06).
 - A file-less `-i` followed only by a readable file containing `ssh` is
   reported as a missing hostname with upstream's `-i --` suggestion.
+- `-f` installs every selected key without the installed-key check or the
+  verification, so a key already installed is appended again, and does not
+  need the private key file. Private key input, CRLF line endings, a leading
+  byte order mark, malformed lines and a key file with several keys are still
+  handled as without `-f` (D-04, D-05, D-07, D-10, D-21). As upstream's, the
+  login hint after `-f -i` names `-i` without the private key.
 
 ### Changed
 
@@ -31,6 +37,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   has upstream's blank lines, a host key or connection failure relays `ssh`'s
   own messages, a missing destination prints only the usage, and an unknown
   option prints `illegal option -- <letter>`.
+- A missing private key file and the warning that every key was skipped now
+  end with upstream's hint to use `-f`.
 - When `ssh` ends before the installation script reports anything, the extra
   line saying nothing was written if authentication failed is a recorded
   difference (D-19).

@@ -8,13 +8,14 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage: ssh-copy-id [-h|-?] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+const USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+\t-f: force mode -- copy keys without trying to check if they are already installed
 \t-i: the public key to install; '.pub' is added when absent
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
 \t-h|-?: print this help
 This release installs keys on a Unix-like host.
--f, -n, -s, -t, and -x are not available yet.";
+-n, -s, -t, and -x are not available yet.";
 
 fn main() -> ExitCode {
     let mut args = Vec::new();
@@ -191,8 +192,8 @@ mod tests {
     #[test]
     fn m11_an_unsupported_option_keeps_the_stage_1_message() {
         assert_eq!(
-            preamble(&ArgsError::Unsupported('f')),
-            "ssh-copy-id: ERROR: option -f is not available in this release\n\n"
+            preamble(&ArgsError::Unsupported('n')),
+            "ssh-copy-id: ERROR: option -n is not available in this release\n\n"
         );
     }
 
@@ -209,5 +210,23 @@ mod tests {
     fn m13_the_usage_offers_identity_without_a_file() {
         assert!(USAGE.contains("[-i [identity_file]]"), "{USAGE}");
         assert!(!USAGE.contains("-i without a file"), "{USAGE}");
+    }
+
+    #[test]
+    fn m14_the_usage_offers_force_mode_in_upstream_s_words() {
+        assert!(
+            USAGE.starts_with("Usage: ssh-copy-id [-h|-?|-f] [-i [identity_file]]"),
+            "{USAGE}"
+        );
+        assert!(
+            USAGE.contains(
+                "\n\t-f: force mode -- copy keys without trying to check if they are already installed\n"
+            ),
+            "{USAGE}"
+        );
+        assert!(
+            USAGE.ends_with("\n-n, -s, -t, and -x are not available yet."),
+            "{USAGE}"
+        );
     }
 }
