@@ -5,7 +5,7 @@ This is `ssh-copy-id` for Windows.
 > [!WARNING]
 > This project is experimental until it reaches `v1.0.0`,
 > and is subject to breaking changes in any release before then.
-> It has no release yet, and it installs only one explicitly selected key on a Unix-like host.
+> Version 0.0.1 installs only one explicitly selected key on a Unix-like host.
 > Do not rely on it for access to machines you cannot reach another way.
 
 ## Summary
@@ -24,15 +24,23 @@ Differences from upstream: [English](docs/compatibility.md) | [日本語](docs/c
 
 ## Install
 
-No release yet. Version 0.0.0 on crates.io only reserves the crate name; the
-first release, v0.0.1, will be published to crates.io and as a GitHub release;
-see the [delivery plan](docs/design.md#delivery-plan). The current
-source installs one explicitly selected key on a Unix-like host
-(`ssh-copy-id -i ~/.ssh/id_ed25519.pub user@host`). To build it, with Rust installed:
+With Rust installed:
 
 ```powershell
-cargo install --git https://github.com/ShortArrow/ssh-copy-id
+cargo install ssh-copy-id
 ```
+
+Or download `ssh-copy-id-x86_64-pc-windows-msvc.zip` from the
+[latest release](https://github.com/ShortArrow/ssh-copy-id/releases/latest) and
+put `ssh-copy-id.exe` on `PATH`. The system OpenSSH client (`ssh.exe`) is
+required. Version 0.0.1 installs one explicitly selected key on a Unix-like
+host:
+
+```powershell
+ssh-copy-id -i ~/.ssh/id_ed25519.pub user@host
+```
+
+The remaining features follow the [delivery plan](docs/design.md#delivery-plan).
 
 ## LICENSE
 

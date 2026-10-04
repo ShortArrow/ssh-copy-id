@@ -8,6 +8,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+## [0.0.1] - 2026-10-04
+
 ### Added
 
 - Install one explicitly selected public key (`-i FILE`) on a Unix-like host, with
