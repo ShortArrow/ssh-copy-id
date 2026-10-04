@@ -128,6 +128,22 @@ fn stop<T>(message: impl Into<String>) -> Result<T, Stop> {
     Err(Stop::Error(message.into()))
 }
 
+/// The keys a run installs, selected before any connection.
+struct Selection {
+    keys: Vec<SelectedKey>,
+    /// The private key the login hint names: the one `-i` selected, as
+    /// upstream's `${SEEN_OPT_I:+-i …}`.
+    hint_identity: Option<String>,
+}
+
+/// One selected key.
+struct SelectedKey {
+    /// The lines sent when it is installed, each ending in LF.
+    text: Vec<u8>,
+    /// The `-i` argument of its installed-key check.
+    identity: String,
+}
+
 fn install(
     invocation: &Invocation,
     env: &Environment,
@@ -135,24 +151,7 @@ fn install(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), Stop> {
-    let key_file = select_key_file(invocation, env, err)?;
-    let public_key = key_file.public.display().to_string();
-    let identity = key_file.private.display().to_string();
-    let hint_identity = key_file.named_by_option.then_some(identity.as_str());
-    let input = (env.read_file)(&key_file.public).map_err(|e| unopenable(&public_key, &e))?;
-    let prepared = prepare(&input).map_err(|e| input_error(&public_key, &e))?;
-    if prepared.key_count > 1 {
-        return stop(format!(
-            "'{public_key}' holds {} keys; a selected key file must hold one key, \
-             the public half of '{identity}'",
-            prepared.key_count
-        ));
-    }
-    (env.readable_file)(&key_file.private).map_err(|e| unopenable(&identity, &e))?;
-    info(
-        err,
-        &format!("Source of key(s) to be installed: \"{public_key}\""),
-    );
+    let selection = select_keys(invocation, env, err)?;
     let scratch = ScratchDir {
         path: (env.create_scratch_dir)(&env.home.join(".ssh")).map_err(|_| {
             format!(
@@ -163,24 +162,7 @@ fn install(
         remove: env.remove_dir,
     };
 
-    let version = run_ssh(ssh, &["-V".to_string()], b"", true)?;
-    stop_if_interrupted(env, NOTHING_WRITTEN)?;
-    let version_line = String::from_utf8_lossy(&version.stderr)
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if !is_tested_client(&version_line) {
-        warn(
-            err,
-            &format!(
-                "{version_line} has not been tested with this release; output it cannot \
-                 classify makes the installed-key check inconclusive"
-            ),
-        );
-    }
-
+    warn_about_an_untested_client(ssh, env, err)?;
     let common = common_args(invocation, env);
     if batch_mode(env) {
         info(
@@ -189,83 +171,75 @@ fn install(
              password and passphrase prompts fail",
         );
     }
-    let mut config_args = vec![
-        "-G".to_string(),
-        "-i".to_string(),
-        identity.clone(),
-        "-o".to_string(),
-        "IdentitiesOnly=yes".to_string(),
-    ];
-    config_args.extend(common.iter().cloned());
-    config_args.push(invocation.destination.clone());
-    let config = run_ssh(ssh, &config_args, b"", true)?;
-    stop_if_interrupted(env, NOTHING_WRITTEN)?;
-    if config.status != Some(0) {
-        return stop(format!(
-            "ssh -G failed: {}",
-            String::from_utf8_lossy(&config.stderr).trim()
-        ));
+    let mut candidates = Vec::new();
+    for key in &selection.keys {
+        let others = other_candidates(ssh, env, &common, &invocation.destination, &key.identity)?;
+        candidates.push((key, others));
     }
-    let others = other_candidates_matching(
-        &String::from_utf8_lossy(&config.stdout),
-        &identity,
-        &env.home,
-        env.exists,
-        env.same_file,
-    );
-    let certificate = is_certificate(&prepared.text);
-    let probe = |ssh: &mut dyn Ssh, log_name: &str| {
-        if certificate {
+    let probe = |ssh: &mut dyn Ssh, key: &SelectedKey, others: &[String], log_name: &str| {
+        if is_certificate(&key.text) {
             return Ok(CheckResult::Inconclusive(CERTIFICATE_REASON.to_string()));
         }
         let log = scratch.path.join(log_name);
-        let args = probe_args(&identity, &log, &common, &invocation.destination);
-        check(ssh, env, &args, &log, &others)
+        let args = probe_args(&key.identity, &log, &common, &invocation.destination);
+        check(ssh, env, &args, &log, others)
     };
 
     info(
         err,
         "attempting to log in with the new key(s), to filter out any that are already installed",
     );
-    let checked = probe(ssh, "check.log")?;
-    stop_if_interrupted(env, NOTHING_WRITTEN)?;
-    match checked {
-        CheckResult::Installed => {
-            let _ = write!(
+    let mut remaining = Vec::new();
+    for (key, others) in candidates {
+        let checked = probe(ssh, key, &others, "check.log")?;
+        stop_if_interrupted(env, NOTHING_WRITTEN)?;
+        match checked {
+            CheckResult::Installed => continue,
+            CheckResult::NotAttempted { messages, .. } if !messages.is_empty() => {
+                return Err(Stop::Relayed(messages));
+            }
+            CheckResult::Failed(message)
+            | CheckResult::NotAttempted {
+                failure: message, ..
+            } => {
+                return stop(message);
+            }
+            CheckResult::Inconclusive(reason) => warn(
                 err,
-                "\nssh-copy-id: WARNING: All keys were skipped because they already exist \
-                 on the remote system.\n\n"
-            );
-            return Ok(());
-        }
-        CheckResult::NotAttempted { messages, .. } if !messages.is_empty() => {
-            return Err(Stop::Relayed(messages));
-        }
-        CheckResult::Failed(message)
-        | CheckResult::NotAttempted {
-            failure: message, ..
-        } => {
-            return stop(message);
-        }
-        CheckResult::Inconclusive(reason) => warn(
-            err,
-            &format!(
-                "could not tell whether the key is already installed ({reason}); \
-                 installing it, which may add a duplicate"
+                &format!(
+                    "could not tell whether the key is already installed ({reason}); \
+                     installing it, which may add a duplicate"
+                ),
             ),
-        ),
-        CheckResult::NotInstalled => {}
+            CheckResult::NotInstalled => {}
+        }
+        remaining.push((key, others));
+    }
+    if remaining.is_empty() {
+        let _ = write!(
+            err,
+            "\nssh-copy-id: WARNING: All keys were skipped because they already exist \
+             on the remote system.\n\n"
+        );
+        return Ok(());
     }
 
     info(
         err,
-        "1 key(s) remain to be installed -- if you are prompted now it is to install the new keys",
+        &format!(
+            "{} key(s) remain to be installed -- if you are prompted now it is to install the new keys",
+            remaining.len()
+        ),
     );
+    let text: Vec<u8> = remaining
+        .iter()
+        .flat_map(|(key, _)| key.text.iter().copied())
+        .collect();
     let mut install_args = vec!["-o".to_string(), "RequestTTY=no".to_string()];
     install_args.extend(common.iter().cloned());
     install_args.push(invocation.destination.clone());
     install_args.push(install_command(None));
-    let installed = run_ssh(ssh, &install_args, &prepared.text, false)?;
+    let installed = run_ssh(ssh, &install_args, &text, false)?;
     if installed.status == Some(255) && !has_report_line(&installed.stdout) {
         return stop(
             "ssh exited with status 255 before the installation script reported \
@@ -284,11 +258,11 @@ fn install(
         .iter()
         .filter(|k| k.status == crate::result_line::KeyStatus::Added)
         .count();
-    if report.outcome != Outcome::Unknown && report.keys.len() != prepared.key_count {
+    if report.outcome != Outcome::Unknown && report.keys.len() != remaining.len() {
         return stop(format!(
             "the remote side reported {} key(s) for {} sent; {target} may or may not have changed",
             report.keys.len(),
-            prepared.key_count
+            remaining.len()
         ));
     }
     match report.outcome {
@@ -311,16 +285,118 @@ fn install(
         }
     }
 
-    let login = login_command(invocation, hint_identity);
+    let login = login_command(invocation, selection.hint_identity.as_deref());
     if (env.interrupted)() {
         summary(out, added, &login);
         return stop("interrupted".to_string());
     }
-    let verified = probe(ssh, "verify.log")?;
-    if (env.interrupted)() {
-        summary(out, added, &login);
-        return stop("interrupted before the key was verified".to_string());
+    for (key, others) in &remaining {
+        let verified = probe(ssh, key, others, "verify.log")?;
+        if (env.interrupted)() {
+            summary(out, added, &login);
+            return stop("interrupted before the key was verified".to_string());
+        }
+        report_verification(err, verified, &target);
     }
+
+    summary(out, added, &login);
+    Ok(())
+}
+
+/// Reads and checks the selected key file and prints upstream's Source line.
+fn select_keys(
+    invocation: &Invocation,
+    env: &Environment,
+    err: &mut dyn Write,
+) -> Result<Selection, Stop> {
+    let key_file = select_key_file(invocation, env, err)?;
+    let public_key = key_file.public.display().to_string();
+    let identity = key_file.private.display().to_string();
+    let input = (env.read_file)(&key_file.public).map_err(|e| unopenable(&public_key, &e))?;
+    let prepared = prepare(&input).map_err(|e| input_error(&public_key, &e))?;
+    if prepared.key_count > 1 {
+        return stop(format!(
+            "'{public_key}' holds {} keys; a selected key file must hold one key, \
+             the public half of '{identity}'",
+            prepared.key_count
+        ));
+    }
+    (env.readable_file)(&key_file.private).map_err(|e| unopenable(&identity, &e))?;
+    info(
+        err,
+        &format!("Source of key(s) to be installed: \"{public_key}\""),
+    );
+    Ok(Selection {
+        keys: vec![SelectedKey {
+            text: prepared.text,
+            identity: identity.clone(),
+        }],
+        hint_identity: key_file.named_by_option.then_some(identity),
+    })
+}
+
+/// Runs `ssh -V` and warns when the client is not one the fixtures have tested.
+fn warn_about_an_untested_client(
+    ssh: &mut dyn Ssh,
+    env: &Environment,
+    err: &mut dyn Write,
+) -> Result<(), String> {
+    let version = run_ssh(ssh, &["-V".to_string()], b"", true)?;
+    stop_if_interrupted(env, NOTHING_WRITTEN)?;
+    let version_line = String::from_utf8_lossy(&version.stderr)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !is_tested_client(&version_line) {
+        warn(
+            err,
+            &format!(
+                "{version_line} has not been tested with this release; output it cannot \
+                 classify makes the installed-key check inconclusive"
+            ),
+        );
+    }
+    Ok(())
+}
+
+/// The identities other than `identity` that `ssh -G -i <identity>` reports the client could offer.
+fn other_candidates(
+    ssh: &mut dyn Ssh,
+    env: &Environment,
+    common: &[String],
+    destination: &str,
+    identity: &str,
+) -> Result<Vec<String>, String> {
+    let mut config_args = vec![
+        "-G".to_string(),
+        "-i".to_string(),
+        identity.to_string(),
+        "-o".to_string(),
+        "IdentitiesOnly=yes".to_string(),
+    ];
+    config_args.extend(common.iter().cloned());
+    config_args.push(destination.to_string());
+    let config = run_ssh(ssh, &config_args, b"", true)?;
+    stop_if_interrupted(env, NOTHING_WRITTEN)?;
+    if config.status != Some(0) {
+        return Err(format!(
+            "ssh -G failed: {}",
+            String::from_utf8_lossy(&config.stderr).trim()
+        ));
+    }
+    Ok(other_candidates_matching(
+        &String::from_utf8_lossy(&config.stdout),
+        identity,
+        &env.home,
+        env.exists,
+        env.same_file,
+    ))
+}
+
+/// Prints the result of a written key's post-installation check (D-06).
+fn report_verification(err: &mut dyn Write, verified: CheckResult, target: &str) {
     match verified {
         CheckResult::Installed => info(err, "the key authenticates: it is installed and verified"),
         CheckResult::NotInstalled => warn(
@@ -339,9 +415,6 @@ fn install(
             &format!("the key was installed but could not be verified: {reason}"),
         ),
     }
-
-    summary(out, added, &login);
-    Ok(())
 }
 
 fn summary(out: &mut dyn Write, added: usize, login: &str) {
