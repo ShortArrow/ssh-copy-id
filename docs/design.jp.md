@@ -722,10 +722,11 @@ CLI・鍵選択・登録済み確認・接続・登録先ポリシー・ファ�
 実行して、共通の動作について標準出力と終了コードを比べる。
 
 CI（`.github/workflows/ci.yml`）は、`main` へのpushとプルリクエストのたびに、GitHubホストのランナーのLinuxで
-`cargo fmt --check` と `cargo clippy -D warnings` を、LinuxとWindowsで `cargo test` を、
-さらにLinuxの検証環境を実行する。Windows環境はKVMと数GBのゲストディスクが要るため、
-自前ランナーで `workflow_dispatch` からだけ実行し、フォークからのプルリクエストは
-到達させない。
+`cargo fmt --check` と `cargo clippy -D warnings` を、Linux・Windows・macOSで `cargo test` を、
+さらにLinuxの検証環境を実行する。Windows環境はKVMと数GBのゲストディスクが要るため、手で実行する。
+CIで動かすには自前ランナーが要るが、そのランナーはこの公開リポジトリには登録しない。フォークからの
+プルリクエストは、リポジトリにあるどのランナーを指すワークフローも追加できるためだ。ランナーは
+別の非公開リポジトリに付けるか、1回の手動実行のために作って終わったら消す。
 
 検証環境のテストはOpenSSHの動作を示すものであり、Rust CLIの適合確認ではない。
 これらは開発用ツールで、製品の実行時依存には含めない。Windows対応は一般ユーザー・

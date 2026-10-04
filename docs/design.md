@@ -843,11 +843,14 @@ is a golden test: the pinned upstream script and this CLI run against the same
 Linux fixture, and stdout and exit status are compared where behavior is shared.
 
 Continuous integration (`.github/workflows/ci.yml`) runs `cargo fmt --check` and
-`cargo clippy -D warnings` on Linux, `cargo test` on Linux and Windows, and the
-Linux fixture, on GitHub-hosted runners for every push to `main` and every pull
-request. The Windows
-fixture needs KVM and a multi-gigabyte guest disk, so it runs on a self-hosted
-runner from `workflow_dispatch` only; pull requests from forks never reach it.
+`cargo clippy -D warnings` on Linux, `cargo test` on Linux, Windows, and macOS,
+and the Linux fixture, on GitHub-hosted runners for every push to `main` and
+every pull request. The Windows fixture needs KVM and a multi-gigabyte guest disk
+and runs by hand. It needs a self-hosted runner to run in CI, and that runner is
+not registered to this public repository: a pull request from a fork can add a
+workflow that targets any runner the repository has, so the runner is attached
+to a separate private repository, or created for one dispatched run and removed
+afterwards.
 
 Fixture tests demonstrate OpenSSH behavior, not Rust CLI conformance, and the
 fixtures are development tools, not product runtime dependencies. Windows support
