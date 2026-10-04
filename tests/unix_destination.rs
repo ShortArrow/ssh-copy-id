@@ -10,140 +10,17 @@
 //! cargo test --test unix_destination -- --ignored --test-threads=1
 //! ```
 
+mod common;
+
+use common::{Fixture, keygen, public_line, text, wait_with_deadline};
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-const IMAGE: &str = "ssh-copy-id-l02:local";
 const COPY_ID_TIMEOUT: Duration = Duration::from_secs(60);
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-struct Fixture {
-    container: String,
-    port: String,
-    work: PathBuf,
-    password: String,
-    control: PathBuf,
-}
 
 impl Fixture {
-    fn start() -> Fixture {
-        Fixture::start_with(&[])
-    }
-
-    /// Starts a container with `run_args` added to `docker run`, such as a mount.
-    fn start_with(run_args: &[&str]) -> Fixture {
-        let work = std::env::temp_dir().join(format!(
-            "ssh-copy-id-l02-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::SeqCst)
-        ));
-        fs::create_dir_all(&work).unwrap();
-        let control = keygen(&work, "control", "control");
-        let password = format!(
-            "pw-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::SeqCst)
-        );
-        let public = fs::read_to_string(control.with_extension("pub")).unwrap();
-        let password_env = format!("PWUSER_PASSWORD={password}");
-        let control_env = format!("CONTROL_PUBLIC_KEY={}", public.trim());
-        let mut args = vec![
-            "run",
-            "-d",
-            "-p",
-            "127.0.0.1::22",
-            "-e",
-            &password_env,
-            "-e",
-            &control_env,
-        ];
-        args.extend_from_slice(run_args);
-        args.push(IMAGE);
-        let run = command("docker", &args);
-        assert!(run.status.success(), "docker run: {}", text(&run.stderr));
-        let container = text(&run.stdout).trim().to_string();
-        let mapped = command("docker", &["port", &container, "22/tcp"]);
-        let port = text(&mapped.stdout)
-            .lines()
-            .next()
-            .and_then(|line| line.rsplit(':').next())
-            .unwrap()
-            .trim()
-            .to_string();
-        let fixture = Fixture {
-            container,
-            port,
-            work,
-            password,
-            control,
-        };
-        fixture.wait_until_ready();
-        fixture
-    }
-
-    fn wait_until_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let probe = Command::new("ssh")
-                .args(self.base_ssh_args())
-                .args(["-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-i"])
-                .arg(&self.control)
-                .args(["keyuser@127.0.0.1", "true"])
-                .stdin(Stdio::null())
-                .output()
-                .unwrap();
-            if probe.status.success() {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "fixture not ready: {}",
-                text(&probe.stderr)
-            );
-            std::thread::sleep(Duration::from_millis(500));
-        }
-    }
-
-    fn known_hosts(&self) -> PathBuf {
-        self.work.join("known_hosts")
-    }
-
-    fn base_ssh_args(&self) -> Vec<String> {
-        vec![
-            "-F".into(),
-            "none".into(),
-            "-p".into(),
-            self.port.clone(),
-            "-o".into(),
-            format!("UserKnownHostsFile={}", self.known_hosts().display()),
-            "-o".into(),
-            "StrictHostKeyChecking=accept-new".into(),
-            "-o".into(),
-            "ConnectTimeout=5".into(),
-        ]
-    }
-
-    fn askpass(&self, password: &str) -> PathBuf {
-        if cfg!(windows) {
-            let path = self.work.join("askpass.cmd");
-            fs::write(&path, format!("@echo {password}\r\n")).unwrap();
-            path
-        } else {
-            let path = self.work.join("askpass");
-            fs::write(&path, format!("#!/bin/sh\necho '{password}'\n")).unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-            }
-            path
-        }
-    }
-
     fn copy_id(&self, key: &Path, user: &str, extra: &[&str]) -> Output {
         self.copy_id_answering(&self.password, key, user, extra)
     }
@@ -183,7 +60,7 @@ impl Fixture {
         ];
         args.extend(extra.iter().map(|s| s.to_string()));
         args.push(format!("{user}@127.0.0.1"));
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ssh-copy-id"))
+        let child = Command::new(env!("CARGO_BIN_EXE_ssh-copy-id"))
             .args(&args)
             .env("SSH_ASKPASS", self.askpass(password))
             .env("SSH_ASKPASS_REQUIRE", "force")
@@ -192,57 +69,7 @@ impl Fixture {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let stdout = drain(child.stdout.take().unwrap());
-        let stderr = drain(child.stderr.take().unwrap());
-        let deadline = Instant::now() + COPY_ID_TIMEOUT;
-        let status = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                panic!("ssh-copy-id did not finish within {COPY_ID_TIMEOUT:?}");
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        };
-        Output {
-            status,
-            stdout: stdout.join().unwrap(),
-            stderr: stderr.join().unwrap(),
-        }
-    }
-
-    fn exec(&self, user: &str, script: &str) -> Output {
-        command(
-            "docker",
-            &[
-                "exec",
-                "-u",
-                user,
-                "-w",
-                &format!("/home/{user}"),
-                &self.container,
-                "sh",
-                "-c",
-                script,
-            ],
-        )
-    }
-
-    fn authorized_keys(&self, user: &str) -> String {
-        text(
-            &self
-                .exec(user, "cat .ssh/authorized_keys 2>/dev/null")
-                .stdout,
-        )
-    }
-
-    fn read_as_root(&self, path: &str) -> String {
-        text(&command("docker", &["exec", &self.container, "cat", path]).stdout)
-    }
-
-    fn exec_as_root(&self, script: &str) -> Output {
-        command("docker", &["exec", &self.container, "sh", "-c", script])
+        wait_with_deadline(child, COPY_ID_TIMEOUT)
     }
 
     /// Starts a container whose `/home/pwuser/.ssh` is a 16 KiB tmpfs.
@@ -268,64 +95,6 @@ impl Fixture {
         assert!(fill.status.success(), "{}", text(&fill.stderr));
         self.read_as_root("/home/pwuser/.ssh/authorized_keys")
     }
-
-    /// The octal permission bits of `path`, relative to `user`'s home directory.
-    fn mode(&self, user: &str, path: &str) -> String {
-        text(&self.exec(user, &format!("stat -c %a {path}")).stdout)
-            .trim()
-            .to_string()
-    }
-
-    fn logs_in_with(&self, key: &Path, user: &str) -> bool {
-        Command::new("ssh")
-            .args(self.base_ssh_args())
-            .args(["-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-i"])
-            .arg(key)
-            .args([&format!("{user}@127.0.0.1"), "true"])
-            .stdin(Stdio::null())
-            .output()
-            .unwrap()
-            .status
-            .success()
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = command("docker", &["rm", "-f", &self.container]);
-        let _ = fs::remove_dir_all(&self.work);
-    }
-}
-
-fn command(program: &str, args: &[&str]) -> Output {
-    Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .unwrap()
-}
-
-fn drain(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = pipe.read_to_end(&mut bytes);
-        bytes
-    })
-}
-
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
-fn keygen(dir: &Path, name: &str, comment: &str) -> PathBuf {
-    let path = dir.join(name);
-    let made = Command::new("ssh-keygen")
-        .args(["-q", "-t", "ed25519", "-N", "", "-C", comment, "-f"])
-        .arg(&path)
-        .output()
-        .unwrap();
-    assert!(made.status.success(), "ssh-keygen: {}", text(&made.stderr));
-    path
 }
 
 /// The local `~/.ssh`, from the variable the CLI reads its home directory from.
@@ -344,13 +113,6 @@ fn scratch_entries() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn public_line(key: &Path) -> String {
-    fs::read_to_string(key.with_extension("pub"))
-        .unwrap()
-        .trim_end()
-        .to_string()
 }
 
 #[test]
