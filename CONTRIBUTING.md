@@ -93,12 +93,15 @@ pipeline at the version `main` already carries and never publishes to crates.io.
    git push origin vX.Y.Z
    ```
 
-7. Watch the run until every job succeeds, then check the release page and
-   `https://crates.io/crates/ssh-copy-id`.
+7. Watch the run. "Publish to crates.io" waits in the `release` environment
+   until the owner approves it on the run page; approve it after the GitHub
+   release looks right.
+8. Check the release page and `https://crates.io/crates/ssh-copy-id`.
 
 Publishing uses crates.io trusted publishing: the crate's settings on crates.io
 name the repository `ShortArrow/ssh-copy-id` and the workflow `release.yml`, so
-no token is stored. crates.io accepts that setting only for a crate that exists,
+no token is stored. The setting also names the environment `release`, so only an
+approved run can publish. crates.io accepts that setting only for a crate that exists,
 so version 0.0.0 was published once with `cargo login` and `cargo publish`
 using a short-lived token, which was then revoked. A rerun after a partial failure skips the publish when the
 version is already on crates.io.
