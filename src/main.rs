@@ -56,6 +56,7 @@ fn main() -> ExitCode {
         same_file: &same_file,
         modification_times: &platform::modification_times,
         create_scratch_dir: &platform::create_scratch_dir,
+        write_file: &|path, contents| std::fs::write(path, contents),
         remove_dir: &platform::remove_scratch_dir,
         interrupted: &platform::interrupted,
     };

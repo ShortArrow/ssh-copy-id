@@ -6,9 +6,11 @@ use std::io::{self, Write};
 use std::process::{Command, Stdio};
 use std::thread;
 
-/// Runs `ssh` found on `PATH`, or the program given to `SystemSsh::with_program`.
+/// Runs `ssh` found on `PATH`, or the program given to `SystemSsh::with_program`,
+/// and `ssh-add` found on `PATH`.
 pub struct SystemSsh {
     program: OsString,
+    agent_program: OsString,
 }
 
 impl SystemSsh {
@@ -21,6 +23,7 @@ impl SystemSsh {
     pub fn with_program(program: impl Into<OsString>) -> SystemSsh {
         SystemSsh {
             program: program.into(),
+            agent_program: OsString::from("ssh-add"),
         }
     }
 }
@@ -64,6 +67,19 @@ impl Ssh for SystemSsh {
             Ok(Err(e)) => return Err(e),
             Err(_) => return Err(io::Error::other("stdin writer panicked")),
         }
+        Ok(SshOutput {
+            status: output.status.code(),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+    }
+
+    /// Runs `ssh-add -L` with stdin closed, as upstream's `ssh-add -L` reads nothing.
+    fn list_agent_keys(&mut self) -> io::Result<SshOutput> {
+        let output = Command::new(&self.agent_program)
+            .arg("-L")
+            .stdin(Stdio::null())
+            .output()?;
         Ok(SshOutput {
             status: output.status.code(),
             stdout: output.stdout,

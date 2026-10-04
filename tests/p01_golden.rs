@@ -19,7 +19,7 @@
 
 mod common;
 
-use common::{Fixture, keygen, public_line, text, wait_with_deadline};
+use common::{Agent, Fixture, keygen, public_line, text, wait_with_deadline};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -406,6 +406,9 @@ struct Scenario {
     runs_before: usize,
     /// Whether the local `~/.ssh` holds the scenario's key as `id_ed25519`.
     default_key_file: bool,
+    /// Whether a private agent holds the scenario's key and a second key, and
+    /// pwuser's `authorized_keys` already holds the scenario's key.
+    agent: bool,
 }
 
 const BASE: Scenario = Scenario {
@@ -417,9 +420,10 @@ const BASE: Scenario = Scenario {
     remote_setup: None,
     runs_before: 0,
     default_key_file: false,
+    agent: false,
 };
 
-const SCENARIOS: [Scenario; 15] = [
+const SCENARIOS: [Scenario; 16] = [
     Scenario {
         title: "-h (no destination)",
         arguments: Arguments::Help,
@@ -499,6 +503,12 @@ const SCENARIOS: [Scenario; 15] = [
         arguments: Arguments::IdentityWithoutFile,
         ..BASE
     },
+    Scenario {
+        title: "no -i: two agent keys, the first already installed",
+        arguments: Arguments::DefaultKey,
+        agent: true,
+        ..BASE
+    },
 ];
 
 /// Upstream's usage, which the CLI's matches only from stage 1.5.
@@ -557,7 +567,7 @@ struct Expected {
     always: bool,
 }
 
-const EXPECTED: [Expected; 16] = [
+const EXPECTED: [Expected; 17] = [
     Expected {
         tag: "D-06",
         scenarios: &[5, 9, 10, 12, 13],
@@ -569,8 +579,18 @@ const EXPECTED: [Expected; 16] = [
         always: true,
     },
     Expected {
+        tag: "D-06",
+        scenarios: &[16],
+        field: Field::Stderr,
+        tool: Tool::Cli,
+        edit: Edit::Remove(
+            "ssh-copy-id: INFO: key 2 from ssh-add -L: the key authenticates: it is installed and verified\n",
+        ),
+        always: true,
+    },
+    Expected {
         tag: "D-13",
-        scenarios: &[5, 6, 7, 8, 9, 10, 12, 13],
+        scenarios: &[5, 6, 7, 8, 9, 10, 12, 13, 16],
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::RemoveLine(
@@ -829,6 +849,9 @@ impl Harness {
                 fs::write(key.with_extension("pub"), lines).unwrap();
             }
         }
+        if scenario.agent {
+            keygen(&dir, "other", "other@test");
+        }
         key
     }
 
@@ -850,6 +873,20 @@ impl Harness {
             let setup = fixture.exec(USER, script);
             assert!(setup.status.success(), "{}", text(&setup.stderr));
         }
+        let agent = scenario.agent.then(|| {
+            let agent = Agent::start(&fixture.work);
+            agent.add(key);
+            agent.add(&key.with_file_name("other"));
+            let setup = fixture.exec(
+                USER,
+                &format!(
+                    "umask 077 && mkdir -p .ssh && printf '%s\\n' '{}' > .ssh/authorized_keys",
+                    public_line(key)
+                ),
+            );
+            assert!(setup.status.success(), "{}", text(&setup.stderr));
+            agent
+        });
         if let KnownHosts::Mismatch = scenario.known_hosts {
             let other = keygen(&fixture.work, "fake_host", "fake");
             fs::write(
@@ -881,6 +918,7 @@ impl Harness {
                 .env("LC_ALL", "C")
                 .env("SSH_ASKPASS", &askpass)
                 .env("SSH_ASKPASS_REQUIRE", "force")
+                .envs(agent.iter().map(|agent| ("SSH_AUTH_SOCK", &agent.socket)))
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())

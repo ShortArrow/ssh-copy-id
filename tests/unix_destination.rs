@@ -1,6 +1,7 @@
-//! Stage 1 behavior against the L02 Linux fixture: requirements 1, 2, 3, 7, and 8,
-//! and design D-01, D-15, D-16, D-17, and D-18. Every run of the CLI must leave
-//! no `ssh-copy-id.*` scratch directory in the local `~/.ssh`.
+//! Behavior against the L02 Linux fixture: requirements 1, 2, 3, 7, and 8,
+//! design D-01, D-15, D-16, D-17, D-18, and D-20, and default key selection.
+//! Every run of the CLI must leave no `ssh-copy-id.*` scratch directory in the
+//! local `~/.ssh` it uses.
 //!
 //! Each test starts its own container from the `ssh-copy-id-l02:local` image on a
 //! free loopback port. Build the image first and run these tests explicitly:
@@ -12,7 +13,7 @@
 
 mod common;
 
-use common::{Fixture, keygen, public_line, text, wait_with_deadline};
+use common::{Agent, Fixture, keygen, public_line, text, wait_with_deadline};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -540,5 +541,51 @@ fn i21_identity_without_a_file_installs_the_default_key_file() {
     assert_eq!(
         fixture.authorized_keys("pwuser"),
         format!("{}\n", public_line(&key))
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i22_d20_agent_keys_are_checked_alone_and_only_the_missing_one_is_appended() {
+    let fixture = Fixture::start();
+    let (home, default_key) = fixture.home_with_default_key();
+    let installed = keygen(&fixture.work, "installed", "installed@test");
+    let missing = keygen(&fixture.work, "missing", "missing@test");
+    let agent = Agent::start(&fixture.work);
+    agent.add(&installed);
+    agent.add(&missing);
+    let setup = fixture.exec(
+        "pwuser",
+        &format!(
+            "umask 077 && mkdir -p .ssh && printf '%s\n' '{}' > .ssh/authorized_keys",
+            public_line(&installed)
+        ),
+    );
+    assert!(setup.status.success(), "{}", text(&setup.stderr));
+    let run = fixture.copy_id_from_home(&home, Some(&agent.socket), &[], "pwuser");
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("Source of key(s) to be installed: ssh-add -L\n"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("INFO: 1 key(s) remain to be installed"),
+        "{stderr}"
+    );
+    assert!(
+        stderr
+            .contains("key 2 from ssh-add -L: the key authenticates: it is installed and verified"),
+        "{stderr}"
+    );
+    assert!(text(&run.stdout).contains("Number of key(s) added: 1\n"));
+    assert_eq!(
+        fixture.authorized_keys("pwuser"),
+        format!("{}\n{}\n", public_line(&installed), public_line(&missing))
+    );
+    assert!(
+        !fixture
+            .authorized_keys("pwuser")
+            .contains(&public_line(&default_key))
     );
 }
