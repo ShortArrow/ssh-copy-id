@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod cli_args;
+pub mod default_key;
 pub mod installed_check;
 pub mod key_input;
 pub mod platform;

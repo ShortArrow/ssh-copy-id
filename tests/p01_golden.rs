@@ -367,6 +367,10 @@ enum Arguments {
     Install,
     /// `-i` with the `.pub` path, the fixture options, and pwuser.
     InstallNamingPublic,
+    /// The fixture options and pwuser, without `-i`.
+    DefaultKey,
+    /// `-i` without a file, the fixture options, and pwuser.
+    IdentityWithoutFile,
 }
 
 #[derive(Clone, Copy)]
@@ -400,6 +404,8 @@ struct Scenario {
     remote_setup: Option<&'static str>,
     /// Runs of the same tool against the same container before the recorded one.
     runs_before: usize,
+    /// Whether the local `~/.ssh` holds the scenario's key as `id_ed25519`.
+    default_key_file: bool,
 }
 
 const BASE: Scenario = Scenario {
@@ -410,9 +416,10 @@ const BASE: Scenario = Scenario {
     known_hosts: KnownHosts::Empty,
     remote_setup: None,
     runs_before: 0,
+    default_key_file: false,
 };
 
-const SCENARIOS: [Scenario; 11] = [
+const SCENARIOS: [Scenario; 15] = [
     Scenario {
         title: "-h (no destination)",
         arguments: Arguments::Help,
@@ -470,6 +477,28 @@ const SCENARIOS: [Scenario; 11] = [
         key_file: KeyFile::TwoKeys,
         ..BASE
     },
+    Scenario {
+        title: "no -i: the default key file",
+        arguments: Arguments::DefaultKey,
+        default_key_file: true,
+        ..BASE
+    },
+    Scenario {
+        title: "-i without a file: the default key file",
+        arguments: Arguments::IdentityWithoutFile,
+        default_key_file: true,
+        ..BASE
+    },
+    Scenario {
+        title: "no -i and no default key file",
+        arguments: Arguments::DefaultKey,
+        ..BASE
+    },
+    Scenario {
+        title: "-i without a file and no default key file",
+        arguments: Arguments::IdentityWithoutFile,
+        ..BASE
+    },
 ];
 
 /// Upstream's usage, which the CLI's matches only from stage 1.5.
@@ -481,14 +510,14 @@ const UPSTREAM_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-s|-x] [-i [identi
 \t-h|-?: print this help
 ";
 
-/// The stage 1 usage.
-const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?] -i identity_file [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+/// The CLI's usage.
+const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
 \t-i: the public key to install; '.pub' is added when absent
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
 \t-h|-?: print this help
-This release installs one explicitly selected key on a Unix-like host.
--f, -n, -s, -t, -x, and -i without a file are not available yet.
+This release installs keys on a Unix-like host.
+-f, -n, -s, -t, and -x are not available yet.
 ";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -531,7 +560,7 @@ struct Expected {
 const EXPECTED: [Expected; 16] = [
     Expected {
         tag: "D-06",
-        scenarios: &[5, 9, 10],
+        scenarios: &[5, 9, 10, 12, 13],
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::Remove(
@@ -541,7 +570,7 @@ const EXPECTED: [Expected; 16] = [
     },
     Expected {
         tag: "D-13",
-        scenarios: &[5, 6, 7, 8, 9, 10],
+        scenarios: &[5, 6, 7, 8, 9, 10, 12, 13],
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::RemoveLine(
@@ -812,6 +841,11 @@ impl Harness {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(home.join(".ssh"), fs::Permissions::from_mode(0o700)).unwrap();
         }
+        if scenario.default_key_file {
+            let default = home.join(".ssh").join("id_ed25519");
+            fs::copy(key, &default).unwrap();
+            fs::copy(key.with_extension("pub"), default.with_extension("pub")).unwrap();
+        }
         if let Some(script) = scenario.remote_setup {
             let setup = fixture.exec(USER, script);
             assert!(setup.status.success(), "{}", text(&setup.stderr));
@@ -887,16 +921,17 @@ impl Drop for Harness {
 }
 
 fn arguments(arguments: Arguments, fixture: &Fixture, key: &Path) -> Vec<String> {
-    let identity = match arguments {
+    let identity: Vec<String> = match arguments {
         Arguments::Help => return vec!["-h".into()],
         Arguments::Nothing => return vec![],
         Arguments::UnknownOption => return vec!["-z".into(), "host".into()],
-        Arguments::Install => display(key),
-        Arguments::InstallNamingPublic => display(&key.with_extension("pub")),
+        Arguments::Install => vec!["-i".into(), display(key)],
+        Arguments::InstallNamingPublic => vec!["-i".into(), display(&key.with_extension("pub"))],
+        Arguments::DefaultKey => vec![],
+        Arguments::IdentityWithoutFile => vec!["-i".into()],
     };
-    vec![
-        "-i".into(),
-        identity,
+    let mut words = identity;
+    words.extend([
         "-p".into(),
         fixture.port.clone(),
         "-F".into(),
@@ -908,7 +943,8 @@ fn arguments(arguments: Arguments, fixture: &Fixture, key: &Path) -> Vec<String>
         "-o".into(),
         "ConnectTimeout=5".into(),
         format!("{USER}@127.0.0.1"),
-    ]
+    ]);
+    words
 }
 
 /// pwuser's `authorized_keys` read as root, or `None` when it does not exist.

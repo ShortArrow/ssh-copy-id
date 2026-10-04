@@ -8,6 +8,16 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+### Added
+
+- Without `-i`, and with `-i` not followed by a file, the most recently
+  modified `~/.ssh/id*.pub` other than a `*-cert.pub` is installed, as
+  upstream selects it; its private key must exist. When there is none, the run
+  stops with upstream's `No identities found` or `no ID file found`. The login
+  hint names the key only when `-i` was given, as upstream's does.
+- A file-less `-i` followed only by a readable file containing `ssh` is
+  reported as a missing hostname with upstream's `-i --` suggestion.
+
 ### Changed
 
 - Messages follow the pinned upstream `ssh-copy-id` where the behavior is

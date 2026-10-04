@@ -72,6 +72,51 @@ impl Fixture {
         wait_with_deadline(child, COPY_ID_TIMEOUT)
     }
 
+    /// Runs the CLI as `copy_id` does, with `identity` in place of `-i <key>`,
+    /// `HOME` set to `home`, and `SSH_AUTH_SOCK` set to `agent` or removed, and
+    /// fails the test when a scratch directory remains in `home/.ssh`.
+    fn copy_id_from_home(
+        &self,
+        home: &Path,
+        agent: Option<&Path>,
+        identity: &[&str],
+        user: &str,
+    ) -> Output {
+        let mut args: Vec<String> = identity.iter().map(|s| s.to_string()).collect();
+        args.extend(self.base_ssh_args());
+        args.push(format!("{user}@127.0.0.1"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ssh-copy-id"));
+        command
+            .args(&args)
+            .env("HOME", home)
+            .env("SSH_ASKPASS", self.askpass(&self.password))
+            .env("SSH_ASKPASS_REQUIRE", "force")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        match agent {
+            Some(socket) => command.env("SSH_AUTH_SOCK", socket),
+            None => command.env_remove("SSH_AUTH_SOCK"),
+        };
+        let output = wait_with_deadline(command.spawn().unwrap(), COPY_ID_TIMEOUT);
+        let left: Vec<String> = fs::read_dir(home.join(".ssh"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("ssh-copy-id."))
+            .collect();
+        assert!(left.is_empty(), "scratch directories left: {left:?}");
+        output
+    }
+
+    /// Creates a local home directory in the work directory whose `.ssh` holds
+    /// the default key `id_ed25519`, and returns the home and that key.
+    fn home_with_default_key(&self) -> (PathBuf, PathBuf) {
+        let home = self.work.join("home");
+        fs::create_dir_all(home.join(".ssh")).unwrap();
+        let key = keygen(&home.join(".ssh"), "id_ed25519", "default@test");
+        (home, key)
+    }
+
     /// Starts a container whose `/home/pwuser/.ssh` is a 16 KiB tmpfs.
     fn start_with_small_ssh_directory() -> Fixture {
         let fixture = Fixture::start_with(&["--tmpfs", "/home/pwuser/.ssh:size=16k,mode=0700"]);
@@ -448,4 +493,52 @@ fn i19_d01_a_key_whose_command_exits_nonzero_is_found_installed() {
     assert_eq!(again.status.code(), Some(0), "{stderr}");
     assert!(stderr.contains("All keys were skipped"), "{stderr}");
     assert_eq!(fixture.authorized_keys("pwuser"), format!("{line}\n"));
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i20_without_identity_or_agent_the_default_key_file_is_installed() {
+    let fixture = Fixture::start();
+    let (home, key) = fixture.home_with_default_key();
+    let run = fixture.copy_id_from_home(&home, None, &[], "pwuser");
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "Source of key(s) to be installed: \"{}.pub\"",
+            key.display()
+        )),
+        "{stderr}"
+    );
+    assert!(
+        text(&run.stdout).contains("Now try logging into the machine, with: \"ssh -p "),
+        "{}",
+        text(&run.stdout)
+    );
+    assert_eq!(
+        fixture.authorized_keys("pwuser"),
+        format!("{}\n", public_line(&key))
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i21_identity_without_a_file_installs_the_default_key_file() {
+    let fixture = Fixture::start();
+    let (home, key) = fixture.home_with_default_key();
+    let run = fixture.copy_id_from_home(&home, None, &["-i"], "pwuser");
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(
+        text(&run.stdout).contains(&format!(
+            "Now try logging into the machine, with: \"ssh -i {} -p ",
+            key.display()
+        )),
+        "{}",
+        text(&run.stdout)
+    );
+    assert_eq!(
+        fixture.authorized_keys("pwuser"),
+        format!("{}\n", public_line(&key))
+    );
 }

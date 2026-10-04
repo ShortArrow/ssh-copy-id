@@ -1,6 +1,7 @@
 //! One run of the CLI: the stage 1 flow from the selected key to the reported outcome.
 
-use crate::cli_args::{Invocation, SshOption};
+use crate::cli_args::{Invocation, KeySelection, SshOption};
+use crate::default_key::{DirEntryTime, newest_public_key};
 use crate::installed_check::{
     CheckResult, classify, is_certificate, is_tested_client, other_candidates_matching,
 };
@@ -49,6 +50,8 @@ pub struct Environment<'a> {
     pub readable_file: &'a dyn Fn(&Path) -> io::Result<()>,
     /// Whether two paths name the same file.
     pub same_file: &'a dyn Fn(&Path, &Path) -> bool,
+    /// The name and modification time of every entry in a directory, as `ls -d` sees them.
+    pub modification_times: &'a dyn Fn(&Path) -> io::Result<Vec<DirEntryTime>>,
     /// Creates a new directory, readable only by its owner, inside the given
     /// existing directory and returns its path; the probes' `ssh -E` logs go there.
     pub create_scratch_dir: &'a dyn Fn(&Path) -> io::Result<PathBuf>,
@@ -132,11 +135,11 @@ fn install(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), Stop> {
-    let public_path = expand_home(&env.home, &invocation.public_key);
-    let private_path = expand_home(&env.home, &invocation.private_key);
-    let public_key = public_path.display().to_string();
-    let identity = private_path.display().to_string();
-    let input = (env.read_file)(&public_path).map_err(|e| unopenable(&public_key, &e))?;
+    let key_file = select_key_file(invocation, env, err)?;
+    let public_key = key_file.public.display().to_string();
+    let identity = key_file.private.display().to_string();
+    let hint_identity = key_file.named_by_option.then_some(identity.as_str());
+    let input = (env.read_file)(&key_file.public).map_err(|e| unopenable(&public_key, &e))?;
     let prepared = prepare(&input).map_err(|e| input_error(&public_key, &e))?;
     if prepared.key_count > 1 {
         return stop(format!(
@@ -145,7 +148,7 @@ fn install(
             prepared.key_count
         ));
     }
-    (env.readable_file)(&private_path).map_err(|e| unopenable(&identity, &e))?;
+    (env.readable_file)(&key_file.private).map_err(|e| unopenable(&identity, &e))?;
     info(
         err,
         &format!("Source of key(s) to be installed: \"{public_key}\""),
@@ -308,7 +311,7 @@ fn install(
         }
     }
 
-    let login = login_command(invocation, &identity);
+    let login = login_command(invocation, hint_identity);
     if (env.interrupted)() {
         summary(out, added, &login);
         return stop("interrupted".to_string());
@@ -383,6 +386,64 @@ fn batch_mode(env: &Environment) -> bool {
     !env.has_console && !env.askpass_set
 }
 
+/// The key file a run installs from.
+struct KeyFile {
+    public: PathBuf,
+    private: PathBuf,
+    /// Whether `-i` was given, so that the login hint names the private key,
+    /// as upstream's `${SEEN_OPT_I:+-i …}` does.
+    named_by_option: bool,
+}
+
+/// The key file the invocation selects, or the stop upstream reports when there
+/// is none: `no ID file found` for `-i` without a file, and an empty source
+/// followed by `No identities found` without `-i`, where a default key file
+/// that cannot be read counts as none, as upstream's `[ -r … ]`.
+fn select_key_file(
+    invocation: &Invocation,
+    env: &Environment,
+    err: &mut dyn Write,
+) -> Result<KeyFile, Stop> {
+    match &invocation.key {
+        KeySelection::File {
+            public_key,
+            private_key,
+        } => Ok(KeyFile {
+            public: expand_home(&env.home, public_key),
+            private: expand_home(&env.home, private_key),
+            named_by_option: true,
+        }),
+        KeySelection::DefaultFile => match default_key_file(env) {
+            Some(public) => Ok(key_file_named(public, true)),
+            None => stop("no ID file found"),
+        },
+        KeySelection::Unspecified => {
+            match default_key_file(env).filter(|public| (env.readable_file)(public).is_ok()) {
+                Some(public) => Ok(key_file_named(public, false)),
+                None => {
+                    info(err, "Source of key(s) to be installed: ");
+                    stop("No identities found")
+                }
+            }
+        }
+    }
+}
+
+/// Upstream's `DEFAULT_PUB_ID_FILE` in `<home>/.ssh`; none when that directory cannot be listed.
+fn default_key_file(env: &Environment) -> Option<PathBuf> {
+    let dir = env.home.join(".ssh");
+    let entries = (env.modification_times)(&dir).ok()?;
+    newest_public_key(&entries).map(|name| dir.join(name))
+}
+
+fn key_file_named(public: PathBuf, named_by_option: bool) -> KeyFile {
+    KeyFile {
+        private: public.with_extension(""),
+        public,
+        named_by_option,
+    }
+}
+
 fn expand_home(home: &Path, path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     match text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\")) {
@@ -397,10 +458,14 @@ fn has_report_line(stdout: &[u8]) -> bool {
         .any(|line| line.starts_with("ssh-copy-id:"))
 }
 
-/// The suggested login command, as upstream's: `-i` and `-p` with their values
+/// The suggested login command, as upstream's: `-i` when `-i` was given and `-p`, with their values
 /// unquoted, then each `-o` and `-F` and the destination single-quoted.
-fn login_command(invocation: &Invocation, identity: &str) -> String {
-    let mut words = vec!["ssh".to_string(), "-i".to_string(), identity.to_string()];
+fn login_command(invocation: &Invocation, identity: Option<&str>) -> String {
+    let mut words = vec!["ssh".to_string()];
+    if let Some(identity) = identity {
+        words.push("-i".to_string());
+        words.push(identity.to_string());
+    }
     if let Some(port) = &invocation.port {
         words.push("-p".to_string());
         words.push(port.clone());
@@ -525,7 +590,9 @@ mod tests {
     use crate::remote_script::install_command;
     use std::cell::{Cell, RefCell};
     use std::collections::{HashMap, HashSet};
+    use std::ffi::OsString;
     use std::rc::Rc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== me@here";
     const DENIED: &str = "u@h: Permission denied (publickey).\r\n";
@@ -551,6 +618,7 @@ mod tests {
         fails_to_start: Option<&'static str>,
         interrupt_during: Option<usize>,
         interrupted: Rc<Cell<bool>>,
+        listing: Vec<(&'static str, u64)>,
     }
 
     impl FakeSsh {
@@ -697,8 +765,10 @@ mod tests {
     fn invocation() -> Invocation {
         Invocation {
             destination: "u@h".into(),
-            public_key: PathBuf::from("C:/k/id.pub"),
-            private_key: PathBuf::from("C:/k/id"),
+            key: KeySelection::File {
+                public_key: PathBuf::from("C:/k/id.pub"),
+                private_key: PathBuf::from("C:/k/id"),
+            },
             port: None,
             ssh_options: Vec::new(),
         }
@@ -745,6 +815,12 @@ mod tests {
         let interrupted = Rc::clone(&ssh.interrupted);
         let scratch_creation_fails = ssh.scratch_creation_fails;
         let read_file = |p: &Path| {
+            if unreadable.contains(p) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Permission denied",
+                ));
+            }
             files
                 .get(p)
                 .cloned()
@@ -780,6 +856,23 @@ mod tests {
             removed.borrow_mut().push(p.to_path_buf());
         };
         let is_interrupted = || interrupted.get();
+        let listing: Vec<(OsString, SystemTime)> = ssh
+            .listing
+            .iter()
+            .map(|(name, secs)| {
+                (
+                    OsString::from(name),
+                    UNIX_EPOCH + Duration::from_secs(*secs),
+                )
+            })
+            .collect();
+        let modification_times = |dir: &Path| {
+            if dir == Path::new("C:/home").join(".ssh") {
+                Ok(listing.clone())
+            } else {
+                Err(io::Error::new(io::ErrorKind::NotFound, "not found"))
+            }
+        };
         let env = Environment {
             has_console,
             askpass_set,
@@ -791,6 +884,7 @@ mod tests {
             create_scratch_dir: &create_scratch_dir,
             remove_dir: &remove_dir,
             interrupted: &is_interrupted,
+            modification_times: &modification_times,
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let status = run(invocation, &env, &mut ssh, &mut out, &mut err);
@@ -1140,8 +1234,10 @@ mod tests {
     #[test]
     fn a20_tilde_in_identity_is_expanded_with_home() {
         let mut invocation = invocation();
-        invocation.public_key = PathBuf::from("~/k/id.pub");
-        invocation.private_key = PathBuf::from("~/k/id");
+        invocation.key = KeySelection::File {
+            public_key: PathBuf::from("~/k/id.pub"),
+            private_key: PathBuf::from("~/k/id"),
+        };
         let home = PathBuf::from("C:/home");
         let files = HashMap::from([
             (home.join("k/id.pub"), format!("{KEY}\n").into_bytes()),
@@ -1720,5 +1816,218 @@ mod tests {
             "{:?}",
             run.err
         );
+    }
+
+    fn home_ssh(name: &str) -> PathBuf {
+        Path::new("C:/home").join(".ssh").join(name)
+    }
+
+    fn selecting(key: KeySelection) -> Invocation {
+        Invocation {
+            key,
+            ..invocation()
+        }
+    }
+
+    /// `C:/home/.ssh` with `id_ed25519.pub` the newest key file other than a
+    /// certificate, its private key, and an older `id_rsa.pub`.
+    fn default_key_files() -> HashMap<PathBuf, Vec<u8>> {
+        HashMap::from([
+            (home_ssh("id_ed25519.pub"), format!("{KEY}\n").into_bytes()),
+            (home_ssh("id_ed25519"), b"private".to_vec()),
+            (home_ssh("id_rsa.pub"), b"ssh-rsa AAAA old@here\n".to_vec()),
+            (home_ssh("id_rsa"), b"private".to_vec()),
+        ])
+    }
+
+    fn with_default_key_listing(mut ssh: FakeSsh) -> FakeSsh {
+        ssh.listing = vec![
+            ("id_rsa.pub", 10),
+            ("id_ed25519.pub", 20),
+            ("id_ed25519-cert.pub", 30),
+            ("config", 40),
+        ];
+        ssh
+    }
+
+    fn installs_and_verifies() -> FakeSsh {
+        FakeSsh::new()
+            .probe(255, DENIED)
+            .installs(INSTALLED)
+            .probe(0, ACCEPTED)
+    }
+
+    fn source_line(path: &Path) -> String {
+        format!(
+            "ssh-copy-id: INFO: Source of key(s) to be installed: \"{}\"\n",
+            path.display()
+        )
+    }
+
+    #[test]
+    fn b01_without_identity_the_newest_default_key_file_is_installed() {
+        let run = execute_with(
+            &selecting(KeySelection::Unspecified),
+            default_key_files(),
+            true,
+            false,
+            with_default_key_listing(installs_and_verifies()),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(
+            run.err
+                .starts_with(&source_line(&home_ssh("id_ed25519.pub"))),
+            "{}",
+            run.err
+        );
+        let identity = home_ssh("id_ed25519").display().to_string();
+        let (probe, _, _) = run.ssh.call("probe");
+        assert!(
+            probe.windows(2).any(|w| w[0] == "-i" && w[1] == identity),
+            "{probe:?}"
+        );
+        let (config, _, _) = run.ssh.call("config");
+        assert!(
+            config.windows(2).any(|w| w[0] == "-i" && w[1] == identity),
+            "{config:?}"
+        );
+        let (_, stdin, _) = run.ssh.call("install");
+        assert_eq!(stdin, &format!("{KEY}\n").into_bytes());
+    }
+
+    #[test]
+    fn b02_without_identity_the_login_hint_names_no_key_as_upstream() {
+        let run = execute_with(
+            &selecting(KeySelection::Unspecified),
+            default_key_files(),
+            true,
+            false,
+            with_default_key_listing(installs_and_verifies()),
+        );
+        assert!(
+            run.out
+                .contains("Now try logging into the machine, with: \"ssh 'u@h'\"\n"),
+            "{}",
+            run.out
+        );
+    }
+
+    #[test]
+    fn b03_identity_without_a_file_installs_the_default_key_file() {
+        let run = execute_with(
+            &selecting(KeySelection::DefaultFile),
+            default_key_files(),
+            true,
+            false,
+            with_default_key_listing(installs_and_verifies()),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(
+            run.err
+                .starts_with(&source_line(&home_ssh("id_ed25519.pub"))),
+            "{}",
+            run.err
+        );
+        let hint = format!(
+            "Now try logging into the machine, with: \"ssh -i {} 'u@h'\"\n",
+            home_ssh("id_ed25519").display()
+        );
+        assert!(run.out.contains(&hint), "{}", run.out);
+    }
+
+    #[test]
+    fn b04_identity_without_a_file_and_no_default_key_file_stops_as_upstream() {
+        let mut ssh = FakeSsh::new();
+        ssh.listing = vec![("id_ed25519-cert.pub", 30), ("config", 40)];
+        let run = execute_with(
+            &selecting(KeySelection::DefaultFile),
+            default_key_files(),
+            true,
+            false,
+            ssh,
+        );
+        assert_eq!(run.status, 1);
+        assert_eq!(run.err, "ssh-copy-id: ERROR: no ID file found\n");
+        assert!(run.ssh.calls.is_empty());
+    }
+
+    #[test]
+    fn b05_no_identity_and_no_default_key_file_finds_no_identities_as_upstream() {
+        let run = execute_with(
+            &selecting(KeySelection::Unspecified),
+            HashMap::new(),
+            true,
+            false,
+            FakeSsh::new(),
+        );
+        assert_eq!(run.status, 1);
+        assert_eq!(
+            run.err,
+            "ssh-copy-id: INFO: Source of key(s) to be installed: \n\
+             ssh-copy-id: ERROR: No identities found\n"
+        );
+        assert!(run.ssh.calls.is_empty());
+        assert!(run.ssh.scratch_parents.borrow().is_empty());
+    }
+
+    #[test]
+    fn b06_without_identity_an_unreadable_default_key_file_counts_as_none() {
+        let run = execute_in(
+            &selecting(KeySelection::Unspecified),
+            default_key_files(),
+            HashSet::from([home_ssh("id_ed25519.pub")]),
+            true,
+            false,
+            with_default_key_listing(FakeSsh::new()),
+        );
+        assert_eq!(run.status, 1);
+        assert!(
+            run.err
+                .ends_with("ssh-copy-id: ERROR: No identities found\n"),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn b07_identity_without_a_file_reports_an_unreadable_default_key_file() {
+        let run = execute_in(
+            &selecting(KeySelection::DefaultFile),
+            default_key_files(),
+            HashSet::from([home_ssh("id_ed25519.pub")]),
+            true,
+            false,
+            with_default_key_listing(FakeSsh::new()),
+        );
+        assert_eq!(run.status, 1);
+        assert_eq!(
+            run.err,
+            format!(
+                "\nssh-copy-id: ERROR: failed to open ID file '{}': Permission denied\n",
+                home_ssh("id_ed25519.pub").display()
+            )
+        );
+    }
+
+    #[test]
+    fn b08_the_default_key_file_needs_its_private_key() {
+        let mut files = default_key_files();
+        files.remove(&home_ssh("id_ed25519"));
+        let run = execute_with(
+            &selecting(KeySelection::Unspecified),
+            files,
+            true,
+            false,
+            with_default_key_listing(FakeSsh::new()),
+        );
+        assert_eq!(run.status, 1);
+        assert_eq!(
+            run.err,
+            format!(
+                "\nssh-copy-id: ERROR: failed to open ID file '{}': No such file or directory\n",
+                home_ssh("id_ed25519").display()
+            )
+        );
+        assert!(run.ssh.calls.is_empty());
     }
 }

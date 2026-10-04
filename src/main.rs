@@ -8,13 +8,13 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage: ssh-copy-id [-h|-?] -i identity_file [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+const USAGE: &str = "Usage: ssh-copy-id [-h|-?] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
 \t-i: the public key to install; '.pub' is added when absent
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
 \t-h|-?: print this help
-This release installs one explicitly selected key on a Unix-like host.
--f, -n, -s, -t, -x, and -i without a file are not available yet.";
+This release installs keys on a Unix-like host.
+-f, -n, -s, -t, and -x are not available yet.";
 
 fn main() -> ExitCode {
     let mut args = Vec::new();
@@ -27,16 +27,17 @@ fn main() -> ExitCode {
             }
         }
     }
-    let invocation = match cli_args::parse(&args) {
-        Ok(invocation) => invocation,
-        Err(error) => {
-            eprint!("{}", preamble(&error, &|path| std::fs::read(path)));
-            eprintln!("{USAGE}");
-            return ExitCode::from(1);
-        }
-    };
-    platform::outlive_interrupts();
     let read_file = |path: &std::path::Path| std::fs::read(path);
+    let invocation =
+        match cli_args::parse(&args, &|argument| names_a_key_file(argument, &read_file)) {
+            Ok(invocation) => invocation,
+            Err(error) => {
+                eprint!("{}", preamble(&error));
+                eprintln!("{USAGE}");
+                return ExitCode::from(1);
+            }
+        };
+    platform::outlive_interrupts();
     let exists = |path: &std::path::Path| path.exists();
     let same_file = |a: &std::path::Path, b: &std::path::Path| match (
         std::fs::canonicalize(a),
@@ -53,6 +54,7 @@ fn main() -> ExitCode {
         exists: &exists,
         readable_file: &platform::open_readable_file,
         same_file: &same_file,
+        modification_times: &platform::modification_times,
         create_scratch_dir: &platform::create_scratch_dir,
         remove_dir: &platform::remove_scratch_dir,
         interrupted: &platform::interrupted,
@@ -72,9 +74,7 @@ fn main() -> ExitCode {
 /// rejects the same arguments: nothing for `-h`, `-?` and a missing destination,
 /// bash's `getopts` line for an unknown letter or a missing value, and
 /// upstream's blank lines around a repeated `-i` and a missing hostname.
-///
-/// `read_file` reads the argument that followed a file-less `-i`, to tell upstream's missing hostname case apart.
-fn preamble(error: &ArgsError, read_file: &dyn Fn(&Path) -> io::Result<Vec<u8>>) -> String {
+fn preamble(error: &ArgsError) -> String {
     match error {
         ArgsError::Help | ArgsError::NoDestination => String::new(),
         ArgsError::IllegalOption(letter) => format!("ssh-copy-id: illegal option -- {letter}\n"),
@@ -84,16 +84,9 @@ fn preamble(error: &ArgsError, read_file: &dyn Fn(&Path) -> io::Result<Vec<u8>>)
         ArgsError::RepeatedIdentity => {
             between_blank_lines("-i option must not be specified more than once")
         }
-        ArgsError::IdentityBeforeDestinationOnly(argument)
-            if names_a_key_file(argument, read_file) =>
-        {
-            between_blank_lines("Missing hostname")
-        }
-        ArgsError::MissingIdentity
-        | ArgsError::IdentityWithoutFile
-        | ArgsError::IdentityBeforeDestinationOnly(_) => {
-            before_blank_line("-i with a key file is required in this release")
-        }
+        ArgsError::MissingHostname(argument) => between_blank_lines(&format!(
+            "Missing hostname. Use \"-i -- {argument}\" if you really mean to use this as the hostname"
+        )),
         ArgsError::TooManyArguments(extra) => {
             before_blank_line(&format!("Too many arguments: {}", extra.join(" ")))
         }
@@ -125,70 +118,55 @@ fn names_a_key_file(argument: &str, read_file: &dyn Fn(&Path) -> io::Result<Vec<
 mod tests {
     use super::*;
 
-    const STAGE_1_TEXT: &str =
-        "ssh-copy-id: ERROR: -i with a key file is required in this release\n\n";
-    const MISSING_HOSTNAME: &str = "\nssh-copy-id: ERROR: Missing hostname\n\n";
-
-    fn never_read(_: &Path) -> io::Result<Vec<u8>> {
-        unreachable!()
-    }
-
-    fn preamble_last(argument: &str, read: &dyn Fn(&Path) -> io::Result<Vec<u8>>) -> String {
-        preamble(
-            &ArgsError::IdentityBeforeDestinationOnly(argument.to_string()),
-            read,
-        )
-    }
-
     #[test]
-    fn m01_readable_file_containing_ssh_is_a_missing_hostname() {
+    fn m01_readable_file_containing_ssh_names_a_key_file() {
         let read = |path: &Path| {
             assert_eq!(path, Path::new("k.pub"));
             Ok(b"ssh-ed25519 AAAA user@laptop\n".to_vec())
         };
-        assert_eq!(preamble_last("k.pub", &read), MISSING_HOSTNAME);
+        assert!(names_a_key_file("k.pub", &read));
     }
 
     #[test]
     fn m02_ssh_is_matched_without_case() {
         let read = |_: &Path| Ok(b"key from SSH agent".to_vec());
-        assert_eq!(preamble_last("k", &read), MISSING_HOSTNAME);
+        assert!(names_a_key_file("k", &read));
     }
 
     #[test]
-    fn m03_file_without_ssh_is_the_stage_1_error() {
+    fn m03_file_without_ssh_does_not_name_a_key_file() {
         let read = |_: &Path| Ok(b"not a key".to_vec());
-        assert_eq!(preamble_last("host", &read), STAGE_1_TEXT);
+        assert!(!names_a_key_file("host", &read));
     }
 
     #[test]
-    fn m04_unreadable_argument_is_the_stage_1_error() {
+    fn m04_unreadable_argument_does_not_name_a_key_file() {
         let read = |_: &Path| Err(io::Error::from(io::ErrorKind::NotFound));
-        assert_eq!(preamble_last("host", &read), STAGE_1_TEXT);
+        assert!(!names_a_key_file("host", &read));
     }
 
     #[test]
     fn m05_unknown_long_option_is_named() {
         assert_eq!(
-            preamble(&ArgsError::Unknown("--target-os".into()), &never_read),
+            preamble(&ArgsError::Unknown("--target-os".into())),
             "ssh-copy-id: ERROR: unknown option --target-os\n\n"
         );
     }
 
     #[test]
     fn m06_no_destination_prints_only_the_usage() {
-        assert_eq!(preamble(&ArgsError::NoDestination, &never_read), "");
+        assert_eq!(preamble(&ArgsError::NoDestination), "");
     }
 
     #[test]
     fn m07_help_prints_only_the_usage() {
-        assert_eq!(preamble(&ArgsError::Help, &never_read), "");
+        assert_eq!(preamble(&ArgsError::Help), "");
     }
 
     #[test]
     fn m08_an_unknown_letter_is_reported_as_bash_getopts_does() {
         assert_eq!(
-            preamble(&ArgsError::IllegalOption('z'), &never_read),
+            preamble(&ArgsError::IllegalOption('z')),
             "ssh-copy-id: illegal option -- z\n"
         );
     }
@@ -196,7 +174,7 @@ mod tests {
     #[test]
     fn m09_a_missing_value_is_reported_as_bash_getopts_does() {
         assert_eq!(
-            preamble(&ArgsError::MissingValue('p'), &never_read),
+            preamble(&ArgsError::MissingValue('p')),
             "ssh-copy-id: option requires an argument -- p\n"
         );
     }
@@ -204,7 +182,7 @@ mod tests {
     #[test]
     fn m10_a_repeated_identity_is_framed_by_blank_lines_as_upstream() {
         assert_eq!(
-            preamble(&ArgsError::RepeatedIdentity, &never_read),
+            preamble(&ArgsError::RepeatedIdentity),
             "\nssh-copy-id: ERROR: -i option must not be specified more than once\n\n"
         );
     }
@@ -212,8 +190,23 @@ mod tests {
     #[test]
     fn m11_an_unsupported_option_keeps_the_stage_1_message() {
         assert_eq!(
-            preamble(&ArgsError::Unsupported('f'), &never_read),
+            preamble(&ArgsError::Unsupported('f')),
             "ssh-copy-id: ERROR: option -f is not available in this release\n\n"
         );
+    }
+
+    #[test]
+    fn m12_a_missing_hostname_suggests_the_double_dash_as_upstream() {
+        assert_eq!(
+            preamble(&ArgsError::MissingHostname("k.pub".into())),
+            "\nssh-copy-id: ERROR: Missing hostname. Use \"-i -- k.pub\" if you really mean \
+             to use this as the hostname\n\n"
+        );
+    }
+
+    #[test]
+    fn m13_the_usage_offers_identity_without_a_file() {
+        assert!(USAGE.contains("[-i [identity_file]]"), "{USAGE}");
+        assert!(!USAGE.contains("-i without a file"), "{USAGE}");
     }
 }
