@@ -375,6 +375,8 @@ enum Arguments {
     ForceInstall,
     /// `-f`, then `-i` with the `.pub` path, the fixture options, and pwuser.
     ForceInstallNamingPublic,
+    /// `-i` with the `.pub` path, then `-f`, the fixture options, and pwuser.
+    InstallNamingPublicThenForce,
 }
 
 #[derive(Clone, Copy)]
@@ -427,7 +429,7 @@ const BASE: Scenario = Scenario {
     agent: false,
 };
 
-const SCENARIOS: [Scenario; 19] = [
+const SCENARIOS: [Scenario; 21] = [
     Scenario {
         title: "-h (no destination)",
         arguments: Arguments::Help,
@@ -527,6 +529,17 @@ const SCENARIOS: [Scenario; 19] = [
     Scenario {
         title: "-f -i <pub> whose private key file is missing",
         arguments: Arguments::ForceInstallNamingPublic,
+        key_file: KeyFile::PrivateMissing,
+        ..BASE
+    },
+    Scenario {
+        title: "-i <pub> -f: -f after -i, with the private key file",
+        arguments: Arguments::InstallNamingPublicThenForce,
+        ..BASE
+    },
+    Scenario {
+        title: "-i <pub> -f: -f after -i, whose private key file is missing",
+        arguments: Arguments::InstallNamingPublicThenForce,
         key_file: KeyFile::PrivateMissing,
         ..BASE
     },
@@ -718,7 +731,7 @@ const EXPECTED: [Expected; 15] = [
     },
     Expected {
         tag: "SHELL",
-        scenarios: &[4],
+        scenarios: &[4, 21],
         field: Field::Stderr,
         tool: Tool::Upstream,
         edit: Edit::Replace("': No such file\n", "': No such file or directory\n"),
@@ -976,6 +989,11 @@ fn arguments(arguments: Arguments, fixture: &Fixture, key: &Path) -> Vec<String>
             "-f".into(),
             "-i".into(),
             display(&key.with_extension("pub")),
+        ],
+        Arguments::InstallNamingPublicThenForce => vec![
+            "-i".into(),
+            display(&key.with_extension("pub")),
+            "-f".into(),
         ],
     };
     let mut words = identity;

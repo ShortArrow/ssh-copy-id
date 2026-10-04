@@ -23,8 +23,9 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 - A file-less `-i` followed only by a readable file containing `ssh` is
   reported as a missing hostname with upstream's `-i --` suggestion.
 - `-f` installs every selected key without the installed-key check or the
-  verification, so a key already installed is appended again, and does not
-  need the private key file. Private key input, CRLF line endings, a leading
+  verification, so a key already installed is appended again. As upstream's,
+  `-f` before `-i`, or without `-i`, does not need the private key file, while
+  `-f` after `-i` still does and the login hint names it. Private key input, CRLF line endings, a leading
   byte order mark, malformed lines and a key file with several keys are still
   handled as without `-f` (D-04, D-05, D-07, D-10, D-21). As upstream's, the
   login hint after `-f -i` names `-i` without the private key.

@@ -592,12 +592,15 @@ fn i22_d20_agent_keys_are_checked_alone_and_only_the_missing_one_is_appended() {
 
 #[test]
 #[ignore = "needs the L02 fixture image"]
-fn i23_requirement_5_force_installs_from_the_public_key_alone() {
+fn i23_requirement_5_force_before_identity_installs_from_the_public_key_alone() {
     let fixture = Fixture::start();
     let key = keygen(&fixture.work, "new", "new@test");
     let held = key.with_extension("held");
     fs::rename(&key, &held).unwrap();
-    let run = fixture.copy_id(&key.with_extension("pub"), "pwuser", &["-f"]);
+    let home = fixture.work.join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    let public = key.with_extension("pub").display().to_string();
+    let run = fixture.copy_id_from_home(&home, None, &["-f", "-i", &public], "pwuser");
     let stderr = text(&run.stderr);
     assert_eq!(run.status.code(), Some(0), "{stderr}");
     assert!(!stderr.contains("attempting to log in"), "{stderr}");
@@ -612,7 +615,7 @@ fn i23_requirement_5_force_installs_from_the_public_key_alone() {
 
 #[test]
 #[ignore = "needs the L02 fixture image"]
-fn i24_requirement_5_force_appends_an_installed_key_again() {
+fn i24_requirement_5_force_after_identity_appends_an_installed_key_again() {
     let fixture = Fixture::start();
     let key = keygen(&fixture.work, "new", "new@test");
     assert_eq!(fixture.copy_id(&key, "pwuser", &[]).status.code(), Some(0));

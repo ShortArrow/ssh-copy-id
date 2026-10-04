@@ -39,9 +39,31 @@ pub struct Invocation {
     pub port: Option<String>,
     /// `-o` and `-F` options in their original order.
     pub ssh_options: Vec<SshOption>,
-    /// `-f`, wherever it appears among the options: skip the installed-key check
-    /// and the verification, and do not require the private key file.
-    pub force: bool,
+    /// `-f` and where it stands relative to `-i`.
+    pub force: Force,
+}
+
+/// Whether `-f` was given and whether it preceded the key selection. Upstream
+/// selects the key file of `-i` when `getopts` reaches `-i`, requiring its
+/// private key unless `-f` has been seen; without `-i` it selects after all
+/// options. Either way, `-f` skips the installed-key check and the verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Force {
+    /// No `-f`.
+    Off,
+    /// `-f` before `-i`, or without `-i`: the private key file is not required,
+    /// and the login hint names `-i` without it, as upstream's unset `PRIV_ID_FILE`.
+    BeforeKeySelection,
+    /// `-f` only after `-i`: the private key file is required and the login
+    /// hint names it, as without `-f`.
+    AfterIdentity,
+}
+
+impl Force {
+    /// Whether `-f` was given.
+    pub fn is_on(self) -> bool {
+        self != Force::Off
+    }
 }
 
 /// Why the arguments do not form an invocation. Every variant exits 1, as upstream's usage does.
@@ -83,7 +105,7 @@ pub fn parse(
     let mut key = None;
     let mut port = None;
     let mut ssh_options = Vec::new();
-    let mut force = false;
+    let mut force = Force::Off;
     let mut index = 0;
     while let Some(arg) = args.get(index) {
         index += 1;
@@ -130,7 +152,9 @@ pub fn parse(
                     })
                 }
                 'h' | '?' => return Err(ArgsError::Help),
-                'f' => force = true,
+                'f' if force == Force::Off && key.is_some() => force = Force::AfterIdentity,
+                'f' if force == Force::Off => force = Force::BeforeKeySelection,
+                'f' => {}
                 'n' | 's' | 't' | 'x' => return Err(ArgsError::Unsupported(flag)),
                 _ => return Err(ArgsError::IllegalOption(flag)),
             }
@@ -189,7 +213,7 @@ mod tests {
             key,
             port: None,
             ssh_options: Vec::new(),
-            force: false,
+            force: Force::Off,
         }
     }
 
@@ -442,19 +466,39 @@ mod tests {
 
     #[test]
     fn p26_force_is_off_unless_given() {
-        assert!(!parse_plain(&args(&["-i", "k", "h"])).unwrap().force);
+        assert_eq!(
+            parse_plain(&args(&["-i", "k", "h"])).unwrap().force,
+            Force::Off
+        );
     }
 
     #[test]
-    fn p27_force_is_on_wherever_it_is_given() {
+    fn p27_force_before_identity_or_without_it_precedes_the_key_selection() {
         for given in [
             args(&["-f", "-i", "k", "h"]),
-            args(&["-i", "k", "-f", "h"]),
             args(&["-fi", "k", "h"]),
+            args(&["-f", "h"]),
+            args(&["-f", "-i", "h"]),
+            args(&["-f", "-i", "k", "-f", "h"]),
         ] {
             let parsed = parse_plain(&given).unwrap();
-            assert!(parsed.force, "{given:?}");
-            assert_eq!(parsed.key, invocation("h", "k").key, "{given:?}");
+            assert_eq!(parsed.force, Force::BeforeKeySelection, "{given:?}");
         }
+    }
+
+    #[test]
+    fn p28_force_only_after_identity_follows_the_key_selection() {
+        for given in [
+            args(&["-i", "k", "-f", "h"]),
+            args(&["-i", "-f", "h"]),
+            args(&["-i", "k", "-f", "-f", "h"]),
+        ] {
+            let parsed = parse_plain(&given).unwrap();
+            assert_eq!(parsed.force, Force::AfterIdentity, "{given:?}");
+        }
+        assert_eq!(
+            parse_plain(&args(&["-i", "k", "-f", "h"])).unwrap().key,
+            invocation("h", "k").key
+        );
     }
 }

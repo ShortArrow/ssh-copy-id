@@ -1,6 +1,6 @@
 //! One run of the CLI: from the selected keys to the reported outcome.
 
-use crate::cli_args::{Invocation, KeySelection, SshOption};
+use crate::cli_args::{Force, Invocation, KeySelection, SshOption};
 use crate::default_key::{DirEntryTime, newest_public_key};
 use crate::installed_check::{
     CheckResult, classify, is_certificate, is_tested_client, other_candidates_matching,
@@ -177,13 +177,13 @@ enum HintIdentity<'a> {
 
 impl Selection {
     /// What the login hint says about `-i`: the private key when `-i` selected
-    /// it, and `-i` alone when `-f` was also given.
-    fn hint_identity(&self, force: bool) -> HintIdentity<'_> {
+    /// it, and `-i` alone when `-f` preceded that selection.
+    fn hint_identity(&self, force: Force) -> HintIdentity<'_> {
         match self {
             Selection::File {
                 named_by_option: true,
                 ..
-            } if force => HintIdentity::Bare,
+            } if force == Force::BeforeKeySelection => HintIdentity::Bare,
             Selection::File {
                 identity,
                 named_by_option: true,
@@ -252,7 +252,7 @@ fn install(
         remove: env.remove_dir,
     };
     let common = common_args(invocation, env);
-    if invocation.force {
+    if invocation.force.is_on() {
         announce_batch_mode(env, err);
         return install_unchecked(invocation, env, ssh, out, &selection, &common);
     }
@@ -441,7 +441,7 @@ fn write_keys(
 /// Selects the keys and prints upstream's Source line: without `-i`, the keys
 /// `ssh-add -L` lists, whatever `SSH_AUTH_SOCK` holds (D-20); otherwise, and
 /// when the agent lists none, the selected key file after its checks, of
-/// which `-f` skips only the private key's.
+/// which `-f` before the key selection skips only the private key's.
 fn select_keys(
     invocation: &Invocation,
     env: &Environment,
@@ -469,7 +469,7 @@ fn select_keys(
             prepared.key_count
         ));
     }
-    if !invocation.force {
+    if invocation.force != Force::BeforeKeySelection {
         (env.readable_file)(&key_file.private)
             .map_err(|e| unopenable_private_key(&identity, &public_key, &e))?;
     }
@@ -1056,7 +1056,7 @@ mod tests {
             },
             port: None,
             ssh_options: Vec::new(),
-            force: false,
+            force: Force::Off,
         }
     }
 
@@ -2650,9 +2650,67 @@ mod tests {
 
     fn forced(invocation: Invocation) -> Invocation {
         Invocation {
-            force: true,
+            force: Force::BeforeKeySelection,
             ..invocation
         }
+    }
+
+    fn forced_after_identity(invocation: Invocation) -> Invocation {
+        Invocation {
+            force: Force::AfterIdentity,
+            ..invocation
+        }
+    }
+
+    #[test]
+    fn e01_force_after_identity_still_needs_the_private_key_as_upstream() {
+        let mut files = files();
+        files.remove(&PathBuf::from("C:/k/id"));
+        let run = execute_with(
+            &forced_after_identity(invocation()),
+            files,
+            true,
+            false,
+            FakeSsh::new(),
+        );
+        assert_eq!(run.status, 1);
+        assert_eq!(
+            run.err,
+            "\nssh-copy-id: ERROR: failed to open ID file 'C:/k/id': No such file or directory\n\
+             \t(to install the contents of 'C:/k/id.pub' anyway, look at the -f option)\n"
+        );
+        assert!(run.ssh.calls.is_empty());
+    }
+
+    #[test]
+    fn e02_force_after_identity_installs_without_checks_and_names_the_private_key() {
+        let run = execute_with(
+            &forced_after_identity(invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new().installs(INSTALLED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["install"]);
+        assert_eq!(run.err, source_line(Path::new("C:/k/id.pub")));
+        assert_eq!(run.out, summary_naming("ssh -i C:/k/id 'u@h'", 1));
+    }
+
+    #[test]
+    fn e03_force_after_identity_without_a_file_needs_the_default_private_key() {
+        let mut files = default_key_files();
+        files.remove(&home_ssh("id_ed25519"));
+        let run = execute_with(
+            &forced_after_identity(selecting(KeySelection::DefaultFile)),
+            files,
+            true,
+            false,
+            with_default_key_listing(FakeSsh::new()),
+        );
+        assert_eq!(run.status, 1);
+        assert!(run.err.contains("look at the -f option"), "{}", run.err);
+        assert!(run.ssh.calls.is_empty());
     }
 
     fn summary_naming(login: &str, added: usize) -> String {
