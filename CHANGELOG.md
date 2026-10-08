@@ -29,6 +29,12 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   byte order mark, malformed lines and a key file with several keys are still
   handled as without `-f` (D-04, D-05, D-07, D-10, D-21). As upstream's, the
   login hint after `-f -i` names `-i` without the private key.
+- `-n` lists the keys that would be installed, in upstream's "Would have added
+  the following key(s):" block, and exits 0 without the installation
+  connection, writing nothing on the remote side. The installed-key check still
+  runs, so keys already installed are skipped as without `-n`; with `-f` no
+  connection is made and every selected key is listed. The list holds the lines
+  that would be sent, comment and blank lines included (D-18).
 
 ### Changed
 

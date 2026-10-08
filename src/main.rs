@@ -8,14 +8,15 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+const USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
 \t-f: force mode -- copy keys without trying to check if they are already installed
+\t-n: dry run    -- no keys are actually copied
 \t-i: the public key to install; '.pub' is added when absent
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
 \t-h|-?: print this help
 This release installs keys on a Unix-like host.
--n, -s, -t, and -x are not available yet.";
+-s, -t, and -x are not available yet.";
 
 fn main() -> ExitCode {
     let mut args = Vec::new();
@@ -192,8 +193,8 @@ mod tests {
     #[test]
     fn m11_an_unsupported_option_keeps_the_stage_1_message() {
         assert_eq!(
-            preamble(&ArgsError::Unsupported('n')),
-            "ssh-copy-id: ERROR: option -n is not available in this release\n\n"
+            preamble(&ArgsError::Unsupported('s')),
+            "ssh-copy-id: ERROR: option -s is not available in this release\n\n"
         );
     }
 
@@ -213,19 +214,20 @@ mod tests {
     }
 
     #[test]
-    fn m14_the_usage_offers_force_mode_in_upstream_s_words() {
+    fn m14_the_usage_offers_force_mode_and_dry_run_in_upstream_s_words() {
         assert!(
-            USAGE.starts_with("Usage: ssh-copy-id [-h|-?|-f] [-i [identity_file]]"),
+            USAGE.starts_with("Usage: ssh-copy-id [-h|-?|-f|-n] [-i [identity_file]]"),
             "{USAGE}"
         );
         assert!(
             USAGE.contains(
-                "\n\t-f: force mode -- copy keys without trying to check if they are already installed\n"
+                "\n\t-f: force mode -- copy keys without trying to check if they are already installed\n\
+                 \t-n: dry run    -- no keys are actually copied\n"
             ),
             "{USAGE}"
         );
         assert!(
-            USAGE.ends_with("\n-n, -s, -t, and -x are not available yet."),
+            USAGE.ends_with("\n-s, -t, and -x are not available yet."),
             "{USAGE}"
         );
     }

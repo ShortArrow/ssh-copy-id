@@ -377,6 +377,10 @@ enum Arguments {
     ForceInstallNamingPublic,
     /// `-i` with the `.pub` path, then `-f`, the fixture options, and pwuser.
     InstallNamingPublicThenForce,
+    /// `-n`, then `-i` with the private key path, the fixture options, and pwuser.
+    DryRun,
+    /// `-n -f`, then `-i` with the private key path, the fixture options, and pwuser.
+    DryRunForce,
 }
 
 #[derive(Clone, Copy)]
@@ -431,7 +435,7 @@ const BASE: Scenario = Scenario {
     key_installed: false,
 };
 
-const SCENARIOS: [Scenario; 21] = [
+const SCENARIOS: [Scenario; 24] = [
     Scenario {
         title: "-h (no destination)",
         arguments: Arguments::Help,
@@ -546,6 +550,22 @@ const SCENARIOS: [Scenario; 21] = [
         key_file: KeyFile::PrivateMissing,
         ..BASE
     },
+    Scenario {
+        title: "-n: a key not installed",
+        arguments: Arguments::DryRun,
+        ..BASE
+    },
+    Scenario {
+        title: "-n: the key already installed",
+        arguments: Arguments::DryRun,
+        key_installed: true,
+        ..BASE
+    },
+    Scenario {
+        title: "-n -f: a key not installed",
+        arguments: Arguments::DryRunForce,
+        ..BASE
+    },
 ];
 
 /// Upstream's usage, which the CLI's matches only from stage 1.5.
@@ -558,14 +578,15 @@ const UPSTREAM_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-s|-x] [-i [identi
 ";
 
 /// The CLI's usage.
-const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
 \t-f: force mode -- copy keys without trying to check if they are already installed
+\t-n: dry run    -- no keys are actually copied
 \t-i: the public key to install; '.pub' is added when absent
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
 \t-h|-?: print this help
 This release installs keys on a Unix-like host.
--n, -s, -t, and -x are not available yet.
+-s, -t, and -x are not available yet.
 ";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -628,7 +649,7 @@ const EXPECTED: [Expected; 15] = [
     },
     Expected {
         tag: "D-13",
-        scenarios: &[5, 6, 7, 8, 9, 10, 12, 13, 16],
+        scenarios: &[5, 6, 7, 8, 9, 10, 12, 13, 16, 22, 23],
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::RemoveLine(
@@ -1000,6 +1021,8 @@ fn arguments(arguments: Arguments, fixture: &Fixture, key: &Path) -> Vec<String>
             display(&key.with_extension("pub")),
             "-f".into(),
         ],
+        Arguments::DryRun => vec!["-n".into(), "-i".into(), display(key)],
+        Arguments::DryRunForce => vec!["-n".into(), "-f".into(), "-i".into(), display(key)],
     };
     let mut words = identity;
     words.extend([
