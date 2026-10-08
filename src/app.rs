@@ -5,7 +5,7 @@ use crate::default_key::{DirEntryTime, newest_public_key};
 use crate::installed_check::{
     CheckResult, classify, is_certificate, is_tested_client, other_candidates_matching,
 };
-use crate::key_input::{InputError, prepare};
+use crate::key_input::{InputError, PreparedInput, prepare, prepare_verbatim};
 use crate::remote_script::{install_command, sh_quote};
 use crate::result_line::{Outcome, parse_report};
 use std::io::{self, Write};
@@ -450,15 +450,18 @@ fn write_keys(
 /// Selects the keys and prints upstream's Source line: without `-i`, the keys
 /// `ssh-add -L` lists, whatever `SSH_AUTH_SOCK` holds (D-20); otherwise, and
 /// when the agent lists none, the selected key file after its checks, of
-/// which `-f` before the key selection skips only the private key's.
+/// which `-f` before the key selection skips only the private key's. Under `-f`
+/// the lines are taken as given, as upstream's `$(cat file)` and `$(ssh-add -L)`
+/// take them; otherwise they are trimmed as upstream's `read -r` does.
 fn select_keys(
     invocation: &Invocation,
     env: &Environment,
     ssh: &mut dyn Ssh,
     err: &mut dyn Write,
 ) -> Result<Selection, Stop> {
+    let read_lines = line_reader(invocation.force);
     if invocation.key == KeySelection::Unspecified
-        && let Some(lines) = agent_key_lines(ssh)?
+        && let Some(lines) = agent_key_lines(ssh, read_lines)?
     {
         info(
             err,
@@ -470,7 +473,7 @@ fn select_keys(
     let public_key = key_file.public.display().to_string();
     let identity = key_file.private.display().to_string();
     let input = (env.read_file)(&key_file.public).map_err(|e| unopenable(&public_key, &e))?;
-    let prepared = prepare(&input).map_err(|e| input_error(&public_key, &e))?;
+    let prepared = read_lines(&input).map_err(|e| input_error(&public_key, &e))?;
     if prepared.key_count > 1 {
         return stop(format!(
             "'{public_key}' holds {} keys; a selected key file must hold one key, \
@@ -493,17 +496,32 @@ fn select_keys(
     })
 }
 
+/// Validates and normalizes key input for one run.
+type LineReader = fn(&[u8]) -> Result<PreparedInput, InputError>;
+
+/// The reader for `force`: lines as given under `-f`, trimmed otherwise.
+fn line_reader(force: Force) -> LineReader {
+    if force.is_on() {
+        prepare_verbatim
+    } else {
+        prepare
+    }
+}
+
 /// The key lines `ssh-add -L` lists, each ending in LF, when it starts, exits 0
 /// and lists at least one; otherwise none. Output that fails the checks a key
 /// file passes stops the run.
-fn agent_key_lines(ssh: &mut dyn Ssh) -> Result<Option<Vec<Vec<u8>>>, Stop> {
+fn agent_key_lines(
+    ssh: &mut dyn Ssh,
+    read_lines: LineReader,
+) -> Result<Option<Vec<Vec<u8>>>, Stop> {
     let Ok(listed) = ssh.list_agent_keys() else {
         return Ok(None);
     };
     if listed.status != Some(0) {
         return Ok(None);
     }
-    match prepare(&listed.stdout) {
+    match read_lines(&listed.stdout) {
         Ok(prepared) => Ok(Some(
             prepared
                 .text
@@ -2807,6 +2825,38 @@ mod tests {
         let run = execute_with(&forced(invocation()), files, true, false, FakeSsh::new());
         assert_eq!(run.status, 1);
         assert!(run.ssh.calls.is_empty());
+    }
+
+    #[test]
+    fn d12_force_sends_the_key_file_untrimmed_as_upstream_cat_does() {
+        let mut given = files();
+        given.insert(
+            PathBuf::from("C:/k/id.pub"),
+            format!("  {KEY}  \n\n").into_bytes(),
+        );
+        let run = execute_with(
+            &forced(invocation()),
+            given,
+            true,
+            false,
+            FakeSsh::new().installs(INSTALLED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        let (_, stdin, _) = run.ssh.call("install");
+        assert_eq!(stdin, &format!("  {KEY}  \n").into_bytes());
+    }
+
+    #[test]
+    fn d13_without_force_the_key_file_is_trimmed() {
+        let mut given = files();
+        given.insert(
+            PathBuf::from("C:/k/id.pub"),
+            format!("  {KEY}  \n\n").into_bytes(),
+        );
+        let run = execute_with(&invocation(), given, true, false, installs_and_verifies());
+        assert_eq!(run.status, 0, "{}", run.err);
+        let (_, stdin, _) = run.ssh.call("install");
+        assert_eq!(stdin, &format!("{KEY}\n").into_bytes());
     }
 
     #[test]

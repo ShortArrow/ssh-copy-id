@@ -437,10 +437,13 @@ connection from stage 1.5, when NetScreen destinations are handled.
 Authentication logs, login hooks, host key handling, and user-configured
 `AddKeysToAgent` behavior may still occur as part of those connections.
 
-Describe `-n` in help as "Display the keys that would be installed without
-performing installation operations," not as an offline or side-effect-free mode.
-This clarifies the upstream dry-run boundary and adds no new behavioral difference;
-the SFTP check difference D-02 still applies.
+The usage describes `-n` with upstream's line, `dry run -- no keys are actually
+copied`, which does not present it as offline or free of side effects. The keys
+are listed on stdout in upstream's `Would have added the following key(s):`
+block, with the lines that would be appended, comment and blank lines included,
+and the run exits 0. `-n -f` prints no `BatchMode` notice, since no `ssh` runs.
+This adds no behavioral difference; the SFTP check difference D-02 still
+applies.
 
 ## Execution Flow
 
@@ -601,7 +604,10 @@ prefixed `.pub` file through both transports and forced mode.
 #### Recorded Difference: Counting Keys
 
 Each line of the key file loses its leading and trailing spaces and tabs, and
-blank lines at the end are dropped, as upstream's line reading does. `#` comment
+blank lines at the end are dropped, as upstream's line reading does. Under `-f`
+upstream reads the keys with `$(cat …)` or `$(ssh-add -L)` instead, so the
+lines are sent as given and only empty lines at the end are dropped; this tool
+does the same. `#` comment
 lines and the remaining blank lines are appended as upstream appends them. A
 comment line is one whose first character other than a space or
 tab is `#`; a blank line holds only spaces and tabs. The local check and the

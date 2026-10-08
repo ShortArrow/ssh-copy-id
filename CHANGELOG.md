@@ -38,6 +38,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ### Changed
 
+- Under `-f` the key lines are sent as given, without removing spaces and
+  tabs around them, as upstream reads them with `$(cat …)`.
 - Messages follow the pinned upstream `ssh-copy-id` where the behavior is
   shared: the login hint leaves the `-i` and `-p` values unquoted, a key file
   that cannot be opened is reported with the reason, the skipped-keys warning

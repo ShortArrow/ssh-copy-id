@@ -32,6 +32,26 @@ pub enum InputError {
 /// failing line, checked for NUL, then standalone CR, then grammar, is reported.
 /// Line numbers count every input line, including the trailing blank lines left out of the text.
 pub fn prepare(input: &[u8]) -> Result<PreparedInput, InputError> {
+    prepare_lines(input, LineReading::Trimmed)
+}
+
+/// Validates `input` as [`prepare`] does but keeps every line as given, as upstream's
+/// `$(cat file)` under `-f` does: no spaces or tabs are removed, and only empty lines
+/// at the end are left out. The CR before each LF and a leading BOM are still removed.
+pub fn prepare_verbatim(input: &[u8]) -> Result<PreparedInput, InputError> {
+    prepare_lines(input, LineReading::Verbatim)
+}
+
+/// How the lines that pass validation are written to the prepared text.
+#[derive(Clone, Copy)]
+enum LineReading {
+    /// Leading and trailing spaces and tabs removed, as `read -r` with the default IFS does.
+    Trimmed,
+    /// As given.
+    Verbatim,
+}
+
+fn prepare_lines(input: &[u8], reading: LineReading) -> Result<PreparedInput, InputError> {
     let lines = split_lines(strip_bom(input));
     if let Some(line) = lines.iter().position(|l| is_private_key_marker(l)) {
         return Err(InputError::PrivateKey { line: line + 1 });
@@ -40,7 +60,11 @@ pub fn prepare(input: &[u8]) -> Result<PreparedInput, InputError> {
     let mut key_count = 0;
     for (index, raw) in lines.iter().enumerate() {
         let line = index + 1;
-        let content = trim_separators(check_line_bytes(raw, line)?);
+        let checked = check_line_bytes(raw, line)?;
+        let content = match reading {
+            LineReading::Trimmed => trim_separators(checked),
+            LineReading::Verbatim => checked,
+        };
         match classify(content) {
             Some(LineKind::Key) => key_count += 1,
             Some(LineKind::BlankOrComment) => {}
@@ -428,6 +452,37 @@ mod tests {
     fn a35_error_line_numbers_count_leading_blank_and_trimmed_lines() {
         let given = input("\n  \nssh-ed25519 {K}\n  bad line  \n\n");
         assert_eq!(prepare(&given), Err(InputError::Malformed { line: 4 }));
+    }
+
+    #[test]
+    fn v01_verbatim_keeps_leading_and_trailing_separators() {
+        let given = input("  ssh-ed25519 {K} me  \n\t# c \n");
+        assert_eq!(
+            prepare_verbatim(&given),
+            ok("  ssh-ed25519 {K} me  \n\t# c \n", 1)
+        );
+    }
+
+    #[test]
+    fn v02_verbatim_drops_only_empty_trailing_lines() {
+        let given = input("ssh-ed25519 {K}\n \t\n\n\n");
+        assert_eq!(prepare_verbatim(&given), ok("ssh-ed25519 {K}\n \t\n", 1));
+    }
+
+    #[test]
+    fn v03_verbatim_still_normalizes_crlf_and_the_bom() {
+        let mut given = vec![0xEF, 0xBB, 0xBF];
+        given.extend(input(" ssh-ed25519 {K} \r\n"));
+        assert_eq!(prepare_verbatim(&given), ok(" ssh-ed25519 {K} \n", 1));
+    }
+
+    #[test]
+    fn v04_verbatim_applies_the_same_checks() {
+        let given = input("ssh-ed25519 {K}\n  bad line  \n");
+        assert_eq!(
+            prepare_verbatim(&given),
+            Err(InputError::Malformed { line: 2 })
+        );
     }
 
     #[test]

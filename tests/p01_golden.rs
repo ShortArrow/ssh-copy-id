@@ -390,6 +390,9 @@ enum KeyFile {
     CommentAndBlankLineFirst,
     /// The generated key's line followed by the line of another generated key.
     TwoKeys,
+    /// The generated key's line with spaces and a tab around it, then a
+    /// space-only line and an empty line.
+    Untrimmed,
 }
 
 #[derive(Clone, Copy)]
@@ -435,7 +438,7 @@ const BASE: Scenario = Scenario {
     key_installed: false,
 };
 
-const SCENARIOS: [Scenario; 24] = [
+const SCENARIOS: [Scenario; 25] = [
     Scenario {
         title: "-h (no destination)",
         arguments: Arguments::Help,
@@ -566,6 +569,12 @@ const SCENARIOS: [Scenario; 24] = [
         arguments: Arguments::DryRunForce,
         ..BASE
     },
+    Scenario {
+        title: "-f: a key line with spaces around it and a space-only line after it",
+        arguments: Arguments::ForceInstall,
+        key_file: KeyFile::Untrimmed,
+        ..BASE
+    },
 ];
 
 /// Upstream's usage, which the CLI's matches only from stage 1.5.
@@ -626,7 +635,7 @@ struct Expected {
     always: bool,
 }
 
-const EXPECTED: [Expected; 15] = [
+const EXPECTED: [Expected; 16] = [
     Expected {
         tag: "D-06",
         scenarios: &[5, 9, 10, 12, 13],
@@ -675,6 +684,14 @@ const EXPECTED: [Expected; 15] = [
         field: Field::Stdout,
         tool: Tool::Upstream,
         edit: Edit::Replace("Number of key(s) added: 3\n", "Number of key(s) added: 1\n"),
+        always: true,
+    },
+    Expected {
+        tag: "D-18",
+        scenarios: &[25],
+        field: Field::Stdout,
+        tool: Tool::Upstream,
+        edit: Edit::Replace("Number of key(s) added: 2\n", "Number of key(s) added: 1\n"),
         always: true,
     },
     Expected {
@@ -888,6 +905,10 @@ impl Harness {
                 let other = keygen(&dir, "other", "other@test");
                 let lines = format!("{}\n{}\n", public_line(&key), public_line(&other));
                 fs::write(key.with_extension("pub"), lines).unwrap();
+            }
+            KeyFile::Untrimmed => {
+                let line = public_line(&key);
+                fs::write(key.with_extension("pub"), format!("  {line}\t \n \n\n")).unwrap();
             }
         }
         if scenario.agent {
