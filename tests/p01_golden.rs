@@ -412,9 +412,10 @@ struct Scenario {
     runs_before: usize,
     /// Whether the local `~/.ssh` holds the scenario's key as `id_ed25519`.
     default_key_file: bool,
-    /// Whether a private agent holds the scenario's key and a second key, and
-    /// pwuser's `authorized_keys` already holds the scenario's key.
+    /// Whether a private agent holds the scenario's key and a second key.
     agent: bool,
+    /// Whether pwuser's `authorized_keys` already holds the scenario's key.
+    key_installed: bool,
 }
 
 const BASE: Scenario = Scenario {
@@ -427,6 +428,7 @@ const BASE: Scenario = Scenario {
     runs_before: 0,
     default_key_file: false,
     agent: false,
+    key_installed: false,
 };
 
 const SCENARIOS: [Scenario; 21] = [
@@ -513,6 +515,7 @@ const SCENARIOS: [Scenario; 21] = [
         title: "no -i: two agent keys, the first already installed",
         arguments: Arguments::DefaultKey,
         agent: true,
+        key_installed: true,
         ..BASE
     },
     Scenario {
@@ -894,6 +897,9 @@ impl Harness {
             let agent = Agent::start(&fixture.work);
             agent.add(key);
             agent.add(&key.with_file_name("other"));
+            agent
+        });
+        if scenario.key_installed {
             let setup = fixture.exec(
                 USER,
                 &format!(
@@ -902,8 +908,7 @@ impl Harness {
                 ),
             );
             assert!(setup.status.success(), "{}", text(&setup.stderr));
-            agent
-        });
+        }
         if let KnownHosts::Mismatch = scenario.known_hosts {
             let other = keygen(&fixture.work, "fake_host", "fake");
             fs::write(
