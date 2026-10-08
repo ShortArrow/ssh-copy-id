@@ -377,6 +377,10 @@ enum Arguments {
     ForceInstallNamingPublic,
     /// `-i` with the `.pub` path, then `-f`, the fixture options, and pwuser.
     InstallNamingPublicThenForce,
+    /// `-n`, then `-i` with the private key path, the fixture options, and pwuser.
+    DryRun,
+    /// `-n -f`, then `-i` with the private key path, the fixture options, and pwuser.
+    DryRunForce,
 }
 
 #[derive(Clone, Copy)]
@@ -386,6 +390,9 @@ enum KeyFile {
     CommentAndBlankLineFirst,
     /// The generated key's line followed by the line of another generated key.
     TwoKeys,
+    /// The generated key's line with spaces and a tab around it, then a
+    /// space-only line and an empty line.
+    Untrimmed,
 }
 
 #[derive(Clone, Copy)]
@@ -412,9 +419,10 @@ struct Scenario {
     runs_before: usize,
     /// Whether the local `~/.ssh` holds the scenario's key as `id_ed25519`.
     default_key_file: bool,
-    /// Whether a private agent holds the scenario's key and a second key, and
-    /// pwuser's `authorized_keys` already holds the scenario's key.
+    /// Whether a private agent holds the scenario's key and a second key.
     agent: bool,
+    /// Whether pwuser's `authorized_keys` already holds the scenario's key.
+    key_installed: bool,
 }
 
 const BASE: Scenario = Scenario {
@@ -427,9 +435,10 @@ const BASE: Scenario = Scenario {
     runs_before: 0,
     default_key_file: false,
     agent: false,
+    key_installed: false,
 };
 
-const SCENARIOS: [Scenario; 21] = [
+const SCENARIOS: [Scenario; 25] = [
     Scenario {
         title: "-h (no destination)",
         arguments: Arguments::Help,
@@ -513,6 +522,7 @@ const SCENARIOS: [Scenario; 21] = [
         title: "no -i: two agent keys, the first already installed",
         arguments: Arguments::DefaultKey,
         agent: true,
+        key_installed: true,
         ..BASE
     },
     Scenario {
@@ -543,6 +553,28 @@ const SCENARIOS: [Scenario; 21] = [
         key_file: KeyFile::PrivateMissing,
         ..BASE
     },
+    Scenario {
+        title: "-n: a key not installed",
+        arguments: Arguments::DryRun,
+        ..BASE
+    },
+    Scenario {
+        title: "-n: the key already installed",
+        arguments: Arguments::DryRun,
+        key_installed: true,
+        ..BASE
+    },
+    Scenario {
+        title: "-n -f: a key not installed",
+        arguments: Arguments::DryRunForce,
+        ..BASE
+    },
+    Scenario {
+        title: "-f: a key line with spaces around it and a space-only line after it",
+        arguments: Arguments::ForceInstall,
+        key_file: KeyFile::Untrimmed,
+        ..BASE
+    },
 ];
 
 /// Upstream's usage, which the CLI's matches only from stage 1.5.
@@ -555,14 +587,15 @@ const UPSTREAM_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-s|-x] [-i [identi
 ";
 
 /// The CLI's usage.
-const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
 \t-f: force mode -- copy keys without trying to check if they are already installed
+\t-n: dry run    -- no keys are actually copied
 \t-i: the public key to install; '.pub' is added when absent
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
 \t-h|-?: print this help
 This release installs keys on a Unix-like host.
--n, -s, -t, and -x are not available yet.
+-s, -t, and -x are not available yet.
 ";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -602,7 +635,7 @@ struct Expected {
     always: bool,
 }
 
-const EXPECTED: [Expected; 15] = [
+const EXPECTED: [Expected; 16] = [
     Expected {
         tag: "D-06",
         scenarios: &[5, 9, 10, 12, 13],
@@ -625,7 +658,7 @@ const EXPECTED: [Expected; 15] = [
     },
     Expected {
         tag: "D-13",
-        scenarios: &[5, 6, 7, 8, 9, 10, 12, 13, 16],
+        scenarios: &[5, 6, 7, 8, 9, 10, 12, 13, 16, 22, 23],
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::RemoveLine(
@@ -651,6 +684,14 @@ const EXPECTED: [Expected; 15] = [
         field: Field::Stdout,
         tool: Tool::Upstream,
         edit: Edit::Replace("Number of key(s) added: 3\n", "Number of key(s) added: 1\n"),
+        always: true,
+    },
+    Expected {
+        tag: "D-18",
+        scenarios: &[25],
+        field: Field::Stdout,
+        tool: Tool::Upstream,
+        edit: Edit::Replace("Number of key(s) added: 2\n", "Number of key(s) added: 1\n"),
         always: true,
     },
     Expected {
@@ -865,6 +906,10 @@ impl Harness {
                 let lines = format!("{}\n{}\n", public_line(&key), public_line(&other));
                 fs::write(key.with_extension("pub"), lines).unwrap();
             }
+            KeyFile::Untrimmed => {
+                let line = public_line(&key);
+                fs::write(key.with_extension("pub"), format!("  {line}\t \n \n\n")).unwrap();
+            }
         }
         if scenario.agent {
             keygen(&dir, "other", "other@test");
@@ -894,6 +939,9 @@ impl Harness {
             let agent = Agent::start(&fixture.work);
             agent.add(key);
             agent.add(&key.with_file_name("other"));
+            agent
+        });
+        if scenario.key_installed {
             let setup = fixture.exec(
                 USER,
                 &format!(
@@ -902,8 +950,7 @@ impl Harness {
                 ),
             );
             assert!(setup.status.success(), "{}", text(&setup.stderr));
-            agent
-        });
+        }
         if let KnownHosts::Mismatch = scenario.known_hosts {
             let other = keygen(&fixture.work, "fake_host", "fake");
             fs::write(
@@ -995,6 +1042,8 @@ fn arguments(arguments: Arguments, fixture: &Fixture, key: &Path) -> Vec<String>
             display(&key.with_extension("pub")),
             "-f".into(),
         ],
+        Arguments::DryRun => vec!["-n".into(), "-i".into(), display(key)],
+        Arguments::DryRunForce => vec!["-n".into(), "-f".into(), "-i".into(), display(key)],
     };
     let mut words = identity;
     words.extend([

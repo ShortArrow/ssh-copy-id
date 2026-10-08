@@ -1,4 +1,4 @@
-//! Behavior against the L02 Linux fixture: requirements 1, 2, 3, 5, 7, and 8,
+//! Behavior against the L02 Linux fixture: requirements 1, 2, 3, 4, 5, 7, and 8,
 //! design D-01, D-15, D-16, D-17, D-18, and D-20, and default key selection.
 //! Every run of the CLI must leave no `ssh-copy-id.*` scratch directory in the
 //! local `~/.ssh` it uses.
@@ -626,4 +626,111 @@ fn i24_requirement_5_force_after_identity_appends_an_installed_key_again() {
         fixture.authorized_keys("pwuser"),
         format!("{}\n{}\n", public_line(&key), public_line(&key))
     );
+}
+
+/// The lines of upstream's dry-run list around `lines`.
+fn dry_run_list(lines: &str) -> String {
+    format!("=-=-=-=-=-=-=-=\nWould have added the following key(s):\n\n{lines}=-=-=-=-=-=-=-=\n")
+}
+
+impl Fixture {
+    /// The number of connections sshd has logged since the container started.
+    fn connections_logged(&self) -> usize {
+        let logs = common::command("docker", &["logs", &self.container]);
+        text(&logs.stderr)
+            .lines()
+            .chain(text(&logs.stdout).lines())
+            .filter(|line| line.contains("Connection from "))
+            .count()
+    }
+
+    /// The bytes, permission bits, and modification and change times of
+    /// pwuser's `.ssh` and `authorized_keys`, read as root.
+    fn key_file_state(&self) -> String {
+        let state = self.exec_as_root(
+            "cd /home/pwuser && stat -c '%n %a %Y %Z' .ssh .ssh/authorized_keys && od -c .ssh/authorized_keys",
+        );
+        assert!(state.status.success(), "{}", text(&state.stderr));
+        text(&state.stdout)
+    }
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i25_requirement_4_dry_run_checks_lists_the_key_and_creates_nothing() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &["-n"]);
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("attempting to log in"), "{stderr}");
+    assert!(
+        stderr.contains("1 key(s) remain to be installed"),
+        "{stderr}"
+    );
+    assert_eq!(
+        text(&run.stdout),
+        dry_run_list(&format!("{}\n", public_line(&key)))
+    );
+    assert!(
+        fixture.exec("pwuser", "test ! -e .ssh").status.success(),
+        "the dry run created .ssh"
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i26_requirement_4_dry_run_leaves_an_existing_file_and_its_modes_unchanged() {
+    let fixture = Fixture::start();
+    let setup = fixture.exec(
+        "pwuser",
+        "mkdir -p .ssh && chmod 755 .ssh && printf 'existing' > .ssh/authorized_keys && chmod 644 .ssh/authorized_keys",
+    );
+    assert!(setup.status.success(), "{}", text(&setup.stderr));
+    let before = fixture.key_file_state();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &["-n"]);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert!(text(&run.stdout).contains("Would have added the following key(s):"));
+    assert_eq!(fixture.key_file_state(), before);
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i27_requirement_4_dry_run_skips_an_installed_key_as_without_it() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    assert_eq!(fixture.copy_id(&key, "pwuser", &[]).status.code(), Some(0));
+    let before = fixture.key_file_state();
+    let run = fixture.copy_id(&key, "pwuser", &["-n"]);
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("All keys were skipped"), "{stderr}");
+    assert_eq!(text(&run.stdout), "");
+    assert_eq!(fixture.key_file_state(), before);
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i28_requirement_4_dry_run_with_force_makes_no_connection() {
+    let fixture = Fixture::start();
+    let setup = fixture.exec(
+        "pwuser",
+        "umask 077 && mkdir -p .ssh && printf 'existing\n' > .ssh/authorized_keys",
+    );
+    assert!(setup.status.success(), "{}", text(&setup.stderr));
+    let before = fixture.key_file_state();
+    let connections = fixture.connections_logged();
+    assert!(connections > 0, "sshd logs no connections to count");
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &["-n", "-f"]);
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(!stderr.contains("attempting to log in"), "{stderr}");
+    assert_eq!(
+        text(&run.stdout),
+        dry_run_list(&format!("{}\n", public_line(&key)))
+    );
+    assert_eq!(fixture.connections_logged(), connections);
+    assert_eq!(fixture.key_file_state(), before);
 }

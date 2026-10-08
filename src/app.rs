@@ -5,7 +5,7 @@ use crate::default_key::{DirEntryTime, newest_public_key};
 use crate::installed_check::{
     CheckResult, classify, is_certificate, is_tested_client, other_candidates_matching,
 };
-use crate::key_input::{InputError, prepare};
+use crate::key_input::{InputError, PreparedInput, prepare, prepare_verbatim};
 use crate::remote_script::{install_command, sh_quote};
 use crate::result_line::{Outcome, parse_report};
 use std::io::{self, Write};
@@ -78,9 +78,10 @@ impl Drop for ScratchDir<'_> {
     }
 }
 
-/// Runs the flow and returns the exit status: 0 when the keys are installed
-/// or were already installed, 1 otherwise. Diagnostics go to `err`, and the final
-/// summary to `out`, as upstream prints them.
+/// Runs the flow and returns the exit status: 0 when the keys are installed,
+/// were already installed, or were listed by a dry run, 1 otherwise. Diagnostics
+/// go to `err`, and the final summary or the dry run's list to `out`, as
+/// upstream prints them.
 ///
 /// The probes' logs live in a scratch directory under `<home>/.ssh`, created
 /// before the first `ssh` run and removed on every return after it. After each
@@ -253,6 +254,10 @@ fn install(
     };
     let common = common_args(invocation, env);
     if invocation.force.is_on() {
+        if invocation.dry_run {
+            report_dry_run(out, &selection.texts().concat());
+            return Ok(());
+        }
         announce_batch_mode(env, err);
         return install_unchecked(invocation, env, ssh, out, &selection, &common);
     }
@@ -326,6 +331,10 @@ fn install(
         .iter()
         .flat_map(|(key, _)| key.text.iter().copied())
         .collect();
+    if invocation.dry_run {
+        report_dry_run(out, &text);
+        return Ok(());
+    }
     let Written { added, target } = write_keys(ssh, invocation, &common, &text, remaining.len())?;
 
     let login = login_command(invocation, selection.hint_identity(invocation.force));
@@ -441,15 +450,18 @@ fn write_keys(
 /// Selects the keys and prints upstream's Source line: without `-i`, the keys
 /// `ssh-add -L` lists, whatever `SSH_AUTH_SOCK` holds (D-20); otherwise, and
 /// when the agent lists none, the selected key file after its checks, of
-/// which `-f` before the key selection skips only the private key's.
+/// which `-f` before the key selection skips only the private key's. Under `-f`
+/// the lines are taken as given, as upstream's `$(cat file)` and `$(ssh-add -L)`
+/// take them; otherwise they are trimmed as upstream's `read -r` does.
 fn select_keys(
     invocation: &Invocation,
     env: &Environment,
     ssh: &mut dyn Ssh,
     err: &mut dyn Write,
 ) -> Result<Selection, Stop> {
+    let read_lines = line_reader(invocation.force);
     if invocation.key == KeySelection::Unspecified
-        && let Some(lines) = agent_key_lines(ssh)?
+        && let Some(lines) = agent_key_lines(ssh, read_lines)?
     {
         info(
             err,
@@ -461,7 +473,7 @@ fn select_keys(
     let public_key = key_file.public.display().to_string();
     let identity = key_file.private.display().to_string();
     let input = (env.read_file)(&key_file.public).map_err(|e| unopenable(&public_key, &e))?;
-    let prepared = prepare(&input).map_err(|e| input_error(&public_key, &e))?;
+    let prepared = read_lines(&input).map_err(|e| input_error(&public_key, &e))?;
     if prepared.key_count > 1 {
         return stop(format!(
             "'{public_key}' holds {} keys; a selected key file must hold one key, \
@@ -484,17 +496,32 @@ fn select_keys(
     })
 }
 
+/// Validates and normalizes key input for one run.
+type LineReader = fn(&[u8]) -> Result<PreparedInput, InputError>;
+
+/// The reader for `force`: lines as given under `-f`, trimmed otherwise.
+fn line_reader(force: Force) -> LineReader {
+    if force.is_on() {
+        prepare_verbatim
+    } else {
+        prepare
+    }
+}
+
 /// The key lines `ssh-add -L` lists, each ending in LF, when it starts, exits 0
 /// and lists at least one; otherwise none. Output that fails the checks a key
 /// file passes stops the run.
-fn agent_key_lines(ssh: &mut dyn Ssh) -> Result<Option<Vec<Vec<u8>>>, Stop> {
+fn agent_key_lines(
+    ssh: &mut dyn Ssh,
+    read_lines: LineReader,
+) -> Result<Option<Vec<Vec<u8>>>, Stop> {
     let Ok(listed) = ssh.list_agent_keys() else {
         return Ok(None);
     };
     if listed.status != Some(0) {
         return Ok(None);
     }
-    match prepare(&listed.stdout) {
+    match read_lines(&listed.stdout) {
         Ok(prepared) => Ok(Some(
             prepared
                 .text
@@ -591,6 +618,13 @@ fn report_verification(err: &mut dyn Write, label: &str, verified: CheckResult, 
             &format!("{label}the key was installed but could not be verified: {reason}"),
         ),
     }
+}
+
+/// Prints upstream's dry-run list of `text`, the lines the installation would send.
+fn report_dry_run(out: &mut dyn Write, text: &[u8]) {
+    let _ = out.write_all(b"=-=-=-=-=-=-=-=\nWould have added the following key(s):\n\n");
+    let _ = out.write_all(text);
+    let _ = out.write_all(b"=-=-=-=-=-=-=-=\n");
 }
 
 fn summary(out: &mut dyn Write, added: usize, login: &str) {
@@ -1057,6 +1091,7 @@ mod tests {
             port: None,
             ssh_options: Vec::new(),
             force: Force::Off,
+            dry_run: false,
         }
     }
 
@@ -2793,6 +2828,38 @@ mod tests {
     }
 
     #[test]
+    fn d12_force_sends_the_key_file_untrimmed_as_upstream_cat_does() {
+        let mut given = files();
+        given.insert(
+            PathBuf::from("C:/k/id.pub"),
+            format!("  {KEY}  \n\n").into_bytes(),
+        );
+        let run = execute_with(
+            &forced(invocation()),
+            given,
+            true,
+            false,
+            FakeSsh::new().installs(INSTALLED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        let (_, stdin, _) = run.ssh.call("install");
+        assert_eq!(stdin, &format!("  {KEY}  \n").into_bytes());
+    }
+
+    #[test]
+    fn d13_without_force_the_key_file_is_trimmed() {
+        let mut given = files();
+        given.insert(
+            PathBuf::from("C:/k/id.pub"),
+            format!("  {KEY}  \n\n").into_bytes(),
+        );
+        let run = execute_with(&invocation(), given, true, false, installs_and_verifies());
+        assert_eq!(run.status, 0, "{}", run.err);
+        let (_, stdin, _) = run.ssh.call("install");
+        assert_eq!(stdin, &format!("{KEY}\n").into_bytes());
+    }
+
+    #[test]
     fn d06_force_installs_every_agent_key_without_writing_key_files() {
         let run = execute_with(
             &forced(selecting(KeySelection::Unspecified)),
@@ -2894,5 +2961,166 @@ mod tests {
             "{args:?}"
         );
         assert!(run.err.contains("BatchMode=yes"), "{}", run.err);
+    }
+
+    fn dry(invocation: Invocation) -> Invocation {
+        Invocation {
+            dry_run: true,
+            ..invocation
+        }
+    }
+
+    fn would_have_added(text: &str) -> String {
+        format!(
+            "=-=-=-=-=-=-=-=\nWould have added the following key(s):\n\n{text}=-=-=-=-=-=-=-=\n"
+        )
+    }
+
+    const REMAIN_ONE: &str = "ssh-copy-id: INFO: 1 key(s) remain to be installed -- if you are \
+                              prompted now it is to install the new keys\n";
+
+    #[test]
+    fn f01_dry_run_checks_and_lists_the_remaining_key_without_installing() {
+        let run = execute_with(
+            &dry(invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new().probe(255, DENIED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
+        assert_eq!(run.out, would_have_added(&format!("{KEY}\n")));
+        assert!(run.err.ends_with(REMAIN_ONE), "{}", run.err);
+        removed_only_the_scratch_directory(&run);
+    }
+
+    #[test]
+    fn f02_dry_run_with_every_key_installed_skips_them_as_without_it() {
+        let run = execute_with(
+            &dry(invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new().probe(0, ACCEPTED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
+        assert_eq!(run.out, "");
+        assert!(
+            run.err.ends_with(
+                "\nssh-copy-id: WARNING: All keys were skipped because they already exist \
+                 on the remote system.\n\
+                 \t\t(if you think this is a mistake, you may want to use -f option)\n\n"
+            ),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn f03_dry_run_with_force_runs_no_ssh_and_lists_the_key() {
+        let mut files = files();
+        files.remove(&PathBuf::from("C:/k/id"));
+        let run = execute_with(
+            &dry(forced(invocation())),
+            files,
+            false,
+            false,
+            FakeSsh::new(),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(run.ssh.calls.is_empty(), "{:?}", run.ssh.kinds());
+        assert_eq!(run.out, would_have_added(&format!("{KEY}\n")));
+        assert_eq!(run.err, source_line(Path::new("C:/k/id.pub")));
+        removed_only_the_scratch_directory(&run);
+    }
+
+    #[test]
+    fn f04_dry_run_with_force_after_identity_still_needs_the_private_key() {
+        let mut files = files();
+        files.remove(&PathBuf::from("C:/k/id"));
+        let run = execute_with(
+            &dry(forced_after_identity(invocation())),
+            files,
+            true,
+            false,
+            FakeSsh::new(),
+        );
+        assert_eq!(run.status, 1);
+        assert!(run.err.contains("look at the -f option"), "{}", run.err);
+        assert!(run.ssh.calls.is_empty());
+        assert_eq!(run.out, "");
+    }
+
+    #[test]
+    fn f05_dry_run_lists_only_the_agent_keys_not_installed() {
+        let run = execute_with(
+            &dry(selecting(KeySelection::Unspecified)),
+            default_key_files(),
+            true,
+            false,
+            with_default_key_listing(two_agent_keys(
+                FakeSsh::new().probe(0, ACCEPTED).probe(255, DENIED),
+            )),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(
+            run.ssh.kinds(),
+            ["agent", "version", "config", "config", "probe", "probe"]
+        );
+        assert_eq!(run.out, would_have_added(&format!("{KEY2}\n")));
+        assert!(run.err.ends_with(REMAIN_ONE), "{}", run.err);
+        removed_only_the_scratch_directory(&run);
+    }
+
+    #[test]
+    fn f06_dry_run_with_force_lists_every_agent_key() {
+        let run = execute_with(
+            &dry(forced(selecting(KeySelection::Unspecified))),
+            default_key_files(),
+            true,
+            false,
+            with_default_key_listing(two_agent_keys(FakeSsh::new())),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["agent"]);
+        assert_eq!(run.out, would_have_added(&format!("{KEY}\n{KEY2}\n")));
+        assert_eq!(run.err, AGENT_SOURCE);
+    }
+
+    #[test]
+    fn f07_dry_run_lists_comment_and_blank_lines_as_they_would_be_sent() {
+        let mut files = files();
+        files.insert(
+            PathBuf::from("C:/k/id.pub"),
+            format!("# laptop\n\n  {KEY}  \n\n").into_bytes(),
+        );
+        let run = execute_with(
+            &dry(invocation()),
+            files,
+            true,
+            false,
+            FakeSsh::new().probe(255, DENIED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.out, would_have_added(&format!("# laptop\n\n{KEY}\n")));
+        assert!(run.err.ends_with(REMAIN_ONE), "{}", run.err);
+    }
+
+    #[test]
+    fn f08_an_interrupt_during_the_dry_run_check_stops_without_the_list() {
+        let mut ssh = FakeSsh::new().probe(255, DENIED);
+        ssh.interrupt_during = Some(2);
+        let run = execute_with(&dry(invocation()), files(), true, false, ssh);
+        assert_eq!(run.status, 1);
+        assert_eq!(run.out, "");
+        assert!(
+            run.err
+                .ends_with(&format!("ssh-copy-id: ERROR: {NOTHING_WRITTEN}\n")),
+            "{}",
+            run.err
+        );
+        removed_only_the_scratch_directory(&run);
     }
 }

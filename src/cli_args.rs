@@ -41,6 +41,8 @@ pub struct Invocation {
     pub ssh_options: Vec<SshOption>,
     /// `-f` and where it stands relative to `-i`.
     pub force: Force,
+    /// `-n`: the keys that would be installed are listed instead of installed.
+    pub dry_run: bool,
 }
 
 /// Whether `-f` was given and whether it preceded the key selection. Upstream
@@ -106,6 +108,7 @@ pub fn parse(
     let mut port = None;
     let mut ssh_options = Vec::new();
     let mut force = Force::Off;
+    let mut dry_run = false;
     let mut index = 0;
     while let Some(arg) = args.get(index) {
         index += 1;
@@ -155,7 +158,8 @@ pub fn parse(
                 'f' if force == Force::Off && key.is_some() => force = Force::AfterIdentity,
                 'f' if force == Force::Off => force = Force::BeforeKeySelection,
                 'f' => {}
-                'n' | 's' | 't' | 'x' => return Err(ArgsError::Unsupported(flag)),
+                'n' => dry_run = true,
+                's' | 't' | 'x' => return Err(ArgsError::Unsupported(flag)),
                 _ => return Err(ArgsError::IllegalOption(flag)),
             }
         }
@@ -172,6 +176,7 @@ pub fn parse(
         port,
         ssh_options,
         force,
+        dry_run,
     })
 }
 
@@ -214,6 +219,7 @@ mod tests {
             port: None,
             ssh_options: Vec::new(),
             force: Force::Off,
+            dry_run: false,
         }
     }
 
@@ -320,7 +326,7 @@ mod tests {
 
     #[test]
     fn p11_later_stage_options_are_unsupported() {
-        for flag in ['n', 's', 't', 'x'] {
+        for flag in ['s', 't', 'x'] {
             let given = args(&[&format!("-{flag}"), "-i", "k", "h"]);
             assert_eq!(
                 parse_plain(&given),
@@ -372,8 +378,8 @@ mod tests {
     #[test]
     fn p17_grouped_flags_report_the_first_unsupported() {
         assert_eq!(
-            parse_plain(&args(&["-fn", "-i", "k", "h"])),
-            Err(ArgsError::Unsupported('n'))
+            parse_plain(&args(&["-fs", "-i", "k", "h"])),
+            Err(ArgsError::Unsupported('s'))
         );
     }
 
@@ -500,5 +506,24 @@ mod tests {
             parse_plain(&args(&["-i", "k", "-f", "h"])).unwrap().key,
             invocation("h", "k").key
         );
+    }
+
+    #[test]
+    fn p29_dry_run_is_off_unless_given() {
+        assert!(!parse_plain(&args(&["-i", "k", "h"])).unwrap().dry_run);
+    }
+
+    #[test]
+    fn p30_dry_run_alone_or_grouped_leaves_the_rest_unchanged() {
+        assert_eq!(
+            parse_plain(&args(&["-n", "-i", "k", "h"])),
+            Ok(Invocation {
+                dry_run: true,
+                ..invocation("h", "k")
+            })
+        );
+        let grouped = parse_plain(&args(&["-fn", "-i", "k", "h"])).unwrap();
+        assert!(grouped.dry_run);
+        assert_eq!(grouped.force, Force::BeforeKeySelection);
     }
 }
