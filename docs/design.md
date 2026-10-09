@@ -103,7 +103,7 @@ Each stage ends when its checks pass; the IDs are rows of the
 | --- | --- | --- | --- |
 | 0. Feasibility | none | Prototype of `ssh.exe` on Windows with authentication prompts while public keys go to stdin; a Linux sshd fixture for CLI integration tests | A01 passes for a password, an encrypted key's passphrase, agent confirmation (or the agent's refusal of it), cancellation, and no terminal; L02 passes and runs in CI |
 | 1. Unix destination, one key (first milestone) | v0.0.1 | `[user@]host`, `-i file`, `-p`, `-o`, `-F`; the installed-key check with three results; the `sh` installation script with result lines; post-installation verification; exit statuses | Initial requirements 1, 2, 3, 7, and 8 pass as tests against L02 |
-| 1.5. CLI compatibility | v0.0.2 before stage 2; otherwise per the versioning rule | `-n`, `-f`, `-t` on Unix-like destinations, `-i` without a file, key files with several keys, default key selection, agent keys, `-x`, upstream messages, NetScreen destinations | Requirements 4 and 5 pass; the D-03 and D-11 tests pass; golden tests against the pinned script (P01) pass for the shared behavior |
+| 1.5. CLI compatibility | v0.0.2 before stage 2; otherwise per the versioning rule | `-n`, `-f`, `-t` on Unix-like destinations, `-i` without a file, key files with several keys, default key selection, agent keys, `-x`, upstream messages | Requirements 4 and 5 pass; the D-03 and D-11 tests pass; golden tests against the pinned script (P01) pass for the shared behavior |
 | 2. Windows standard user (second milestone) | v0.1.0 | One explicitly selected key for one standard user in normal mode: destination detection, the PowerShell installation script, ACLs on new objects | W06, W09, and W07's first check (whether an inherited profile ACL alone passes) pass before the implementation; requirements 1, 2, 3, 7, and 8 pass against the dockur fixture |
 | 3. Later increments | 0.1.x or later | Shared administrator file (the rest of W07), `-t` on Windows destinations (W08), `-s` (requirement 6), Linux packages | Decided per increment |
 
@@ -407,8 +407,8 @@ difference D-14; the client-side format differs, the purpose does not.
 
 The upstream special cases stay. For the default target, OpenWrt as root
 installs into `/etc/dropbear/authorized_keys` and Haiku uses
-`config/settings/ssh/authorized_keys`. NetScreen keys are installed one per
-command as upstream does; that case belongs to stage 1.5.
+`config/settings/ssh/authorized_keys`. NetScreen destinations are not detected
+(D-23).
 
 ### Recorded Difference: Explicit Target on OpenWrt and Haiku
 
@@ -422,6 +422,25 @@ and another file gains the key. This is difference D-22.
 The Unix installation command is one line, as upstream's is, so that csh and
 tcsh login shells can run `exec sh -c '…'`: they reject a newline inside single
 quotes and expand `!` even there.
+
+### Recorded Difference: NetScreen Destinations
+
+Upstream connects once without authentication, with `ssh -v -o
+PreferredAuthentications=, -o ControlPath=none`, to read the server's software
+version, and handles versions starting with `NetScreen` apart, also under `-n`
+and `-f`. This tool makes no such connection and treats a NetScreen destination
+as any other: in normal mode, shell-family detection finds no match and stops
+before writing (D-12); where detection does not run, the script reports nothing
+and the run exits with status 1 (D-19).
+
+Upstream means to install DSA keys there with `set ssh pka-dsa key` and to skip
+the others, as its warning "NetScreen only supports DSA keys" says. It looks for
+`ssh-dss` in the base64 field alone, where that text never appears, so every key
+is skipped as "Non-dsa" and the run exits with status 1. The code is unchanged
+since it was added in 2013. Reason to differ: a false report, since a DSA key is
+reported as not DSA; nothing is installed and the status is 1 in both. Installing
+DSA keys is not implemented: no NetScreen device or emulation is available to
+test it, and OpenSSH 10.0 no longer creates DSA keys. This is difference D-23.
 
 ### Recorded Difference: Targets That Cannot Be Appended Safely
 
@@ -464,8 +483,7 @@ It does not create the destination directory or key file, append keys, or change
 their permissions. Connections for the check still occur unless `-f` skips it;
 `-n -f` makes no authenticated connection, as in upstream, where `-f` bypasses
 the probe loop. Upstream still opens one connection without authentication to
-read the server's version for NetScreen detection; this tool makes that
-connection from stage 1.5, when NetScreen destinations are handled.
+read the server's version for NetScreen detection; this tool does not (D-23).
 Authentication logs, login hooks, host key handling, and user-configured
 `AddKeysToAgent` behavior may still occur as part of those connections.
 
