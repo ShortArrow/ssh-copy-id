@@ -36,7 +36,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | A01 | Password and passphrase prompts with public keys on stdin, cancellation, no terminal, agent confirmation | Passed | [Prompt experiment](../tests/prototypes/ssh-prompt/README.md): prompts and cancellation pass with both tested Windows clients; no-terminal behavior differs by client; the Windows agent refuses keys with confirmation. |
 | A02 | Agent-selected identities | Partial | Linux: a private `ssh-agent` with two keys, one installed, appends only the other (`unix_destination` i22 and golden scenario 16). Pending: the Windows OpenSSH agent without `SSH_AUTH_SOCK` (D-20), checked by hand without changing the user's agent. |
 | F01 | Interrupted writes and uncertain remote state | Pending | Inject disconnects and record actual file state and exit status. |
-| P01 | Rust CLI behavior versus pinned upstream | Pending | Implement the CLI before claiming product conformance. |
+| P01 | Rust CLI behavior versus pinned upstream | Passed for the covered scenarios | [p01_golden.rs](../tests/p01_golden.rs) runs 29 scenarios with both tools against L02 in the CI `linux-fixture` job; every difference left is tagged with its D-xx, STAGE-1.5 (the usage while `-s` is missing), or SHELL reason. |
 
 ## Windows Baseline: 2026-09-20
 
