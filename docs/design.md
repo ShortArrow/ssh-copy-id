@@ -212,7 +212,7 @@ compatibility suite is part of stage 1.5.
 | `-f` | Skip the installed-key check, the post-installation verification, and the untested-client warning wherever `-f` appears; duplicates may result. As upstream, the private key is not required when `-f` comes before the `-i` that selects the file, or when there is no `-i`; `-f` after `-i` still requires it, and the login hint then names it. After `-f -i`, the login hint shows `-i` without a value, as upstream prints it |
 | `-n` | Display the keys that would be installed without performing installation operations. Connect for installed-key checks unless skipped with `-f` |
 | `-s` | Install keys using SFTP |
-| `-t target_path` | Specify the destination file |
+| `-t target_path` | Specify the destination file. The path reaches the remote script as data, not inside the command (D-11); a path containing LF is rejected before connecting. The OpenWrt and Haiku targets apply only without `-t` (D-22) |
 | `-x` | Print each client command and the remote script before running them (D-14) |
 | `-h`, `-?` | Display help |
 | `--target-os unix\|windows` | Override destination detection (D-12); not in upstream |
@@ -352,9 +352,11 @@ to the profile directory. Concurrent installations in normal mode rely on
 appending, as upstream's `cat >>` does, and no lock is added. None of these is a
 difference.
 
-The `-t` path is embedded in the Unix script with POSIX single-quote escaping and
-in the Windows script as a PowerShell single-quoted literal, so quotes in the
-path are data. Upstream embeds the path inside a single-quoted `sh -c` argument,
+The `-t` path reaches the Unix script as the first line of its standard input,
+before the keys, and the Windows script as a PowerShell single-quoted literal, so
+quotes, `!`, and CR in the path are data whatever the login shell; csh and tcsh
+would expand `!` even inside single quotes. A path containing LF cannot be one
+line and is rejected before connecting. Upstream embeds the path inside a single-quoted `sh -c` argument,
 so a quote in the path ends the script text early and the rest of the path is
 read as shell syntax. Apparent intent: `-t` names a plain path relative to the
 home directory. Reason to differ: the run fails or executes text from the path in
@@ -390,6 +392,15 @@ The upstream special cases stay. For the default target, OpenWrt as root
 installs into `/etc/dropbear/authorized_keys` and Haiku uses
 `config/settings/ssh/authorized_keys`. NetScreen keys are installed one per
 command as upstream does; that case belongs to stage 1.5.
+
+### Recorded Difference: Explicit Target on OpenWrt and Haiku
+
+With `-t`, the given path is written on every destination. Upstream sets its
+OpenWrt-root and Haiku targets after reading `-t` and writes there instead. Its
+history adds `-t` two weeks after the OpenWrt case without touching it, and no
+record says the override is meant; that intent is inferred. Reason to differ: a
+change the user did not ask for, since the file the user named stays as it was
+and another file gains the key. This is difference D-22.
 
 The Unix installation command is one line, as upstream's is, so that csh and
 tcsh login shells can run `exec sh -c '…'`: they reject a newline inside single

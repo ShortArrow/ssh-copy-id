@@ -28,7 +28,7 @@ is in the [validation matrix](validation.md#matrix).
 | D-08 | `-s` uploads the edited file without checking for changes since the download. | Repeat `ls -l` before `put` and stop without writing when the size or modification time changed. | [Change check before upload](design.md#recorded-difference-change-check-before-upload) |
 | D-09 | `-s` ignores every `get` error and continues; a failed read can lead to uploading a file with only the new keys. | Check the target with `ls -l` first; stop before writing on any error except a missing file. | [SFTP mode](design.md#sftp-mode) |
 | D-10 | Appends malformed lines, a standalone CR, or a NUL byte as given. | Reject such input before transmission, with the line number. | [CRLF normalization](design.md#crlf-normalization) |
-| D-11 | A quote in the `-t` path breaks the remote `sh -c` script. | Quote the path as data on Unix and Windows destinations. | [Custom parent](design.md#recorded-difference-existing-parent-directory-of-a-custom-target) |
+| D-11 | A quote in the `-t` path breaks the remote `sh -c` script, and `!` breaks it under csh and tcsh. | Pass the path as data: on stdin on Unix destinations, as a quoted literal on Windows destinations; reject a path containing LF. | [Custom parent](design.md#recorded-difference-existing-parent-directory-of-a-custom-target) |
 | D-12 | Sends the `sh` script without checking the destination; has no OS option. | In normal mode, detect the shell family with one more connection before writing; `--target-os` overrides. | [Remote operating systems](design.md#remote-operating-systems-and-shells) |
 | D-13 | Runs with any OpenSSH client. | Warns on client versions whose stderr patterns were not tested; output it cannot classify makes the check inconclusive. | [Connection backend](design.md#connection-backend-evaluation) |
 | D-14 | `-x` enables the shell's `set -x` trace. | `-x` prints each client command and the remote script before running them. | [Exit statuses and messages](design.md#exit-statuses-messages-and-special-destinations) |
@@ -39,6 +39,7 @@ is in the [validation matrix](validation.md#matrix).
 | D-19 | Exits 1 with only `ssh`'s messages when `ssh` fails before the script reports anything, also after a connection drop that follows the write. | Adds a line saying the script reported nothing and nothing was written if authentication failed. | [Exit before any result line](design.md#recorded-difference-exit-before-any-result-line) |
 | D-20 | Without `-i`, asks the agent only when `SSH_AUTH_SOCK` is set. | Runs `ssh-add -L` whatever `SSH_AUTH_SOCK` holds, so the Windows agent's keys are used. | [Agent without `SSH_AUTH_SOCK`](design.md#recorded-difference-agent-without-ssh_auth_sock) |
 | D-21 | Accepts a `-i` file with several key lines, checks them all with its one private key, and appends them all when that key is not installed. | Rejects a `-i` file with more than one key line before anything is sent. | [One key per selected file](design.md#recorded-difference-one-key-per-selected-file) |
+| D-22 | Writes OpenWrt root's and Haiku's own targets even when `-t` names another path. | Writes the `-t` path on every destination; the special targets apply only without `-t`. | [Explicit target](design.md#recorded-difference-explicit-target-on-openwrt-and-haiku) |
 
 ## Destination Differences
 
