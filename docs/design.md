@@ -637,7 +637,8 @@ prefixed `.pub` file through both transports and forced mode.
 #### Recorded Difference: Counting Keys
 
 Each line of the key file loses its leading and trailing spaces and tabs, and
-blank lines at the end are dropped, as upstream's line reading does. Under `-f`
+lines left empty at the end are dropped, as upstream's line reading does; a CR
+is not removed, so a line holding a CR stays. Under `-f`
 upstream reads the keys with `$(cat …)` or `$(ssh-add -L)` instead, so the
 lines are sent as given and only empty lines at the end are dropped; this tool
 does the same. `#` comment
