@@ -9,3 +9,4 @@ pub mod platform;
 pub mod remote_script;
 pub mod result_line;
 pub mod ssh_process;
+pub mod trace;

@@ -39,6 +39,10 @@ impl TargetPath {
 /// Every command that takes the target or its directory as an operand gets it
 /// after `--` or as an `of=` value, so a path starting with `-` is a file name.
 ///
+/// With `trace`, the script starts with `set -x;`, as upstream's does under
+/// `-x`, so the destination's shell traces it to stderr; stdout and the target
+/// are as without it.
+///
 /// The command runs `exec sh -c` with the script quoted as one word, so the
 /// destination's login shell only has to run `exec`. The command is one line
 /// without `!`, as csh and tcsh require.
@@ -73,12 +77,17 @@ impl TargetPath {
 /// and writes it to the next output; inside the subshell that output is the
 /// target again, so the remainder cannot reach the size check or the result
 /// lines.
-pub fn install_command(target: Option<&TargetPath>) -> String {
+pub fn install_command(target: Option<&TargetPath>, trace: bool) -> String {
     let selection = match target {
         None => DEFAULT_TARGET_SELECTION,
         Some(_) => EXPLICIT_TARGET_SELECTION,
     };
-    let script = format!("{} {}", one_line(selection), one_line(INSTALL_SCRIPT));
+    let trace = if trace { "set -x; " } else { "" };
+    let script = format!(
+        "{trace}{} {}",
+        one_line(selection),
+        one_line(INSTALL_SCRIPT)
+    );
     format!("exec sh -c {}", sh_quote(&script))
 }
 
@@ -241,11 +250,25 @@ mod tests {
         }
 
         fn run_after(&self, setup: &str, target: Option<&str>, keys: &str) -> (Report, String) {
+            let (report, stdout, _) = self.run_traced(setup, target, keys, false);
+            (report, stdout)
+        }
+
+        fn run_traced(
+            &self,
+            setup: &str,
+            target: Option<&str>,
+            keys: &str,
+            trace: bool,
+        ) -> (Report, String, String) {
             let target = target.map(|path| TargetPath::new(path).expect("a one-line path"));
             let stdin = install_input(target.as_ref(), keys.as_bytes());
             let mut child = Command::new("sh")
                 .arg("-c")
-                .arg(format!("{setup} {}", install_command(target.as_ref())))
+                .arg(format!(
+                    "{setup} {}",
+                    install_command(target.as_ref(), trace)
+                ))
                 .env("HOME", &self.0)
                 .current_dir(std::env::temp_dir())
                 .stdin(Stdio::piped())
@@ -267,6 +290,7 @@ mod tests {
             (
                 parse_report(&output.stdout),
                 String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
             )
         }
     }
@@ -466,7 +490,12 @@ mod tests {
     #[test]
     fn s11_command_has_no_newline_or_exclamation_mark_for_csh() {
         let target = TargetPath::new(".ssh/odd 'name' 名前!\r").unwrap();
-        for command in [install_command(None), install_command(Some(&target))] {
+        for command in [
+            install_command(None, false),
+            install_command(Some(&target), false),
+            install_command(None, true),
+            install_command(Some(&target), true),
+        ] {
             assert!(!command.contains('\n'), "{command}");
             assert!(!command.contains('\r'), "{command}");
             assert!(!command.contains('!'), "{command}");
@@ -522,7 +551,7 @@ mod tests {
 
     #[test]
     fn s14_default_target_keeps_upstream_special_cases() {
-        let command = install_command(None);
+        let command = install_command(None, false);
         for expected in [
             "/etc/openwrt_release",
             "/etc/dropbear/authorized_keys",
@@ -535,7 +564,7 @@ mod tests {
 
     #[test]
     fn s15_explicit_target_has_no_special_cases() {
-        let command = install_command(Some(&TargetPath::new(".ssh/x").unwrap()));
+        let command = install_command(Some(&TargetPath::new(".ssh/x").unwrap()), false);
         for unexpected in ["/etc/openwrt_release", "Haiku"] {
             assert!(!command.contains(unexpected), "{unexpected} in {command}");
         }
@@ -1117,8 +1146,8 @@ mod tests {
     fn s40_command_holds_no_part_of_the_target_path() {
         let marked = TargetPath::new("keys/Xq7-it's 名前").unwrap();
         let other = TargetPath::new("other").unwrap();
-        let command = install_command(Some(&marked));
-        assert_eq!(command, install_command(Some(&other)));
+        let command = install_command(Some(&marked), false);
+        assert_eq!(command, install_command(Some(&other), false));
         for part in ["Xq7", "名前", &encode_path("名前".as_bytes())] {
             assert!(!command.contains(part), "{part} in {command}");
         }
@@ -1249,5 +1278,50 @@ mod tests {
             fs::read_to_string(home.file("restorecon.args")).unwrap(),
             "-F\n--\n.\n-R\n-F\n--\n-v\n-v/-n\n"
         );
+    }
+
+    #[test]
+    fn s48_trace_starts_the_script_with_set_x_as_upstream() {
+        let target = TargetPath::new(".ssh/x").unwrap();
+        for target in [None, Some(&target)] {
+            let traced = install_command(target, true);
+            assert!(traced.starts_with("exec sh -c 'set -x; "), "{traced}");
+            assert_eq!(traced.matches("set -x").count(), 1, "{traced}");
+            let plain = install_command(target, false);
+            assert!(!plain.contains("set -x"), "{plain}");
+            assert_eq!(
+                traced.replacen("set -x; ", "", 1),
+                plain,
+                "only set -x is added"
+            );
+        }
+    }
+
+    #[test]
+    fn s49_traced_script_reports_and_writes_as_without_trace() {
+        for target in [None, Some("keys/x")] {
+            let plain = Home::new();
+            let traced = Home::new();
+            let keys = format!(
+                "{KEY_A}
+# note
+{KEY_B}
+"
+            );
+            let (expected, expected_stdout, _) = plain.run_traced("", target, &keys, false);
+            let (report, stdout, stderr) = traced.run_traced("", target, &keys, true);
+            assert_eq!(report, expected);
+            assert_eq!(stdout, expected_stdout);
+            let file = target.unwrap_or(".ssh/authorized_keys");
+            assert_eq!(
+                fs::read(traced.file(file)).unwrap(),
+                fs::read(plain.file(file)).unwrap()
+            );
+            assert!(
+                stderr.lines().any(|line| line.starts_with("+ ")),
+                "{stderr}"
+            );
+            assert!(stderr.contains("umask 077"), "{stderr}");
+        }
     }
 }

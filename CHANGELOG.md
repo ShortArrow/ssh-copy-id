@@ -45,6 +45,11 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   without it. When the server still rejects the key afterwards, the warning
   asks to check that the server's `AuthorizedKeysFile` setting reads the file,
   as well as its permissions (D-06).
+- `-x` prints each `ssh` and `ssh-add` command to stderr before running it, as
+  a `+ ` line with the arguments quoted as `set -x` quotes them; standard input
+  is not printed (D-14). As upstream's, the installation script starts with
+  `set -x`, so the destination's shell traces it to stderr. `-n`, `-f` and
+  `-t` work with it as without it.
 
 ### Changed
 

@@ -45,6 +45,9 @@ pub struct Invocation {
     pub dry_run: bool,
     /// `-t target_path`, as given; the last one counts, as in upstream.
     pub target: Option<String>,
+    /// `-x`: each client command is printed before it runs, and the
+    /// installation script traces itself with `set -x`.
+    pub trace: bool,
 }
 
 /// Whether `-f` was given and whether it preceded the key selection. Upstream
@@ -112,6 +115,7 @@ pub fn parse(
     let mut force = Force::Off;
     let mut dry_run = false;
     let mut target = None;
+    let mut trace = false;
     let mut index = 0;
     while let Some(arg) = args.get(index) {
         index += 1;
@@ -163,7 +167,8 @@ pub fn parse(
                 'f' if force == Force::Off => force = Force::BeforeKeySelection,
                 'f' => {}
                 'n' => dry_run = true,
-                's' | 'x' => return Err(ArgsError::Unsupported(flag)),
+                'x' => trace = true,
+                's' => return Err(ArgsError::Unsupported(flag)),
                 _ => return Err(ArgsError::IllegalOption(flag)),
             }
         }
@@ -182,6 +187,7 @@ pub fn parse(
         force,
         dry_run,
         target,
+        trace,
     })
 }
 
@@ -226,6 +232,7 @@ mod tests {
             force: Force::Off,
             dry_run: false,
             target: None,
+            trace: false,
         }
     }
 
@@ -332,14 +339,10 @@ mod tests {
 
     #[test]
     fn p11_later_stage_options_are_unsupported() {
-        for flag in ['s', 'x'] {
-            let given = args(&[&format!("-{flag}"), "-i", "k", "h"]);
-            assert_eq!(
-                parse_plain(&given),
-                Err(ArgsError::Unsupported(flag)),
-                "flag {flag}"
-            );
-        }
+        assert_eq!(
+            parse_plain(&args(&["-s", "-i", "k", "h"])),
+            Err(ArgsError::Unsupported('s'))
+        );
     }
 
     #[test]
@@ -566,5 +569,26 @@ mod tests {
     fn p34_a_later_target_replaces_an_earlier_one_as_upstream() {
         let parsed = parse_plain(&args(&["-t", "a", "-t", "b", "h"])).unwrap();
         assert_eq!(parsed.target.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn p35_trace_is_off_unless_given() {
+        assert!(!parse_plain(&args(&["-i", "k", "h"])).unwrap().trace);
+    }
+
+    #[test]
+    fn p36_trace_alone_or_grouped_leaves_the_rest_unchanged() {
+        assert_eq!(
+            parse_plain(&args(&["-x", "-i", "k", "h"])),
+            Ok(Invocation {
+                trace: true,
+                ..invocation("h", "k")
+            })
+        );
+        let grouped = parse_plain(&args(&["-fnx", "-t", "a", "h"])).unwrap();
+        assert!(grouped.trace);
+        assert!(grouped.dry_run);
+        assert_eq!(grouped.force, Force::BeforeKeySelection);
+        assert_eq!(grouped.target.as_deref(), Some("a"));
     }
 }

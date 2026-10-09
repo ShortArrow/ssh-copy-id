@@ -8,6 +8,8 @@ use crate::installed_check::{
 use crate::key_input::{InputError, PreparedInput, prepare, prepare_verbatim};
 use crate::remote_script::{TargetPath, install_command, install_input, sh_quote};
 use crate::result_line::{Outcome, parse_report};
+use crate::trace::command_line;
+use std::cell::RefCell;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -90,6 +92,10 @@ impl Drop for ScratchDir<'_> {
 /// `ssh` run, an interrupt stops the run with exit status 1: before the
 /// installation nothing was written; after it the parsed outcome is reported and
 /// verification is not attempted or not reported.
+///
+/// With `-x`, each `ssh` and `ssh-add` run is announced on `err` by its
+/// `trace::command_line` just before it starts, among the other diagnostics in
+/// the order they happen; its standard input is not printed.
 pub fn run(
     invocation: &Invocation,
     env: &Environment,
@@ -97,7 +103,13 @@ pub fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
-    match install(invocation, env, ssh, out, err) {
+    let err = RefCell::new(err);
+    let mut ssh = Traced {
+        ssh,
+        trace: invocation.trace.then_some(&err),
+    };
+    let err = &mut SharedWriter(&err);
+    match install(invocation, env, &mut ssh, out, err) {
         Ok(()) => 0,
         Err(Stop::Error(message)) => {
             let _ = writeln!(err, "ssh-copy-id: ERROR: {message}");
@@ -112,6 +124,53 @@ pub fn run(
             let _ = write!(err, "\nssh-copy-id: {}\n\n", relayed.join("\n"));
             1
         }
+    }
+}
+
+/// The run's stderr, shared between its diagnostics and the `-x` trace.
+type SharedErr<'w> = RefCell<&'w mut dyn Write>;
+
+/// Writes to the shared stderr, borrowing it for each write.
+struct SharedWriter<'r, 'w>(&'r SharedErr<'w>);
+
+impl Write for SharedWriter<'_, '_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.borrow_mut().write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.borrow_mut().flush()
+    }
+}
+
+/// An `Ssh` that writes each command's trace line to `trace`, when set, before running it.
+struct Traced<'s, 'r, 'w> {
+    ssh: &'s mut dyn Ssh,
+    trace: Option<&'r SharedErr<'w>>,
+}
+
+impl Traced<'_, '_, '_> {
+    fn announce(&self, program: &str, args: &[String]) {
+        if let Some(err) = self.trace {
+            let _ = writeln!(err.borrow_mut(), "{}", command_line(program, args));
+        }
+    }
+}
+
+impl Ssh for Traced<'_, '_, '_> {
+    fn run(
+        &mut self,
+        args: &[String],
+        stdin: &[u8],
+        capture_stderr: bool,
+    ) -> io::Result<SshOutput> {
+        self.announce("ssh", args);
+        self.ssh.run(args, stdin, capture_stderr)
+    }
+
+    fn list_agent_keys(&mut self) -> io::Result<SshOutput> {
+        self.announce("ssh-add", &["-L".to_string()]);
+        self.ssh.list_agent_keys()
     }
 }
 
@@ -426,7 +485,7 @@ fn write_keys(
     let mut install_args = vec!["-o".to_string(), "RequestTTY=no".to_string()];
     install_args.extend(install.common.iter().cloned());
     install_args.push(invocation.destination.clone());
-    install_args.push(install_command(install.target));
+    install_args.push(install_command(install.target, invocation.trace));
     let input = install_input(install.target, text);
     let installed = run_ssh(ssh, &install_args, &input, false)?;
     if installed.status == Some(255) && !has_report_line(&installed.stdout) {
@@ -924,6 +983,7 @@ fn warn(err: &mut dyn Write, message: &str) {
 mod tests {
     use super::*;
     use crate::remote_script::{TargetPath, install_command};
+    use crate::trace::command_line;
     use std::cell::{Cell, RefCell};
     use std::collections::{HashMap, HashSet};
     use std::ffi::OsString;
@@ -1133,6 +1193,7 @@ mod tests {
             force: Force::Off,
             dry_run: false,
             target: None,
+            trace: false,
         }
     }
 
@@ -1296,7 +1357,7 @@ mod tests {
         assert_eq!(stdin, &format!("{KEY}\n").into_bytes());
         assert!(!capture_stderr);
         assert_eq!(args[args.len() - 2], "u@h");
-        assert_eq!(args.last().unwrap(), &install_command(None));
+        assert_eq!(args.last().unwrap(), &install_command(None, false));
         assert!(run.out.contains("Number of key(s) added: 1"), "{}", run.out);
         assert!(!run.err.contains("could not be verified"), "{}", run.err);
         assert!(run.err.contains("the key authenticates"), "{}", run.err);
@@ -1596,7 +1657,7 @@ mod tests {
         ]
         .iter()
         .map(|s| s.to_string())
-        .chain([install_command(None)])
+        .chain([install_command(None, false)])
         .collect();
         assert_eq!(args, &expected);
     }
@@ -3236,7 +3297,7 @@ mod tests {
             &format!("keys/my file\nkeys/my%20file\n{KEY}\n").into_bytes()
         );
         let target = TargetPath::new("keys/my file").unwrap();
-        assert_eq!(args.last().unwrap(), &install_command(Some(&target)));
+        assert_eq!(args.last().unwrap(), &install_command(Some(&target), false));
         assert!(!args.iter().any(|arg| arg.contains("my file")), "{args:?}");
     }
 
@@ -3379,5 +3440,177 @@ mod tests {
             "{}",
             run.err
         );
+    }
+
+    fn traced(invocation: Invocation) -> Invocation {
+        Invocation {
+            trace: true,
+            ..invocation
+        }
+    }
+
+    fn trace_lines(err: &str) -> Vec<&str> {
+        err.lines().filter(|line| line.starts_with("+ ")).collect()
+    }
+
+    fn without_trace_lines(err: &str) -> String {
+        err.split_inclusive('\n')
+            .filter(|line| !line.starts_with("+ "))
+            .collect()
+    }
+
+    /// The trace line of every call the fake received, in order.
+    fn traced_calls(ssh: &FakeSsh) -> Vec<String> {
+        ssh.calls
+            .iter()
+            .map(|(args, _, _)| match args.split_first() {
+                Some((program, rest)) if program == "ssh-add" => command_line(program, rest),
+                _ => command_line("ssh", args),
+            })
+            .collect()
+    }
+
+    /// Runs `invocation` without and with `-x` against the same script and
+    /// returns both runs, the traced one second.
+    fn with_and_without_trace(
+        invocation: &Invocation,
+        files: impl Fn() -> HashMap<PathBuf, Vec<u8>>,
+        ssh: impl Fn() -> FakeSsh,
+    ) -> (Run, Run) {
+        let plain = execute_with(invocation, files(), true, false, ssh());
+        let traced = execute_with(&traced(invocation.clone()), files(), true, false, ssh());
+        (plain, traced)
+    }
+
+    fn assert_traced_as_plain_plus_one_line_per_call(plain: &Run, traced: &Run) {
+        assert_eq!(traced.status, plain.status, "{}", traced.err);
+        assert_eq!(traced.out, plain.out);
+        assert_eq!(traced.ssh.kinds(), plain.ssh.kinds());
+        assert!(trace_lines(&plain.err).is_empty(), "{}", plain.err);
+        assert!(!traced.ssh.calls.is_empty());
+        assert_eq!(trace_lines(&traced.err), traced_calls(&traced.ssh));
+        assert_eq!(without_trace_lines(&traced.err), plain.err);
+    }
+
+    #[test]
+    fn x01_trace_prints_each_ssh_command_before_it_runs() {
+        let (plain, traced) = with_and_without_trace(&invocation(), files, installs_and_verifies);
+        assert_traced_as_plain_plus_one_line_per_call(&plain, &traced);
+        assert_eq!(
+            trace_lines(&traced.err).len(),
+            5,
+            "version, config, check, install, verify: {}",
+            traced.err
+        );
+        let lines: Vec<&str> = traced.err.lines().collect();
+        let install = traced_calls(&traced.ssh)[3].clone();
+        let at = lines.iter().position(|line| *line == install).unwrap();
+        assert!(
+            lines[at - 1].contains("key(s) remain to be installed"),
+            "{}",
+            traced.err
+        );
+        assert_eq!(lines[1], "+ ssh -V", "{}", traced.err);
+    }
+
+    #[test]
+    fn x02_trace_starts_the_installation_script_with_set_x() {
+        let (plain, traced) = with_and_without_trace(&invocation(), files, installs_and_verifies);
+        let (args, _, _) = traced.ssh.call("install");
+        assert_eq!(args.last().unwrap(), &install_command(None, true));
+        let (args, _, _) = plain.ssh.call("install");
+        assert_eq!(args.last().unwrap(), &install_command(None, false));
+    }
+
+    #[test]
+    fn x03_trace_never_prints_standard_input() {
+        let (plain, traced) =
+            with_and_without_trace(&targeting("keys/my file", invocation()), files, || {
+                FakeSsh::new()
+                    .probe(255, DENIED)
+                    .installs(TARGET_REPORT)
+                    .probe(0, ACCEPTED)
+            });
+        assert_traced_as_plain_plus_one_line_per_call(&plain, &traced);
+        for input in ["me@here", "AAAAC3Nza", "keys/my file", "my%20file"] {
+            assert!(!traced.err.contains(input), "{input} in {}", traced.err);
+        }
+    }
+
+    #[test]
+    fn x04_trace_line_is_written_when_ssh_fails_to_start() {
+        let run = execute_with(&traced(invocation()), files(), true, false, {
+            let mut ssh = FakeSsh::new();
+            ssh.fails_to_start = Some("version");
+            ssh
+        });
+        assert_eq!(run.status, 1);
+        let lines: Vec<&str> = run.err.lines().collect();
+        assert_eq!(trace_lines(&run.err), ["+ ssh -V"], "{}", run.err);
+        let at = lines.iter().position(|line| *line == "+ ssh -V").unwrap();
+        assert!(
+            lines[at + 1..]
+                .iter()
+                .any(|line| line.contains("cannot run ssh"))
+        );
+    }
+
+    #[test]
+    fn x05_trace_line_is_written_when_ssh_add_fails_to_start() {
+        let run = execute_with(
+            &traced(selecting(KeySelection::Unspecified)),
+            default_key_files(),
+            true,
+            false,
+            with_default_key_listing({
+                let mut ssh = installs_and_verifies();
+                ssh.fails_to_start = Some("agent");
+                ssh
+            }),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(trace_lines(&run.err)[0], "+ ssh-add -L");
+        assert_eq!(trace_lines(&run.err), traced_calls(&run.ssh));
+    }
+
+    #[test]
+    fn x06_trace_combines_with_dry_run_force_and_target() {
+        let cases: [(Invocation, fn() -> FakeSsh); 4] = [
+            (dry(invocation()), || FakeSsh::new().probe(255, DENIED)),
+            (forced(invocation()), || FakeSsh::new().installs(INSTALLED)),
+            (dry(forced(invocation())), FakeSsh::new),
+            (forced(targeting("keys/my file", invocation())), || {
+                FakeSsh::new().installs(TARGET_REPORT)
+            }),
+        ];
+        for (invocation, ssh) in cases {
+            let (plain, traced) = with_and_without_trace(&invocation, files, ssh);
+            assert_eq!(trace_lines(&traced.err), traced_calls(&traced.ssh));
+            assert_eq!(traced.status, plain.status, "{}", traced.err);
+            assert_eq!(traced.out, plain.out);
+            assert_eq!(without_trace_lines(&traced.err), plain.err);
+        }
+    }
+
+    #[test]
+    fn x07_trace_covers_agent_listing_and_every_agent_key_probe() {
+        let ssh = || {
+            with_default_key_listing(two_agent_keys(
+                FakeSsh::new()
+                    .probe(255, DENIED)
+                    .probe(255, DENIED)
+                    .installs(INSTALLED_TWO)
+                    .probe(0, ACCEPTED)
+                    .probe(0, ACCEPTED),
+            ))
+        };
+        let (plain, traced) = with_and_without_trace(
+            &selecting(KeySelection::Unspecified),
+            default_key_files,
+            ssh,
+        );
+        assert_traced_as_plain_plus_one_line_per_call(&plain, &traced);
+        assert_eq!(trace_lines(&traced.err).len(), 9);
+        assert_eq!(trace_lines(&traced.err)[0], "+ ssh-add -L");
     }
 }

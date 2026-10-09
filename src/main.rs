@@ -8,16 +8,17 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n] [-i [identity_file]] [-t target_path] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+const USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-x] [-i [identity_file]] [-t target_path] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
 \t-f: force mode -- copy keys without trying to check if they are already installed
 \t-n: dry run    -- no keys are actually copied
+\t-x: debug      -- enables -x in this shell, for debugging
 \t-i: the public key to install; '.pub' is added when absent
 \t-t: the remote file to add the keys to, relative to the home directory
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
 \t-h|-?: print this help
 This release installs keys on a Unix-like host.
--s and -x are not available yet.";
+-s is not available yet.";
 
 fn main() -> ExitCode {
     let mut args = Vec::new();
@@ -217,7 +218,7 @@ mod tests {
     #[test]
     fn m14_the_usage_offers_force_mode_and_dry_run_in_upstream_s_words() {
         assert!(
-            USAGE.starts_with("Usage: ssh-copy-id [-h|-?|-f|-n] [-i [identity_file]]"),
+            USAGE.starts_with("Usage: ssh-copy-id [-h|-?|-f|-n|-x] [-i [identity_file]]"),
             "{USAGE}"
         );
         assert!(
@@ -227,8 +228,17 @@ mod tests {
             ),
             "{USAGE}"
         );
+        assert!(USAGE.ends_with("\n-s is not available yet."), "{USAGE}");
+    }
+
+    #[test]
+    fn m16_the_usage_offers_trace_in_upstream_s_words_after_dry_run() {
         assert!(
-            USAGE.ends_with("\n-s and -x are not available yet."),
+            USAGE.contains(
+                "\n\t-n: dry run    -- no keys are actually copied\n\
+                 \t-x: debug      -- enables -x in this shell, for debugging\n\
+                 \t-i: the public key to install; '.pub' is added when absent\n"
+            ),
             "{USAGE}"
         );
     }

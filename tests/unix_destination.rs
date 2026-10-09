@@ -1,5 +1,5 @@
 //! Behavior against the L02 Linux fixture: requirements 1, 2, 3, 4, 5, 7, and 8,
-//! design D-01, D-03, D-11, D-15, D-16, D-17, D-18, and D-20, and default key selection.
+//! design D-01, D-03, D-11, D-14, D-15, D-16, D-17, D-18, and D-20, and default key selection.
 //! Every run of the CLI must leave no `ssh-copy-id.*` scratch directory in the
 //! local `~/.ssh` it uses.
 //!
@@ -847,4 +847,29 @@ fn i33_d01_a_key_accepted_with_partial_success_is_skipped() {
         fixture.authorized_keys("mfauser"),
         format!("{}\n", public_line(&key))
     );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i34_d14_trace_prints_the_client_commands_and_the_remote_script() {
+    let fixture = Fixture::start();
+    for user in ["pwuser", "cshuser"] {
+        let key = keygen(&fixture.work, &format!("traced-{user}"), "traced@test");
+        let run = fixture.copy_id(&key, user, &["-x"]);
+        let stderr = text(&run.stderr);
+        assert_eq!(run.status.code(), Some(0), "{stderr}");
+        assert!(text(&run.stdout).contains("Number of key(s) added: 1"));
+        assert_eq!(
+            fixture.read_as_root(&format!("/home/{user}/.ssh/authorized_keys")),
+            format!("{}\n", public_line(&key))
+        );
+        let client: Vec<&str> = stderr
+            .lines()
+            .filter(|line| line.starts_with("+ ssh "))
+            .collect();
+        assert_eq!(client.len(), 5, "{stderr}");
+        assert_eq!(client[0], "+ ssh -V", "{stderr}");
+        assert!(client[3].contains(r"exec sh -c '\''set -x; "), "{stderr}");
+        assert!(stderr.contains("\n+ umask 077\n"), "{stderr}");
+    }
 }
