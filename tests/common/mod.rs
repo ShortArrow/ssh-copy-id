@@ -1,6 +1,7 @@
 //! The L02 Linux fixture shared by the tests that run against it: a container
 //! from the `ssh-copy-id-l02:local` image on a free loopback port, with its own
-//! work directory, pwuser password, and keyuser control key.
+//! work directory, pwuser password, and keyuser control key; and the container,
+//! `ssh` option, and askpass helpers that the other fixtures' tests share.
 #![allow(dead_code)]
 
 use std::fs;
@@ -41,31 +42,14 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::SeqCst)
         );
         let public = fs::read_to_string(control.with_extension("pub")).unwrap();
-        let password_env = format!("PWUSER_PASSWORD={password}");
-        let control_env = format!("CONTROL_PUBLIC_KEY={}", public.trim());
-        let mut args = vec![
-            "run",
-            "-d",
-            "-p",
-            "127.0.0.1::22",
-            "-e",
-            &password_env,
-            "-e",
-            &control_env,
-        ];
-        args.extend_from_slice(run_args);
-        args.push(IMAGE);
-        let run = command("docker", &args);
-        assert!(run.status.success(), "docker run: {}", text(&run.stderr));
-        let container = text(&run.stdout).trim().to_string();
-        let mapped = command("docker", &["port", &container, "22/tcp"]);
-        let port = text(&mapped.stdout)
-            .lines()
-            .next()
-            .and_then(|line| line.rsplit(':').next())
-            .unwrap()
-            .trim()
-            .to_string();
+        let (container, port) = run_container(
+            IMAGE,
+            &[
+                format!("PWUSER_PASSWORD={password}"),
+                format!("CONTROL_PUBLIC_KEY={}", public.trim()),
+            ],
+            run_args,
+        );
         let fixture = Fixture {
             container,
             port,
@@ -105,35 +89,11 @@ impl Fixture {
     }
 
     pub fn base_ssh_args(&self) -> Vec<String> {
-        vec![
-            "-F".into(),
-            "none".into(),
-            "-p".into(),
-            self.port.clone(),
-            "-o".into(),
-            format!("UserKnownHostsFile={}", self.known_hosts().display()),
-            "-o".into(),
-            "StrictHostKeyChecking=accept-new".into(),
-            "-o".into(),
-            "ConnectTimeout=5".into(),
-        ]
+        base_ssh_args(&self.port, &self.known_hosts())
     }
 
     pub fn askpass(&self, password: &str) -> PathBuf {
-        if cfg!(windows) {
-            let path = self.work.join("askpass.cmd");
-            fs::write(&path, format!("@echo {password}\r\n")).unwrap();
-            path
-        } else {
-            let path = self.work.join("askpass");
-            fs::write(&path, format!("#!/bin/sh\necho '{password}'\n")).unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-            }
-            path
-        }
+        write_askpass(&self.work, password)
     }
 
     pub fn exec(&self, user: &str, script: &str) -> Output {
@@ -194,6 +154,66 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = command("docker", &["rm", "-f", &self.container]);
         let _ = fs::remove_dir_all(&self.work);
+    }
+}
+
+/// Starts a detached container from `image` with each of `env` passed as `-e`
+/// and `run_args` added to `docker run`, port 22 published on a free loopback
+/// port, and returns the container's ID and that port.
+pub fn run_container(image: &str, env: &[String], run_args: &[&str]) -> (String, String) {
+    let mut args = vec!["run", "-d", "-p", "127.0.0.1::22"];
+    for variable in env {
+        args.extend_from_slice(&["-e", variable]);
+    }
+    args.extend_from_slice(run_args);
+    args.push(image);
+    let run = command("docker", &args);
+    assert!(run.status.success(), "docker run: {}", text(&run.stderr));
+    let container = text(&run.stdout).trim().to_string();
+    let mapped = command("docker", &["port", &container, "22/tcp"]);
+    let port = text(&mapped.stdout)
+        .lines()
+        .next()
+        .and_then(|line| line.rsplit(':').next())
+        .unwrap()
+        .trim()
+        .to_string();
+    (container, port)
+}
+
+/// The `ssh` options of every fixture connection: no configuration file,
+/// `known_hosts` as the known-hosts file, a new host key accepted, and a
+/// five-second connection timeout.
+pub fn base_ssh_args(port: &str, known_hosts: &Path) -> Vec<String> {
+    vec![
+        "-F".into(),
+        "none".into(),
+        "-p".into(),
+        port.to_string(),
+        "-o".into(),
+        format!("UserKnownHostsFile={}", known_hosts.display()),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "-o".into(),
+        "ConnectTimeout=5".into(),
+    ]
+}
+
+/// Writes an askpass program that answers `password` into `dir` and returns its path.
+pub fn write_askpass(dir: &Path, password: &str) -> PathBuf {
+    if cfg!(windows) {
+        let path = dir.join("askpass.cmd");
+        fs::write(&path, format!("@echo {password}\r\n")).unwrap();
+        path
+    } else {
+        let path = dir.join("askpass");
+        fs::write(&path, format!("#!/bin/sh\necho '{password}'\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        path
     }
 }
 
