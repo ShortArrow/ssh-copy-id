@@ -39,6 +39,7 @@ is in the [validation matrix](validation.md#matrix).
 | D-20 | Without `-i`, asks the agent only when `SSH_AUTH_SOCK` is set. | Runs `ssh-add -L` whatever `SSH_AUTH_SOCK` holds, so the Windows agent's keys are used. | [Agent without `SSH_AUTH_SOCK`](design.md#recorded-difference-agent-without-ssh_auth_sock) |
 | D-21 | Accepts a `-i` file with several key lines, checks them all with its one private key, and appends them all when that key is not installed. | Rejects a `-i` file with more than one key line before anything is sent. | [One key per selected file](design.md#recorded-difference-one-key-per-selected-file) |
 | D-22 | Writes OpenWrt root's and Haiku's own targets even when `-t` names another path. | Writes the `-t` path on every destination; the special targets apply only without `-t`. | [Explicit target](design.md#recorded-difference-explicit-target-on-openwrt-and-haiku) |
+| D-23 | Connects once without authentication to read the server version, also under `-n -f`. On a NetScreen destination, looks for `ssh-dss` in the base64 field, so every key, DSA included, is skipped as "Non-dsa"; nothing is installed and the status is 1. | Does not detect NetScreen and makes no version connection; a NetScreen destination stops at shell-family detection (D-12) or exits 1 with no result line (D-19). | [NetScreen](design.md#recorded-difference-netscreen-destinations) |
 
 ## Destination Differences
 

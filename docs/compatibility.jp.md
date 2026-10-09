@@ -37,6 +37,7 @@
 | D-20 | `-i` がないとき、`SSH_AUTH_SOCK` がある場合だけagentに尋ねる。 | `SSH_AUTH_SOCK` にかかわらず `ssh-add -L` を実行し、Windowsのagentの鍵も使う。 | [`SSH_AUTH_SOCK` のないagent](design.jp.md#記録する差異-ssh_auth_sock-のないagent) |
 | D-21 | 鍵の行が複数ある `-i` のファイルを受け付け、1つの秘密鍵で全行を確かめ、その鍵が未登録なら全行を追記する。 | 鍵の行が複数ある `-i` のファイルは、何も送らずに拒否する。 | [選んだファイルには鍵1本](design.jp.md#記録する差異-選んだファイルには鍵1本) |
 | D-22 | `-t` で別のパスを指定しても、OpenWrtのrootとHaikuでは特例の登録先に書く。 | どの接続先でも `-t` のパスに書く。特例の登録先は `-t` がないときだけ使う。 | [明示した登録先](design.jp.md#記録する差異-openwrtとhaikuでの明示した登録先) |
+| D-23 | `-n -f` でも、認証しない接続を1回開いてサーバーの版を読む。NetScreenの接続先では `ssh-dss` をbase64の欄で探すので、DSAを含むすべての鍵を「Non-dsa」として飛ばす。何も登録せず、終了コードは1。 | NetScreenを見分けず、版を読む接続も行わない。NetScreenの接続先はシェル系統の判定で止まるか（D-12）、結果行なしで終了コード1で終わる（D-19）。 | [NetScreen](design.jp.md#記録する差異-netscreenの接続先) |
 
 ## 接続先の差異
 
