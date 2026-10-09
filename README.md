@@ -24,6 +24,8 @@ Documentation structure and update policy: [docs/README.md](docs/README.md).
 
 Differences from upstream: [English](docs/compatibility.md) | [日本語](docs/compatibility.jp.md).
 
+Behavior defined where the standards are silent: [English](docs/definitions.md) | [日本語](docs/definitions.jp.md).
+
 ## Install
 
 With Rust installed:
