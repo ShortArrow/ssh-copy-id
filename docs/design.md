@@ -393,11 +393,14 @@ key file that cannot be opened: upstream takes it from the shell's own error,
 dash's "No such file" where bash and this tool print the system's "No such file
 or directory".
 
-`-x` prints each client command line and the remote script to stderr before
-running them, the closest equivalent of upstream's `set -x`. Apparent intent of
-upstream's `-x`: trace the shell script itself. Reason to differ: a compiled
-program has no shell trace, so the platform cannot perform the upstream behavior.
-This is difference D-14; the output format differs, the purpose does not.
+`-x` prints each command this tool runs on the client, `ssh`, `ssh-add`, and
+`sftp`, to stderr before running it, as one line starting with `+ ` and with each
+argument quoted the way `set -x` quotes it; standard input is not printed. As
+upstream, the installation script on the destination starts with `set -x`, so its
+trace reaches stderr too. Apparent intent of upstream's `-x`: trace the script
+on both sides. Reason to differ on the client side: a compiled program has no
+shell trace, so the platform cannot perform the upstream behavior there. This is
+difference D-14; the client-side format differs, the purpose does not.
 
 The upstream special cases stay. For the default target, OpenWrt as root
 installs into `/etc/dropbear/authorized_keys` and Haiku uses
