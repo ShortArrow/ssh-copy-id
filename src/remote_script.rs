@@ -7,23 +7,45 @@ pub fn sh_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
+/// A `-t` path, which reaches the installation script as one line of its input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetPath(String);
+
+impl TargetPath {
+    /// The path as given, or `None` when it holds LF and so cannot be one line.
+    /// Every other character, CR included, is data.
+    pub fn new(path: &str) -> Option<TargetPath> {
+        (!path.contains('\n')).then(|| TargetPath(path.to_string()))
+    }
+
+    /// The path as given.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Builds the remote command that appends the key lines read from stdin to a target file.
 ///
 /// `None` targets `.ssh/authorized_keys` with upstream's special cases: OpenWrt as
 /// root uses `/etc/dropbear/authorized_keys` and Haiku uses
-/// `config/settings/ssh/authorized_keys`. `Some(target)` uses `target` as given.
-/// A relative target is relative to the home directory.
+/// `config/settings/ssh/authorized_keys`. `Some(target)` uses the target as
+/// given on every destination. A relative target is relative to the home
+/// directory; missing parent directories are created under `umask 077`, and
+/// existing ones keep their modes.
+///
+/// The command holds no part of the target: the script reads it from stdin, as
+/// [`install_input`] writes it, so quotes, `!` and CR in it are data whatever
+/// the login shell. The command depends only on whether a target is given.
 ///
 /// The command runs `exec sh -c` with the script quoted as one word, so the
 /// destination's login shell only has to run `exec`. The command is one line
-/// without `!`, as csh and tcsh require, provided `target` contains neither a
-/// line break nor `!`.
+/// without `!`, as csh and tcsh require.
 ///
-/// Every line of stdin is appended, comment lines and blank lines included;
-/// only the other lines are keys. As in `key_input`, a comment line's first
-/// character other than space and tab is `#`, and a blank line holds only
-/// spaces and tabs. A newline is added first when the target is non-empty and
-/// does not end with one.
+/// Every line of stdin after the target's lines is appended, comment lines and
+/// blank lines included; only the other lines are keys. As in `key_input`, a
+/// comment line's first character other than space and tab is `#`, and a blank
+/// line holds only spaces and tabs. A newline is added first when the target is
+/// non-empty and does not end with one.
 ///
 /// The script prints one result line per key and a summary line last, in the
 /// format `result_line::parse_report` reads; `path=` names the target actually
@@ -49,20 +71,28 @@ pub fn sh_quote(text: &str) -> String {
 /// and writes it to the next output; inside the subshell that output is the
 /// target again, so the remainder cannot reach the size check or the result
 /// lines.
-pub fn install_command(target: Option<&str>) -> String {
-    let script = format!("{} {}", target_selection(target), one_line(INSTALL_SCRIPT));
+pub fn install_command(target: Option<&TargetPath>) -> String {
+    let selection = match target {
+        None => DEFAULT_TARGET_SELECTION,
+        Some(_) => EXPLICIT_TARGET_SELECTION,
+    };
+    let script = format!("{} {}", one_line(selection), one_line(INSTALL_SCRIPT));
     format!("exec sh -c {}", sh_quote(&script))
 }
 
-fn target_selection(target: Option<&str>) -> String {
-    match target {
-        None => one_line(DEFAULT_TARGET_SELECTION),
-        Some(path) => format!(
-            "f={}; p={};",
-            sh_quote(path),
-            sh_quote(&encode_path(path.as_bytes()))
-        ),
+/// The stdin of [`install_command`]: with a target, the path and then its
+/// `result_line::encode_path` form, each as one line, before `keys`; without
+/// one, `keys` alone.
+pub fn install_input(target: Option<&TargetPath>, keys: &[u8]) -> Vec<u8> {
+    let mut input = Vec::new();
+    if let Some(TargetPath(path)) = target {
+        input.extend_from_slice(path.as_bytes());
+        input.push(b'\n');
+        input.extend_from_slice(encode_path(path.as_bytes()).as_bytes());
+        input.push(b'\n');
     }
+    input.extend_from_slice(keys);
+    input
 }
 
 fn one_line(script: &str) -> String {
@@ -82,6 +112,10 @@ if [ "$(uname -s)" = Haiku ]; then
     f=config/settings/ssh/authorized_keys;
 fi;
 p=$f;
+"##;
+
+const EXPLICIT_TARGET_SELECTION: &str = r##"IFS= read -r f;
+IFS= read -r p;
 "##;
 
 const INSTALL_SCRIPT: &str = r##"umask 077;
@@ -204,10 +238,12 @@ mod tests {
             self.run_after("", target, stdin)
         }
 
-        fn run_after(&self, setup: &str, target: Option<&str>, stdin: &str) -> (Report, String) {
+        fn run_after(&self, setup: &str, target: Option<&str>, keys: &str) -> (Report, String) {
+            let target = target.map(|path| TargetPath::new(path).expect("a one-line path"));
+            let stdin = install_input(target.as_ref(), keys.as_bytes());
             let mut child = Command::new("sh")
                 .arg("-c")
-                .arg(format!("{setup} {}", install_command(target)))
+                .arg(format!("{setup} {}", install_command(target.as_ref())))
                 .env("HOME", &self.0)
                 .current_dir(std::env::temp_dir())
                 .stdin(Stdio::piped())
@@ -216,12 +252,7 @@ mod tests {
                 .spawn()
                 .expect("sh must be on PATH for these tests");
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(stdin.as_bytes())
-                .unwrap();
+            child.stdin.take().unwrap().write_all(&stdin).unwrap();
             let deadline = Instant::now() + Duration::from_secs(20);
             while child.try_wait().unwrap().is_none() {
                 if Instant::now() > deadline {
@@ -432,10 +463,8 @@ mod tests {
 
     #[test]
     fn s11_command_has_no_newline_or_exclamation_mark_for_csh() {
-        for command in [
-            install_command(None),
-            install_command(Some(".ssh/odd 'name' 名前")),
-        ] {
+        let target = TargetPath::new(".ssh/odd 'name' 名前!\r").unwrap();
+        for command in [install_command(None), install_command(Some(&target))] {
             assert!(!command.contains('\n'), "{command}");
             assert!(!command.contains('\r'), "{command}");
             assert!(!command.contains('!'), "{command}");
@@ -504,7 +533,7 @@ mod tests {
 
     #[test]
     fn s15_explicit_target_has_no_special_cases() {
-        let command = install_command(Some(".ssh/x"));
+        let command = install_command(Some(&TargetPath::new(".ssh/x").unwrap()));
         for unexpected in ["/etc/openwrt_release", "Haiku"] {
             assert!(!command.contains(unexpected), "{unexpected} in {command}");
         }
@@ -1041,5 +1070,154 @@ mod tests {
             }
         );
         assert!(!home.file(".ssh/authorized_keys").exists());
+    }
+
+    #[test]
+    fn s38_target_path_with_shell_syntax_is_data() {
+        let home = Home::new();
+        let target = "keys dir/it's $(touch pwned) `touch pwned` ! 名前";
+        let (report, _) = home.run(Some(target), &format!("{KEY_A}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Installed,
+                keys: vec![added(1, target.as_bytes())],
+            }
+        );
+        assert_eq!(
+            fs::read_to_string(home.file(target)).unwrap(),
+            format!("{KEY_A}\n")
+        );
+        assert!(!home.file("pwned").exists());
+        assert!(!home.file("keys dir/pwned").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s39_target_path_with_double_quote_backslash_cr_and_blanks_is_data() {
+        let home = Home::new();
+        let target = "  odd \"q\" back\\slash \r\tname  ";
+        let (report, _) = home.run(Some(target), &format!("{KEY_A}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Installed,
+                keys: vec![added(1, target.as_bytes())],
+            }
+        );
+        assert_eq!(
+            fs::read_to_string(home.file(target)).unwrap(),
+            format!("{KEY_A}\n")
+        );
+    }
+
+    #[test]
+    fn s40_command_holds_no_part_of_the_target_path() {
+        let marked = TargetPath::new("keys/Xq7-it's 名前").unwrap();
+        let other = TargetPath::new("other").unwrap();
+        let command = install_command(Some(&marked));
+        assert_eq!(command, install_command(Some(&other)));
+        for part in ["Xq7", "名前", &encode_path("名前".as_bytes())] {
+            assert!(!command.contains(part), "{part} in {command}");
+        }
+    }
+
+    #[test]
+    fn s41_input_holds_the_path_and_its_encoded_form_before_the_keys() {
+        let target = TargetPath::new("a b%").unwrap();
+        assert_eq!(
+            install_input(Some(&target), b"k\n"),
+            b"a b%\na%20b%25\nk\n".to_vec()
+        );
+        assert_eq!(install_input(None, b"k\n"), b"k\n".to_vec());
+    }
+
+    #[test]
+    fn s42_a_target_path_must_be_one_line() {
+        assert_eq!(TargetPath::new("a\nb"), None);
+        assert_eq!(TargetPath::new("a\n"), None);
+        assert_eq!(
+            TargetPath::new("a\rb").map(|t| t.as_str().to_string()),
+            Some("a\rb".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: PathBuf) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s43_missing_parents_of_a_relative_target_are_created_private() {
+        let home = Home::new();
+        let (report, _) = home.run(Some("keys/new/authorized"), &format!("{KEY_A}\n"));
+        assert_eq!(report.outcome, Outcome::Installed);
+        assert_eq!(mode_of(home.file("keys")), 0o700);
+        assert_eq!(mode_of(home.file("keys/new")), 0o700);
+        assert_eq!(mode_of(home.file("keys/new/authorized")), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s44_existing_shared_parent_of_an_absolute_target_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = Home::new();
+        fs::create_dir_all(home.file("shared")).unwrap();
+        fs::set_permissions(home.file("shared"), fs::Permissions::from_mode(0o755)).unwrap();
+        let target = home.file("shared/keys").to_string_lossy().into_owned();
+        let (report, _) = home.run(Some(&target), &format!("{KEY_A}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Installed,
+                keys: vec![added(1, target.as_bytes())],
+            }
+        );
+        assert_eq!(mode_of(home.file("shared")), 0o755);
+        assert_eq!(mode_of(home.file("shared/keys")), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s45_unwritable_parent_is_reported_and_left_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = Home::new();
+        fs::create_dir_all(home.file("locked")).unwrap();
+        fs::set_permissions(home.file("locked"), fs::Permissions::from_mode(0o555)).unwrap();
+        let (report, _) = home.run(Some("locked/keys"), &format!("{KEY_A}\n"));
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Unchanged,
+                keys: vec![failed(1, b"locked/keys")],
+            }
+        );
+        assert!(!home.file("locked/keys").exists());
+        assert_eq!(mode_of(home.file("locked")), 0o555);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s46_haiku_target_applies_only_without_an_explicit_target() {
+        let home = Home::new();
+        executable(&home, "bin/uname", "#!/bin/sh\necho Haiku\n");
+        let setup = with_bin_on_path(&home, "");
+        let (default, _) = home.run_after(&setup, None, &format!("{KEY_A}\n"));
+        assert_eq!(
+            default.keys,
+            vec![added(1, b"config/settings/ssh/authorized_keys")]
+        );
+        let (explicit, _) = home.run_after(&setup, Some(".ssh/x"), &format!("{KEY_B}\n"));
+        assert_eq!(explicit.keys, vec![added(1, b".ssh/x")]);
+        assert_eq!(
+            fs::read_to_string(home.file(".ssh/x")).unwrap(),
+            format!("{KEY_B}\n")
+        );
+        assert_eq!(
+            fs::read_to_string(home.file("config/settings/ssh/authorized_keys")).unwrap(),
+            format!("{KEY_A}\n")
+        );
     }
 }
