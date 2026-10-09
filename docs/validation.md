@@ -22,6 +22,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | --- | --- | --- | --- |
 | L01 | Selected B versus authorized A, direct and one jump | Passed | [Linux prototype](../tests/prototypes/identity-isolation/README.md): 14 checks; fixed configuration only. |
 | L02 | Linux sshd fixture for Rust CLI integration tests | Passed | [smoke.sh](../tests/environments/linux/smoke.sh): key-only and password accounts, run by the CI `linux-fixture` job. |
+| L03 | OpenWrt destination fixture: BusyBox ash and Dropbear | Passed | [smoke.sh](../tests/environments/openwrt/smoke.sh): root with a per-run password and a control key on stock OpenWrt 24.10.8, whose BusyBox has no `od`. [OpenWrt run](#openwrt-destination-and-key-line-endings-2026-10-09): the script then needed `od`. With `hexdump` in its place, the 6 tests of [openwrt_destination.rs](../tests/openwrt_destination.rs) pass, a CRLF key file included; run in the CI `linux-fixture` job. |
 | W01 | Administrator login, remote execution, stdin, guest metadata | Passed | [Test-Smoke.ps1](../tests/environments/windows/Test-Smoke.ps1). |
 | W02 | Standard-user key absent / installed / removed | Passed | [Test-StandardUser.ps1](../tests/environments/windows/Test-StandardUser.ps1), initialized profile. |
 | W03 | Standard-user CRLF/LF stdin and explicit cmd exit 37 | Passed | Same script; default shell remains cmd. |
@@ -32,7 +33,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for destination detection (D-12); include a login shell that prints a banner. |
 | U01 | Stage 1: CLI installs one key on a Unix-like destination; requirements 1, 2, 3, 7, and 8 | Passed | [Stage 1 run](#stage-1-on-a-unix-like-destination-2026-10-01): 19 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, also run in CI. |
-| K01 | Line endings and encoding sshd accepts in authorized_keys (D-05, D-07) | Partial | OpenSSH 9.6p1 (L02 image), 2026-10-09: a key line ending in CR authenticates (checked by logging in with the key); a line starting with a UTF-8 BOM is rejected (scout experiment, same image). Pending: Dropbear, Windows OpenSSH 9.5, an older OpenSSH. |
+| K01 | Line endings and encoding sshd accepts in authorized_keys (line endings, D-07) | Passed | 2026-10-09, checked by logging in with the key: a key line ending in CR authenticates, with or without a comment, on OpenSSH 9.6p1 (L02 image), [OpenSSH 7.6p1, Dropbear 2022.82, 2024.86 and 2025.89, and Windows OpenSSH 9.5p2](#key-line-endings-k01). A line starting with a UTF-8 BOM is rejected on all of them, except that Windows OpenSSH accepts one at the start of the file. |
 | A01 | Password and passphrase prompts with public keys on stdin, cancellation, no terminal, agent confirmation | Passed | [Prompt experiment](../tests/prototypes/ssh-prompt/README.md): prompts and cancellation pass with both tested Windows clients; no-terminal behavior differs by client; the Windows agent refuses keys with confirmation. |
 | A02 | Agent-selected identities | Partial | Linux: a private `ssh-agent` with two keys, one installed, appends only the other (`unix_destination` i22 and golden scenario 16). Pending: the Windows OpenSSH agent without `SSH_AUTH_SOCK` (D-20), checked by hand without changing the user's agent. |
 | F01 | Interrupted writes and uncertain remote state | Pending | Inject disconnects and record actual file state and exit status. |
@@ -225,6 +226,158 @@ was added and listed, then removed with `ssh-add -d`. The agent's key list
 before and after the experiment was identical. The Windows agent therefore
 never asks for confirmation; agents that support `-c`, such as one run under Git
 for Windows, were not measured.
+
+## OpenWrt Destination and Key Line Endings: 2026-10-09
+
+Host: Windows 11 Pro 26300, rustc 1.97.1, Docker Engine 28.5.1, and WSL 2 Arch
+Linux with `OpenSSH_10.3p1`. Windows clients: Git for Windows `OpenSSH_10.0p2`
+and `OpenSSH_for_Windows_9.5p2`. Images, by index digest:
+
+| Image | Digest | Server | Shell and commands |
+| --- | --- | --- | --- |
+| `openwrt/rootfs:x86-64-24.10.8` (L03) | `sha256:9972a4b4747cd136abd597475d7b88c51a49fd849d0d53f069a2f4bf446061b9` | Dropbear v2024.86 | BusyBox v1.36.1 |
+| `openwrt/rootfs:x86-64-23.05.5` | `sha256:a44cce5d8f3619e30b0b7cf74e236d4e62cb3bf118953f57e044dc684d7cfc36` | Dropbear v2022.82 | BusyBox v1.36.1 |
+| `openwrt/rootfs:x86-64-25.12.5` | `sha256:c5d5f05bab4ce06a4e840b3573671a06ec8ae9842273188ffc53f7021836b8e2` | Dropbear v2025.89 | BusyBox v1.37.0 |
+| `ubuntu:18.04` with `openssh-server` | `sha256:152dc042452c496007f07ca9127571cb9c29697f42acbfad72324b2bb2e43c98` | `OpenSSH_7.6p1 Ubuntu-4ubuntu0.7` | not used |
+| `alpine` (control) | `sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6` | none | BusyBox v1.37.0 with `od` |
+
+### OpenWrt Image Findings
+
+- None of the three OpenWrt images has `od`. `tail`, `dd`, `expr`, `wc`,
+  `mkdir`, `dirname`, `tr`, and `hexdump` exist; `restorecon`, `xxd`, `stat`,
+  and `truncate` do not. `busybox` without an applet prints `applet not found`,
+  so the BusyBox version above is the first line of `ls --help`.
+- root's password is empty in the images, and Dropbear then logs
+  `Auth succeeded with blank password for 'root'` for a client that offers only
+  a key that is not authorized, under `BatchMode=yes`. The first key runs on
+  23.05.5 and 25.12.5 were made in that state and accepted every case; they are
+  discarded. The L03 entrypoint refuses to start without `ROOT_PASSWORD`.
+- Dropbear on 24.10.8 reads root's keys only from
+  `/etc/dropbear/authorized_keys`: a key only in `/root/.ssh/authorized_keys`
+  (`/root` 750, `.ssh` 700, file 600) is rejected. smoke.sh asserts this.
+- Dropbear 2022.82 started with `-R` exited with `Early exit: Bad buf_getptr`;
+  with an Ed25519 host key made by `dropbearkey` and passed with `-r`, it ran.
+  This is a setup issue of the 23.05.5 probe only.
+
+### Key Line Endings (K01)
+
+Each case used a new Ed25519 key from the client's own `ssh-keygen`. The key file
+was rewritten to hold only that case, then the client logged in:
+
+```sh
+docker exec <container> sh -c "printf '<format>' '<type> <base64>' > <file>; chmod 600 <file>"
+ssh -F none -p <port> -o BatchMode=yes -o IdentitiesOnly=yes -i <key> <user>@127.0.0.1 true
+```
+
+On Dropbear the account was root, with a password set, and the file
+`/etc/dropbear/authorized_keys`; on OpenSSH 7.6p1 it was an account with a
+locked password and `~/.ssh/authorized_keys`. On every server a key absent
+from the file was rejected, and the file's first and last bytes were read back
+to confirm the CR and BOM bytes.
+
+| Case | Format | Dropbear 2022.82, 2024.86, 2025.89 | OpenSSH 7.6p1 | Windows OpenSSH 9.5p2 |
+| --- | --- | --- | --- | --- |
+| LF | `%s c\n` | accepted | accepted | accepted |
+| CR, with comment | `%s comment\r\n` | accepted | accepted | accepted |
+| CR, without comment | `%s\r\n` | accepted | accepted | accepted |
+| CR at the end of the file, no LF | `%s\r` | accepted | accepted | accepted |
+| CR line before a comment line | `%s\r\n# trailing\n` | accepted | accepted | accepted |
+| BOM, first line | `\357\273\277%s c\n` | rejected | rejected | accepted |
+| BOM, after a comment line | `# x\n\357\273\277%s c\n` | rejected | rejected | rejected |
+
+Git's client ran every case on all four servers; the Windows client ran them on
+Dropbear 2024.86 and OpenSSH 7.6p1, with the same results.
+
+Windows OpenSSH 9.5p2 (`sshd.exe` product version `OpenSSH_9.5p2 for Windows`) ran
+on the W05 guest (port 22223). The account was the standard user `fixtureuser`,
+whose `.ssh` and `authorized_keys` were created for the run with the owner and ACL
+that Test-StandardUser.ps1 sets, and removed afterwards; each case rewrote the file's bytes over
+SSH as the administrator, read back its first and last three bytes, and logged
+in with `OpenSSH_for_Windows_9.5p2`.
+
+### Installation Script under BusyBox
+
+The library's unit tests were built in `rust:1-alpine` (rustc 1.99.0, musl) and
+run inside each container as a non-root account, so `sh` and every command the
+script calls are the image's:
+
+```sh
+cargo test --lib --no-run
+docker exec -u tester -w /tmp/tester -e HOME=/tmp/tester <container> /tmp/unittests remote_script:: --test-threads=1
+```
+
+| Environment | `remote_script` tests |
+| --- | --- |
+| OpenWrt 24.10.8 | 43 passed, 6 failed |
+| Alpine | 49 passed |
+| Alpine after `rm /usr/bin/od` | 43 passed, the same 6 failed |
+
+Every call of the script's `hex`, `od -v -An -tx1 | tr -d ' \t\n'`, prints
+`sh: od: not found` and an empty string. The last-byte check then never sees
+`0a`, so a newline is written before the first line even when the file ends
+with one: s05 and s36 get `existing\n\nssh-ed25519 …`. The check before a
+truncation compares two empty strings and always truncates: s28, s32, and s34
+report `failed` with summary `unchanged`, and s33 summary `partial`, where
+`uncertain` is expected.
+
+The same command, printed by a scratch program from
+`remote_script::install_command`, ran as root under OpenWrt's `/bin/sh`:
+
+```sh
+cd /root; printf '<keys>' | LOGNAME=root HOME=/root sh -c "$(cat cmd.txt)"
+```
+
+| Scenario | Report | `/etc/dropbear/authorized_keys` afterwards |
+| --- | --- | --- |
+| Missing file | key added, `installed` | the key line |
+| `existing` without a final newline | key added, `installed` | `existing\n<key>\n` |
+| `existing\n` | key added, `installed` | `existing\n\n<key>\n`, a blank line added |
+| `# note`, blank line, key, `  # indented` | 1 key added, `installed` | the four lines as given |
+| `ulimit -f 2` with `trap '' XFSZ`, a 3 KB key and a second key, after `existing\n` | both `failed`, `unchanged` | `existing\n`, rolled back |
+| Same limit; a wrapper `tail` appends `other-writer-line` before the key is written, after `e\n` | `failed`, `unchanged` | `e\n`: the other writer's line was removed |
+
+On Alpine the last scenario reported `uncertain` and kept the other line.
+BusyBox ash accepts `ulimit -f`. The explicit-target command with the path
+``sub dir/it's!x $(id) `id` `` on stdin, as `install_input` writes it, reported the
+key added with ``path=sub%20dir/it's!x%20$(id)%20`id` ``, and created
+`/root/sub dir` (700) holding a file with that literal name (600).
+
+### CLI on the Fixture
+
+From Git Bash, with Git's client first on `PATH` and an askpass program
+answering root's password:
+
+```sh
+SSH_ASKPASS=askpass.cmd SSH_ASKPASS_REQUIRE=force target/debug/ssh-copy-id.exe -i new \
+    -p <port> -F none -o UserKnownHostsFile=kh -o StrictHostKeyChecking=accept-new root@127.0.0.1
+```
+
+Without `-t` the run exited 0 with `Number of key(s) added: 1` and `the key
+authenticates: it is installed and verified`; stderr also held `sh: od: not
+found` twice. `/etc/dropbear/authorized_keys` became the control line, an empty
+line, and the new line, and the new key logged in. With `-t
+.ssh/authorized_keys` the run exited 0 with one key added:
+`/root/.ssh/authorized_keys` held the key, `/etc/dropbear/authorized_keys` kept
+its SHA-256, and the CLI warned `the key was installed but could not be
+verified: the server still rejects it`, since Dropbear does not read that file
+for root.
+
+```sh
+docker build -t ssh-copy-id-l03:local tests/environments/openwrt
+cargo test --test openwrt_destination -- --ignored --test-threads=1
+```
+
+| Client first on `PATH` | Result |
+| --- | --- |
+| Git for Windows `OpenSSH_10.0p2` | o1, o3, o4 passed; o2, o5 failed |
+| `OpenSSH_for_Windows_9.5p2` | o1, o3, o4 passed; o2, o5 failed |
+| WSL `OpenSSH_10.3p1`, three runs of about 10 s | o1, o3, o4 passed; o2, o5 failed |
+
+o2 found the blank line; o5 found `the key was not written to
+/etc/dropbear/authorized_keys` and the other writer's line removed. With the
+image rebuilt with a static BusyBox 1.37.0 from `busybox:1.37.0-musl` copied to
+`/usr/bin/od`, all five passed on Windows. o4 passes without `od` because no
+other writer touched the file. smoke.sh passed on Windows and WSL.
 
 ## Linux Selected-Identity Experiment: 2026-09-20
 

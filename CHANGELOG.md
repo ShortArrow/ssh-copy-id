@@ -25,9 +25,9 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 - `-f` installs every selected key without the installed-key check or the
   verification, so a key already installed is appended again. As upstream's,
   `-f` before `-i`, or without `-i`, does not need the private key file, while
-  `-f` after `-i` still does and the login hint names it. Private key input, CRLF line endings, a leading
-  byte order mark, malformed lines and a key file with several keys are still
-  handled as without `-f` (D-04, D-05, D-07, D-10, D-21). As upstream's, the
+  `-f` after `-i` still does and the login hint names it. Private key input, a
+  leading byte order mark, malformed lines and a key file with several keys are
+  still handled as without `-f` (D-04, D-07, D-10, D-21). As upstream's, the
   login hint after `-f -i` names `-i` without the private key.
 - `-n` lists the keys that would be installed, in upstream's "Would have added
   the following key(s):" block, and exits 0 without the installation
@@ -53,6 +53,18 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ### Changed
 
+- Key lines are sent with their line endings as given: a CR before the LF, or
+  at the end of the input, stays in the line, since every sshd tested accepts
+  it. CRLF line endings are no longer normalized, and D-05 is removed. A CR
+  elsewhere in a line is still rejected (D-10), and a single CR at the end of a
+  line is not part of it when telling a comment or blank line from a key, here
+  and in the remote script (D-18).
+- On a destination whose BusyBox has no `od`, such as OpenWrt, the installation
+  no longer inserts a blank line before the key: whether the target ends with
+  a newline is read from `tail -c 1`, as upstream reads it. The check before
+  removing a partial write compares the bytes with `hexdump` where `od` is
+  absent; when neither exists, the partial write is left in place and reported
+  `uncertain` (D-17).
 - Under `-f` the key lines are sent as given, without removing spaces and
   tabs around them, as upstream reads them with `$(cat …)`.
 - Messages follow the pinned upstream `ssh-copy-id` where the behavior is

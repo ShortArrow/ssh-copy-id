@@ -1,5 +1,6 @@
 //! The installed-key check: which identities could answer the probe, and what the probe's result means.
 
+use crate::key_input::key_lines;
 use std::path::{Path, PathBuf};
 
 /// The result of checking whether the selected key is already installed.
@@ -279,23 +280,13 @@ const CERTIFICATE_SUFFIX: &[u8] = b"-cert-v01@openssh.com";
 /// Whether the first key entry of validated input is a certificate, whose type
 /// ends in `-cert-v01@openssh.com`.
 ///
-/// `text` has passed `key_input::prepare`, so its first line that is neither
-/// blank nor a comment is a key entry: `keytype base64` or `options keytype
-/// base64`, where options may quote spaces with double quotes. The base64 field
-/// cannot end in the suffix, so either of the first two fields ending in it is
-/// the key type.
+/// `text` has passed `key_input::prepare`, so its first key entry line is
+/// `keytype base64` or `options keytype base64`, where options may quote spaces
+/// with double quotes. The base64 field cannot end in the suffix, so either of
+/// the first two fields ending in it is the key type.
 pub fn is_certificate(text: &[u8]) -> bool {
     let is_separator = |b: &u8| *b == b' ' || *b == b'\t';
-    let Some(entry) = text
-        .split(|&b| b == b'\n')
-        .map(|line| {
-            &line[line
-                .iter()
-                .position(|b| !is_separator(b))
-                .unwrap_or(line.len())..]
-        })
-        .find(|line| !line.is_empty() && line[0] != b'#')
-    else {
+    let Some(entry) = key_lines(text).into_iter().next().map(<[u8]>::trim_ascii) else {
         return false;
     };
     let first_end = first_field_end(entry);
@@ -1034,6 +1025,13 @@ identityfile ~/.ssh/agent_key
     fn e04_the_suffix_inside_quoted_options_is_not_a_certificate() {
         assert!(!is_certificate(
             b"command=\"echo x ssh-ed25519-cert-v01@openssh.com\" ssh-ed25519 AAAA\n"
+        ));
+    }
+
+    #[test]
+    fn e05_a_cr_only_line_before_a_certificate_is_blank() {
+        assert!(is_certificate(
+            b"\r\n# c\r\nssh-ed25519-cert-v01@openssh.com AAAA\r\n"
         ));
     }
 }

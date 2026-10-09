@@ -5,7 +5,7 @@ use crate::default_key::{DirEntryTime, newest_public_key};
 use crate::installed_check::{
     CheckResult, classify, is_certificate, is_tested_client, other_candidates_matching,
 };
-use crate::key_input::{InputError, PreparedInput, prepare, prepare_verbatim};
+use crate::key_input::{InputError, PreparedInput, key_lines, prepare, prepare_verbatim};
 use crate::remote_script::{TargetPath, install_command, install_input, sh_quote};
 use crate::result_line::{Outcome, parse_report};
 use crate::trace::command_line;
@@ -608,10 +608,8 @@ fn agent_key_lines(
     }
     match read_lines(&listed.stdout) {
         Ok(prepared) => Ok(Some(
-            prepared
-                .text
-                .split_inclusive(|&b| b == b'\n')
-                .filter(|line| !matches!(line.first(), Some(b'\n' | b'#')))
+            key_lines(&prepared.text)
+                .into_iter()
                 .map(<[u8]>::to_vec)
                 .collect(),
         )),
@@ -3001,6 +2999,23 @@ mod tests {
         assert_eq!(run.err, AGENT_SOURCE);
         assert_eq!(run.out, summary_naming("ssh 'u@h'", 2));
         assert!(run.ssh.written.borrow().is_empty());
+    }
+
+    #[test]
+    fn d06b_agent_lines_ending_in_cr_are_sent_as_given_and_blank_ones_are_not_keys() {
+        let run = execute_with(
+            &forced(selecting(KeySelection::Unspecified)),
+            default_key_files(),
+            true,
+            false,
+            with_default_key_listing(listing_agent_keys(
+                FakeSsh::new().installs(INSTALLED_TWO),
+                &format!("{KEY}\r\n\r\n# c\r\n{KEY2}\r\n"),
+            )),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        let (_, stdin, _) = run.ssh.call("install");
+        assert_eq!(stdin, &format!("{KEY}\r\n{KEY2}\r\n").into_bytes());
     }
 
     #[test]

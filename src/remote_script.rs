@@ -47,11 +47,13 @@ impl TargetPath {
 /// destination's login shell only has to run `exec`. The command is one line
 /// without `!`, as csh and tcsh require.
 ///
-/// Every line of stdin after the target's lines is appended, comment lines and
-/// blank lines included; only the other lines are keys. As in `key_input`, a
-/// comment line's first character other than space and tab is `#`, and a blank
-/// line holds only spaces and tabs. A newline is added first when the target is
-/// non-empty and does not end with one.
+/// Every line of stdin after the target's lines is appended byte for byte, a
+/// CR at its end, comment lines and blank lines included; only the other lines
+/// are keys. As in `key_input`, one CR at the end of a line is not part of its
+/// content, a comment line's first character other than space and tab is `#`,
+/// and a blank line holds only spaces and tabs. A newline is added first when
+/// the target is non-empty and its last byte, as upstream reads it with
+/// `tail -c 1`, is not one.
 ///
 /// The script prints one result line per key and a summary line last, in the
 /// format `result_line::parse_report` reads; `path=` names the target actually
@@ -68,6 +70,9 @@ impl TargetPath {
 /// truncation happens only when the bytes after that size are a prefix of the
 /// bytes this run tried to write in the group, the added newline included;
 /// anything else, such as a line another writer appended, is left in place.
+/// The bytes are compared in hexadecimal from `od`, or from `hexdump` where
+/// `od` is absent, chosen once before the first write; when neither exists,
+/// nothing is truncated.
 /// When the truncation is skipped or cannot be confirmed, the group's key is
 /// reported `uncertain` and the summary is `uncertain`, whatever was added
 /// before.
@@ -132,6 +137,14 @@ IFS= read -r p;
 const INSTALL_SCRIPT: &str = r##"umask 077;
 failed=0;
 t=$(printf '\t');
+cr=$(printf '\r');
+if command -v od >/dev/null 2>&1; then
+    hexer=od;
+elif command -v hexdump >/dev/null 2>&1; then
+    hexer=hexdump;
+else
+    hexer=;
+fi;
 cd || failed=1;
 d=$(dirname -- "$f");
 [ "$failed" -ne 0 ] || mkdir -p -- "$d" || failed=1;
@@ -145,17 +158,22 @@ size_of() {
     if [ -s "$f" ]; then wc -c < "$f" | tr -d ' '; elif [ -e "$f" ]; then echo 0; fi;
 };
 is_comment_or_blank() {
-    expr "x$1" : "x[ $t]*#" >/dev/null || expr "x$1" : "x[ $t]*\$" >/dev/null;
+    l=${1%"$cr"};
+    expr "x$l" : "x[ $t]*#" >/dev/null || expr "x$l" : "x[ $t]*\$" >/dev/null;
 };
 hex() {
-    od -v -An -tx1 | tr -d ' \t\n';
+    if [ "$hexer" = od ]; then
+        od -v -An -tx1 | tr -d ' \t\n';
+    else
+        hexdump -v -e '1/1 "%02x"';
+    fi;
 };
 append() {
-    if [ "$wrote" -eq 0 ] && [ -s "$f" ]; then
-        last=$(tail -c 1 -- "$f" | hex);
-        case $last in 0a) ;; *) tried=${tried}0a; ( printf '\n' ) >> "$f" || return 1 ;; esac;
+    if [ "$wrote" -eq 0 ] && [ -s "$f" ] && [ -n "$(tail -c 1 -- "$f")" ]; then
+        tried=${tried}0a;
+        ( printf '\n' ) >> "$f" || return 1;
     fi;
-    tried=$tried$(printf '%s\n' "$1" | hex);
+    [ -z "$hexer" ] || tried=$tried$(printf '%s\n' "$1" | hex);
     ( printf '%s\n' "$1" ) >> "$f";
 };
 roll_back() {
@@ -166,6 +184,7 @@ restore_group() {
     now=$(size_of);
     if [ -z "$now" ]; then [ -z "$base" ]; return; fi;
     [ "$now" -ge "${base:-0}" ] || return 1;
+    [ -n "$hexer" ] || return 1;
     since=$(tail -c +$((${base:-0} + 1)) -- "$f" | hex);
     case $tried in "$since"*) roll_back "$base" ;; *) return 1 ;; esac;
 };
@@ -228,7 +247,23 @@ mod tests {
     const KEY_B: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB== b@host";
     static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-    struct Home(PathBuf);
+    /// A home directory for one run, and the only directory on the script's
+    /// `PATH` when the run must not find some tools.
+    struct Home(PathBuf, Option<PathBuf>);
+
+    /// Every program the script runs, other than `restorecon`.
+    #[cfg(unix)]
+    const SCRIPT_TOOLS: [&str; 13] = [
+        "sh", "dirname", "mkdir", "wc", "tr", "expr", "tail", "dd", "rm", "id", "uname", "od",
+        "hexdump",
+    ];
+
+    #[cfg(unix)]
+    fn on_path(tool: &str) -> Option<PathBuf> {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| dir.join(tool))
+            .find(|file| file.is_file())
+    }
 
     impl Home {
         fn new() -> Home {
@@ -238,7 +273,34 @@ mod tests {
                 NEXT.fetch_add(1, Ordering::SeqCst)
             ));
             fs::create_dir_all(&path).unwrap();
-            Home(path)
+            Home(path, None)
+        }
+
+        /// A home whose runs find every tool in [`SCRIPT_TOOLS`] but `hidden`.
+        #[cfg(unix)]
+        fn with_tools_hidden(hidden: &[&str]) -> Home {
+            let mut home = Home::new();
+            let tools = home.file("tools");
+            fs::create_dir_all(&tools).unwrap();
+            for tool in SCRIPT_TOOLS.iter().filter(|tool| !hidden.contains(tool)) {
+                let found = on_path(tool).unwrap_or_else(|| panic!("{tool} is not on PATH"));
+                std::os::unix::fs::symlink(found, tools.join(tool)).unwrap();
+            }
+            home.1 = Some(tools);
+            home
+        }
+
+        /// A home whose runs have `hexdump` and no `od`, or `None`, said on
+        /// stderr, when this host has no `hexdump`.
+        #[cfg(unix)]
+        fn through_hexdump() -> Option<Home> {
+            if on_path("hexdump").is_none() {
+                eprintln!(
+                    "skipped: hexdump is not on PATH, so a run without od cannot compare bytes"
+                );
+                return None;
+            }
+            Some(Home::with_tools_hidden(&["od"]))
         }
 
         fn file(&self, relative: &str) -> PathBuf {
@@ -263,7 +325,11 @@ mod tests {
         ) -> (Report, String, String) {
             let target = target.map(|path| TargetPath::new(path).expect("a one-line path"));
             let stdin = install_input(target.as_ref(), keys.as_bytes());
-            let mut child = Command::new("sh")
+            let mut command = Command::new("sh");
+            if let Some(tools) = &self.1 {
+                command.env("PATH", tools);
+            }
+            let mut child = command
                 .arg("-c")
                 .arg(format!(
                     "{setup} {}",
@@ -375,7 +441,10 @@ mod tests {
 
     #[test]
     fn s04_missing_final_newline_is_added_before_the_key() {
-        let home = Home::new();
+        missing_final_newline_is_added_before_the_key(Home::new());
+    }
+
+    fn missing_final_newline_is_added_before_the_key(home: Home) {
         fs::create_dir_all(home.file(".ssh")).unwrap();
         fs::write(home.file(".ssh/authorized_keys"), "existing").unwrap();
         home.run(None, &format!("{KEY_A}\n"));
@@ -387,7 +456,10 @@ mod tests {
 
     #[test]
     fn s05_existing_final_newline_is_kept() {
-        let home = Home::new();
+        existing_final_newline_is_kept(Home::new());
+    }
+
+    fn existing_final_newline_is_kept(home: Home) {
         fs::create_dir_all(home.file(".ssh")).unwrap();
         fs::write(home.file(".ssh/authorized_keys"), "existing\n").unwrap();
         home.run(None, &format!("{KEY_A}\n"));
@@ -538,14 +610,14 @@ mod tests {
     }
 
     #[test]
-    fn s13_final_nul_byte_gets_a_newline_before_the_key() {
+    fn s13_final_nul_byte_is_read_as_upstream_reads_it_with_tail() {
         let home = Home::new();
         fs::create_dir_all(home.file(".ssh")).unwrap();
         fs::write(home.file(".ssh/authorized_keys"), b"existing\0").unwrap();
         home.run(None, &format!("{KEY_A}\n"));
         assert_eq!(
             fs::read(home.file(".ssh/authorized_keys")).unwrap(),
-            format!("existing\0\n{KEY_A}\n").into_bytes()
+            format!("existing\0{KEY_A}\n").into_bytes()
         );
     }
 
@@ -874,7 +946,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn s28_concurrent_append_is_not_truncated() {
-        let home = Home::new();
+        concurrent_append_is_not_truncated(Home::new());
+    }
+
+    #[cfg(unix)]
+    fn concurrent_append_is_not_truncated(home: Home) {
         let other = "o".repeat(3000);
         let target = home.file(".ssh/authorized_keys");
         fs::create_dir_all(home.file(".ssh")).unwrap();
@@ -900,7 +976,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn s32_small_concurrent_append_before_a_partly_written_key_is_not_truncated() {
-        let home = Home::new();
+        small_concurrent_append_before_a_partly_written_key_is_not_truncated(Home::new());
+    }
+
+    #[cfg(unix)]
+    fn small_concurrent_append_before_a_partly_written_key_is_not_truncated(home: Home) {
         let (_, long_key) = existing_and_long_line();
         let other = "o".repeat(10);
         let target = home.file(".ssh/authorized_keys");
@@ -923,7 +1003,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn s33_small_concurrent_append_before_a_partly_written_trailing_comment_is_not_truncated() {
-        let home = Home::new();
+        small_concurrent_append_before_a_partly_written_trailing_comment_is_not_truncated(
+            Home::new(),
+        );
+    }
+
+    #[cfg(unix)]
+    fn small_concurrent_append_before_a_partly_written_trailing_comment_is_not_truncated(
+        home: Home,
+    ) {
         let long_comment = format!("# {}", "c".repeat(2000));
         let other = "o".repeat(10);
         let target = home.file(".ssh/authorized_keys");
@@ -948,7 +1036,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn s34_concurrent_nul_byte_before_a_partly_written_key_is_not_truncated() {
-        let home = Home::new();
+        concurrent_nul_byte_before_a_partly_written_key_is_not_truncated(Home::new());
+    }
+
+    #[cfg(unix)]
+    fn concurrent_nul_byte_before_a_partly_written_key_is_not_truncated(home: Home) {
         let (_, long_key) = existing_and_long_line();
         let target = home.file(".ssh/authorized_keys");
         fs::create_dir_all(home.file(".ssh")).unwrap();
@@ -969,7 +1061,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn s36_partly_written_trailing_comment_is_rolled_back_and_the_key_kept() {
-        let home = Home::new();
+        partly_written_trailing_comment_is_rolled_back_and_the_key_kept(Home::new());
+    }
+
+    #[cfg(unix)]
+    fn partly_written_trailing_comment_is_rolled_back_and_the_key_kept(home: Home) {
         let long_comment = format!("# {}", "c".repeat(2000));
         let target = home.file(".ssh/authorized_keys");
         fs::create_dir_all(home.file(".ssh")).unwrap();
@@ -1323,5 +1419,158 @@ mod tests {
             );
             assert!(stderr.contains("umask 077"), "{stderr}");
         }
+    }
+
+    #[test]
+    fn s50_crlf_lines_are_appended_byte_for_byte() {
+        let home = Home::new();
+        let input = format!("# c\r\n\r\n{KEY_A}\r\n");
+        let (report, _) = home.run(None, &input);
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Installed,
+                keys: vec![added(1, b".ssh/authorized_keys")],
+            }
+        );
+        assert_eq!(
+            fs::read(home.file(".ssh/authorized_keys")).unwrap(),
+            input.into_bytes()
+        );
+    }
+
+    #[test]
+    fn s51_cr_only_and_cr_ended_comment_lines_are_not_keys() {
+        let home = Home::new();
+        let input = format!("\r\n \t\r\n#x\r\n{KEY_A}\r\n\r\n  # y\r\n{KEY_B}\n");
+        let (report, _) = home.run(None, &input);
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Installed,
+                keys: vec![
+                    added(1, b".ssh/authorized_keys"),
+                    added(2, b".ssh/authorized_keys"),
+                ],
+            }
+        );
+        assert_eq!(
+            fs::read_to_string(home.file(".ssh/authorized_keys")).unwrap(),
+            input
+        );
+    }
+
+    #[test]
+    fn s52_final_cr_without_lf_gets_a_newline_before_the_key() {
+        let home = Home::new();
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        fs::write(home.file(".ssh/authorized_keys"), "existing\r").unwrap();
+        home.run(None, &format!("{KEY_A}\n"));
+        assert_eq!(
+            fs::read_to_string(home.file(".ssh/authorized_keys")).unwrap(),
+            format!("existing\r\n{KEY_A}\n")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h04_missing_final_newline_is_added_without_od() {
+        if let Some(home) = Home::through_hexdump() {
+            missing_final_newline_is_added_before_the_key(home);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h05_existing_final_newline_is_kept_without_od() {
+        if let Some(home) = Home::through_hexdump() {
+            existing_final_newline_is_kept(home);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h06_a_run_without_od_writes_nothing_to_stderr() {
+        let Some(home) = Home::through_hexdump() else {
+            return;
+        };
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        fs::write(home.file(".ssh/authorized_keys"), "existing").unwrap();
+        let (report, _, stderr) = home.run_traced("", None, &format!("{KEY_A}\n"), false);
+        assert_eq!(report.outcome, Outcome::Installed);
+        assert_eq!(stderr, "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h28_concurrent_append_is_not_truncated_without_od() {
+        if let Some(home) = Home::through_hexdump() {
+            concurrent_append_is_not_truncated(home);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h32_small_concurrent_append_before_a_partly_written_key_is_not_truncated_without_od() {
+        if let Some(home) = Home::through_hexdump() {
+            small_concurrent_append_before_a_partly_written_key_is_not_truncated(home);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h33_small_concurrent_append_before_a_trailing_comment_is_not_truncated_without_od() {
+        if let Some(home) = Home::through_hexdump() {
+            small_concurrent_append_before_a_partly_written_trailing_comment_is_not_truncated(home);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h34_concurrent_nul_byte_before_a_partly_written_key_is_not_truncated_without_od() {
+        if let Some(home) = Home::through_hexdump() {
+            concurrent_nul_byte_before_a_partly_written_key_is_not_truncated(home);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h36_partly_written_trailing_comment_is_rolled_back_without_od() {
+        if let Some(home) = Home::through_hexdump() {
+            partly_written_trailing_comment_is_rolled_back_and_the_key_kept(home);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h40_without_od_and_hexdump_a_failed_write_is_uncertain_and_not_truncated() {
+        let home = Home::with_tools_hidden(&["od", "hexdump"]);
+        let (existing, long_key) = existing_and_long_line();
+        let target = home.file(".ssh/authorized_keys");
+        fs::create_dir_all(home.file(".ssh")).unwrap();
+        fs::write(&target, &existing).unwrap();
+        let (report, _, stderr) = home.run_traced(
+            SMALL_FILE_LIMIT,
+            None,
+            &format!("{long_key}\n{KEY_B}\n"),
+            false,
+        );
+        assert_eq!(
+            report,
+            Report {
+                outcome: Outcome::Uncertain,
+                keys: vec![
+                    uncertain(1, b".ssh/authorized_keys"),
+                    failed(2, b".ssh/authorized_keys"),
+                ],
+            }
+        );
+        let after = fs::read_to_string(&target).unwrap();
+        assert!(
+            after.starts_with(&existing) && after.len() > existing.len(),
+            "the partial line must be left in place: {} bytes",
+            after.len()
+        );
+        assert!(!stderr.contains("not found"), "{stderr}");
     }
 }

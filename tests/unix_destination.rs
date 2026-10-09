@@ -873,3 +873,17 @@ fn i34_d14_trace_prints_the_client_commands_and_the_remote_script() {
         assert!(stderr.contains("\n+ umask 077\n"), "{stderr}");
     }
 }
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i35_a_crlf_key_file_is_sent_as_given_and_the_key_logs_in() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let line = public_line(&key);
+    fs::write(key.with_extension("pub"), format!("{line}\r\n")).unwrap();
+    let run = fixture.copy_id(&key, "pwuser", &[]);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert!(text(&run.stdout).contains("Number of key(s) added: 1\n"));
+    assert_eq!(fixture.authorized_keys("pwuser"), format!("{line}\r\n"));
+    assert!(fixture.logs_in_with(&key, "pwuser"));
+}

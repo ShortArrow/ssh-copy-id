@@ -64,6 +64,8 @@ jobs:
         run: docker run --rm --network none ssh-copy-id-identity-probe:ci
       - name: Linux destination fixture (L02)
         run: sh tests/environments/linux/smoke.sh
+      - name: OpenWrt destination fixture (L03)
+        run: sh tests/environments/openwrt/smoke.sh
       - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal
@@ -72,5 +74,7 @@ jobs:
         run: install -d -m 700 ~/.ssh
       - name: CLI against the Linux fixture (stage 1 requirements)
         run: cargo test --locked --test unix_destination -- --ignored --test-threads=1
+      - name: CLI against the OpenWrt fixture
+        run: cargo test --locked --test openwrt_destination -- --ignored --test-threads=1
       - name: Difference report against the pinned upstream script (P01; fails only on harness errors)
         run: cargo test --locked --test p01_golden -- --ignored --nocapture
