@@ -384,6 +384,8 @@ enum Arguments {
     /// `-t` with the given path, then `-i` with the private key path, the
     /// fixture options, and pwuser.
     Target(&'static str),
+    /// `-x`, then `-i` with the private key path, the fixture options, and pwuser.
+    Trace,
 }
 
 impl Arguments {
@@ -451,7 +453,7 @@ const BASE: Scenario = Scenario {
     key_installed: false,
 };
 
-const SCENARIOS: [Scenario; 28] = [
+const SCENARIOS: [Scenario; 29] = [
     Scenario {
         title: "-h (no destination)",
         arguments: Arguments::Help,
@@ -603,6 +605,11 @@ const SCENARIOS: [Scenario; 28] = [
         arguments: Arguments::Target("keys/it's"),
         ..BASE
     },
+    Scenario {
+        title: "-x: install into a missing authorized_keys",
+        arguments: Arguments::Trace,
+        ..BASE
+    },
 ];
 
 /// Upstream's usage, which the CLI's matches only from stage 1.5.
@@ -615,16 +622,17 @@ const UPSTREAM_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-s|-x] [-i [identi
 ";
 
 /// The CLI's usage.
-const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n] [-i [identity_file]] [-t target_path] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-x] [-i [identity_file]] [-t target_path] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
 \t-f: force mode -- copy keys without trying to check if they are already installed
 \t-n: dry run    -- no keys are actually copied
+\t-x: debug      -- enables -x in this shell, for debugging
 \t-i: the public key to install; '.pub' is added when absent
 \t-t: the remote file to add the keys to, relative to the home directory
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
 \t-h|-?: print this help
 This release installs keys on a Unix-like host.
--s and -x are not available yet.
+-s is not available yet.
 ";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -665,7 +673,7 @@ struct Expected {
     always: bool,
 }
 
-const EXPECTED: [Expected; 23] = [
+const EXPECTED: [Expected; 25] = [
     Expected {
         tag: "D-06",
         scenarios: &[5, 9, 10, 12, 13],
@@ -836,6 +844,22 @@ const EXPECTED: [Expected; 23] = [
         field: Field::AuthorizedKeys,
         tool: Tool::Cli,
         edit: Edit::Whole("(absent)"),
+        always: true,
+    },
+    Expected {
+        tag: "D-14",
+        scenarios: &[29],
+        field: Field::Stderr,
+        tool: Tool::Upstream,
+        edit: Edit::Whole(""),
+        always: true,
+    },
+    Expected {
+        tag: "D-14",
+        scenarios: &[29],
+        field: Field::Stderr,
+        tool: Tool::Cli,
+        edit: Edit::Whole(""),
         always: true,
     },
     Expected {
@@ -1137,6 +1161,7 @@ fn arguments(arguments: Arguments, fixture: &Fixture, key: &Path) -> Vec<String>
         Arguments::DryRun => vec!["-n".into(), "-i".into(), display(key)],
         Arguments::DryRunForce => vec!["-n".into(), "-f".into(), "-i".into(), display(key)],
         Arguments::Target(path) => vec!["-t".into(), path.into(), "-i".into(), display(key)],
+        Arguments::Trace => vec!["-x".into(), "-i".into(), display(key)],
     };
     let mut words = identity;
     words.extend([

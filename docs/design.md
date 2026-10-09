@@ -215,7 +215,7 @@ compatibility suite is part of stage 1.5.
 | `-n` | Display the keys that would be installed without performing installation operations. Connect for installed-key checks unless skipped with `-f` |
 | `-s` | Install keys using SFTP |
 | `-t target_path` | Specify the destination file. The path reaches the remote script as data, not inside the command (D-11); a path containing LF is rejected before connecting. The OpenWrt and Haiku targets apply only without `-t` (D-22) |
-| `-x` | Print each client command and the remote script before running them (D-14) |
+| `-x` | Print each client command before running it, and trace the remote script with `set -x` (D-14) |
 | `-h`, `-?` | Display help |
 | `--target-os unix\|windows` | Override destination detection (D-12); not in upstream |
 
@@ -393,11 +393,17 @@ key file that cannot be opened: upstream takes it from the shell's own error,
 dash's "No such file" where bash and this tool print the system's "No such file
 or directory".
 
-`-x` prints each client command line and the remote script to stderr before
-running them, the closest equivalent of upstream's `set -x`. Apparent intent of
-upstream's `-x`: trace the shell script itself. Reason to differ: a compiled
-program has no shell trace, so the platform cannot perform the upstream behavior.
-This is difference D-14; the output format differs, the purpose does not.
+`-x` prints each command this tool runs on the client, `ssh`, `ssh-add`, and
+`sftp`, to stderr before running it, as one line starting with `+ ` and with each
+argument quoted the way bash's `set -x` quotes it, except that a control
+character or a lone quote is single-quoted rather than written as `$'…'` or
+`'`; standard input is not printed. As upstream, the installation script on
+the destination starts with `set -x`, so its trace reaches stderr too, and that
+trace shows the lines the script reads, the public keys and a `-t` path among
+them. Apparent intent of upstream's `-x`: trace the script
+on both sides. Reason to differ on the client side: a compiled program has no
+shell trace, so the platform cannot perform the upstream behavior there. This is
+difference D-14; the client-side format differs, the purpose does not.
 
 The upstream special cases stay. For the default target, OpenWrt as root
 installs into `/etc/dropbear/authorized_keys` and Haiku uses
