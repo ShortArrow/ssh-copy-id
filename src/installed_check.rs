@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 /// The result of checking whether the selected key is already installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckResult {
-    /// The selected key was the only candidate and it authenticated.
+    /// The selected key was the only candidate and the server accepted it,
+    /// alone or with partial success.
     Installed,
     /// The server rejected public-key authentication.
     NotInstalled,
@@ -139,10 +140,22 @@ const NO_AUTHENTICATION_FAILURES: [&str; 12] = [
 /// `Permission denied (`, `NotAttempted` naming the last line with a recognised
 /// host key or connection failure, and `Inconclusive` otherwise; these patterns
 /// are matched on the log and stderr together.
+///
+/// One exception to exit 255: when the first line of the log that reports an
+/// authentication is `Authenticated using "publickey" with partial success.`,
+/// the server accepted the key and requires a further method, which the probe
+/// does not offer, so `ssh` exits 255 with `Permission denied (`. That is
+/// `Installed` without other candidates and `Inconclusive` with them, whatever
+/// the exit status. A log with a `Received disconnect from ` line is not
+/// evidence of it, since the server's disconnect message may have written it.
 pub fn classify(exit: Option<i32>, log: &str, stderr: &str, others: &[String]) -> CheckResult {
     let output = format!("{log}\n{stderr}");
     match exit {
         None => CheckResult::Failed("ssh was terminated before it reported a result".to_string()),
+        Some(_) if accepted_with_partial_success(log) && others.is_empty() => {
+            CheckResult::Installed
+        }
+        Some(_) if accepted_with_partial_success(log) => another_identity(others),
         Some(code)
             if code != 255
                 && others.is_empty()
@@ -150,10 +163,7 @@ pub fn classify(exit: Option<i32>, log: &str, stderr: &str, others: &[String]) -
         {
             CheckResult::Installed
         }
-        Some(0) if !others.is_empty() => CheckResult::Inconclusive(format!(
-            "another identity could have authenticated: {}",
-            others.join(", ")
-        )),
+        Some(0) if !others.is_empty() => another_identity(others),
         Some(0) => match authenticated_method(log) {
             Some(method) => CheckResult::Inconclusive(format!(
                 "authentication succeeded without the selected key, using \"{method}\""
@@ -209,6 +219,29 @@ fn relayed_messages(log: &str, stderr: &str) -> Vec<String> {
         })
         .map(str::to_string)
         .collect()
+}
+
+fn another_identity(others: &[String]) -> CheckResult {
+    CheckResult::Inconclusive(format!(
+        "another identity could have authenticated: {}",
+        others.join(", ")
+    ))
+}
+
+const PARTIAL_PUBLICKEY: &str = "Authenticated using \"publickey\" with partial success.";
+
+/// Whether the first line of `log` that reports an authentication is
+/// `PARTIAL_PUBLICKEY` and no disconnect message could have written it.
+fn accepted_with_partial_success(log: &str) -> bool {
+    !log.lines()
+        .any(|line| line.starts_with("Received disconnect from "))
+        && log
+            .lines()
+            .map(|line| line.trim_end_matches('\r'))
+            .find(|line| {
+                line.contains("Authenticated to ") || line.starts_with("Authenticated using \"")
+            })
+            .is_some_and(|line| line == PARTIAL_PUBLICKEY)
 }
 
 fn authenticated_method(log: &str) -> Option<&str> {
@@ -783,6 +816,48 @@ Authenticated to h ([127.0.0.1]:22) using \"publickey\".
             classify(Some(1), log, "", &[]),
             CheckResult::Inconclusive(_)
         ));
+    }
+
+    const PARTIAL: &str = "Authenticated using \"publickey\" with partial success.\r\n\
+                           u@h: Permission denied (password).\r\n";
+
+    #[test]
+    fn k29_publickey_with_partial_success_is_installed_without_other_candidates() {
+        assert_eq!(
+            classify(Some(255), PARTIAL, "", &[]),
+            CheckResult::Installed
+        );
+    }
+
+    #[test]
+    fn k30_publickey_with_partial_success_and_another_candidate_is_inconclusive() {
+        let others = vec!["identity file x".to_string()];
+        assert!(matches!(
+            classify(Some(255), PARTIAL, "", &others),
+            CheckResult::Inconclusive(reason) if reason.contains("identity file x")
+        ));
+    }
+
+    #[test]
+    fn k31_partial_success_planted_by_a_disconnect_message_is_not_installed() {
+        let log = "Received disconnect from 127.0.0.1 port 22:11: bye\r\n\
+                   Authenticated using \"publickey\" with partial success.\r\n\
+                   Disconnected from 127.0.0.1 port 22\r\n";
+        assert_ne!(classify(Some(255), log, "", &[]), CheckResult::Installed);
+    }
+
+    #[test]
+    fn k32_partial_success_of_another_method_is_not_installed() {
+        let log = "Authenticated using \"password\" with partial success.\r\n\
+                   u@h: Permission denied (publickey).\r\n";
+        assert_eq!(classify(Some(255), log, "", &[]), CheckResult::NotInstalled);
+    }
+
+    #[test]
+    fn k33_partial_success_after_another_authenticated_line_is_not_installed() {
+        let log = "Authenticated to h ([127.0.0.1]:22) using \"none\".\r\n\
+                   Authenticated using \"publickey\" with partial success.\r\n";
+        assert_ne!(classify(Some(1), log, "", &[]), CheckResult::Installed);
     }
 
     #[test]

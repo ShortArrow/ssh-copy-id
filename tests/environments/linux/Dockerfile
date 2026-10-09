@@ -9,9 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssh-server 
     && useradd --create-home --shell /bin/sh pwuser \
     && useradd --create-home --shell /usr/bin/tcsh cshuser \
     && useradd --create-home --shell /bin/sh emptyuser \
+    && useradd --create-home --shell /bin/sh mfauser \
     && passwd -l keyuser \
     && passwd -l pwuser \
     && passwd -l cshuser \
+    && passwd -l mfauser \
     && passwd -d emptyuser
 
 COPY sshd_config /etc/ssh/sshd_config.d/fixture.conf

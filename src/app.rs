@@ -2179,6 +2179,30 @@ mod tests {
         );
     }
 
+    const PARTIAL: &str = "Authenticated using \"publickey\" with partial success.\r\n\
+                           u@h: Permission denied (password).\r\n";
+
+    #[test]
+    fn a59_a_key_accepted_with_partial_success_is_skipped() {
+        let run = execute(FakeSsh::new().probe(255, PARTIAL));
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
+        assert!(run.err.contains("All keys were skipped"), "{}", run.err);
+    }
+
+    #[test]
+    fn a60_a_written_key_accepted_with_partial_success_is_verified() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(255, PARTIAL),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(run.err.contains("the key authenticates"), "{}", run.err);
+        assert!(!run.err.contains("could not be verified"), "{}", run.err);
+    }
+
     fn home_ssh(name: &str) -> PathBuf {
         Path::new("C:/home").join(".ssh").join(name)
     }

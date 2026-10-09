@@ -823,3 +823,28 @@ fn i32_d03_target_in_a_directory_without_write_access_is_reported_and_left_uncha
     );
     assert_eq!(fixture.stat_as_root("/srv/locked"), "755 root root");
 }
+
+/// mfauser must authenticate with a public key and then a password, so the
+/// check's probe sees the key accepted with partial success and exits 255.
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i33_d01_a_key_accepted_with_partial_success_is_skipped() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let setup = fixture.exec(
+        "mfauser",
+        &format!(
+            "umask 077 && mkdir -p .ssh && printf '%s\n' '{}' > .ssh/authorized_keys",
+            public_line(&key)
+        ),
+    );
+    assert!(setup.status.success(), "{}", text(&setup.stderr));
+    let run = fixture.copy_id(&key, "mfauser", &[]);
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("All keys were skipped"), "{stderr}");
+    assert_eq!(
+        fixture.authorized_keys("mfauser"),
+        format!("{}\n", public_line(&key))
+    );
+}

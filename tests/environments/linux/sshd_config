@@ -1,7 +1,8 @@
 # keyuser authenticates with public keys only; pwuser and cshuser may also use a
-# password; emptyuser has an empty password and is let in without one, after a
-# banner that mentions publickey and carries a forged copy of the line ssh logs
-# on authentication, while authenticating with none.
+# password; mfauser needs a public key and then a password; emptyuser has an
+# empty password and is let in without one, after a banner that mentions
+# publickey and carries a forged copy of the line ssh logs on authentication,
+# while authenticating with none.
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
@@ -10,6 +11,9 @@ UsePAM yes
 LogLevel VERBOSE
 Match User pwuser,cshuser
     PasswordAuthentication yes
+Match User mfauser
+    PasswordAuthentication yes
+    AuthenticationMethods publickey,password
 Match User emptyuser
     PasswordAuthentication yes
     PermitEmptyPasswords yes

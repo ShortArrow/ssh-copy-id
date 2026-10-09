@@ -62,6 +62,10 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 - A selected key file holding more than one key is still rejected before
   anything is sent, now with the rule it breaks: the file must hold the one
   public key of its private key (D-21).
+- A key the server accepts with partial success, asking for a further method
+  such as a password, counts as installed when no other identity could have
+  been offered, in the check and in the verification; with other candidates
+  the check is inconclusive and the key is installed (D-01).
 
 ## [0.0.1] - 2026-10-04
 
