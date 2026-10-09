@@ -33,7 +33,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for destination detection (D-12); include a login shell that prints a banner. |
 | U01 | Stage 1: CLI installs one key on a Unix-like destination; requirements 1, 2, 3, 7, and 8 | Passed | [Stage 1 run](#stage-1-on-a-unix-like-destination-2026-10-01): 19 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, also run in CI. |
-| K01 | Line endings and encoding sshd accepts in authorized_keys (D-05, D-07) | Partial | 2026-10-09, checked by logging in with the key: a key line ending in CR authenticates, with or without a comment, and a line starting with a UTF-8 BOM is rejected, on OpenSSH 9.6p1 (L02 image; the BOM case in a scout experiment), [OpenSSH 7.6p1 and Dropbear 2022.82, 2024.86 and 2025.89](#key-line-endings-k01). Pending: Windows OpenSSH 9.5. |
+| K01 | Line endings and encoding sshd accepts in authorized_keys (line endings, D-07) | Passed | 2026-10-09, checked by logging in with the key: a key line ending in CR authenticates, with or without a comment, on OpenSSH 9.6p1 (L02 image), [OpenSSH 7.6p1, Dropbear 2022.82, 2024.86 and 2025.89, and Windows OpenSSH 9.5p2](#key-line-endings-k01). A line starting with a UTF-8 BOM is rejected on all of them, except that Windows OpenSSH accepts one at the start of the file. |
 | A01 | Password and passphrase prompts with public keys on stdin, cancellation, no terminal, agent confirmation | Passed | [Prompt experiment](../tests/prototypes/ssh-prompt/README.md): prompts and cancellation pass with both tested Windows clients; no-terminal behavior differs by client; the Windows agent refuses keys with confirmation. |
 | A02 | Agent-selected identities | Partial | Linux: a private `ssh-agent` with two keys, one installed, appends only the other (`unix_destination` i22 and golden scenario 16). Pending: the Windows OpenSSH agent without `SSH_AUTH_SOCK` (D-20), checked by hand without changing the user's agent. |
 | F01 | Interrupted writes and uncertain remote state | Pending | Inject disconnects and record actual file state and exit status. |
@@ -275,18 +275,25 @@ locked password and `~/.ssh/authorized_keys`. On every server a key absent
 from the file was rejected, and the file's first and last bytes were read back
 to confirm the CR and BOM bytes.
 
-| Case | Format | Dropbear 2022.82, 2024.86, 2025.89 | OpenSSH 7.6p1 |
-| --- | --- | --- | --- |
-| LF | `%s c\n` | accepted | accepted |
-| CR, with comment | `%s comment\r\n` | accepted | accepted |
-| CR, without comment | `%s\r\n` | accepted | accepted |
-| CR at the end of the file, no LF | `%s\r` | accepted | accepted |
-| CR line before a comment line | `%s\r\n# trailing\n` | accepted | accepted |
-| BOM, first line | `\357\273\277%s c\n` | rejected | rejected |
-| BOM, after a comment line | `# x\n\357\273\277%s c\n` | rejected | rejected |
+| Case | Format | Dropbear 2022.82, 2024.86, 2025.89 | OpenSSH 7.6p1 | Windows OpenSSH 9.5p2 |
+| --- | --- | --- | --- | --- |
+| LF | `%s c\n` | accepted | accepted | accepted |
+| CR, with comment | `%s comment\r\n` | accepted | accepted | accepted |
+| CR, without comment | `%s\r\n` | accepted | accepted | accepted |
+| CR at the end of the file, no LF | `%s\r` | accepted | accepted | accepted |
+| CR line before a comment line | `%s\r\n# trailing\n` | accepted | accepted | accepted |
+| BOM, first line | `\357\273\277%s c\n` | rejected | rejected | accepted |
+| BOM, after a comment line | `# x\n\357\273\277%s c\n` | rejected | rejected | rejected |
 
 Git's client ran every case on all four servers; the Windows client ran them on
 Dropbear 2024.86 and OpenSSH 7.6p1, with the same results.
+
+Windows OpenSSH 9.5p2 (`sshd.exe` product version `OpenSSH_9.5p2 for Windows`) ran
+on the W05 guest (port 22223). The account was the standard user `fixtureuser`,
+whose `.ssh` and `authorized_keys` were created for the run with the owner and ACL
+that Test-StandardUser.ps1 sets, and removed afterwards; each case rewrote the file's bytes over
+SSH as the administrator, read back its first and last three bytes, and logged
+in with `OpenSSH_for_Windows_9.5p2`.
 
 ### Installation Script under BusyBox
 

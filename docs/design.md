@@ -444,13 +444,17 @@ the comment and blank lines written since the previous key, including a newline
 it added before the first line. A file the group created is removed, and later
 lines are not written. Before truncating, the script checks that the bytes after
 the group's starting size are a prefix of the text it tried to write; anything
-else means another writer appended meanwhile, and nothing is truncated. Upstream leaves
+else means another writer appended meanwhile, and nothing is truncated. The
+bytes are compared in hexadecimal from `od`, or from `hexdump` where `od` is
+absent, as in OpenWrt's BusyBox; when neither runs, the bytes cannot be
+compared and nothing is truncated. Whether the target ends with a newline is
+checked as upstream checks it, from `tail -c 1` alone. Upstream leaves
 the fragment, so the file no longer ends with a newline and the next append joins
 onto it, while the run reports that the key was not written. Apparent intent:
 upstream reports a failed append as a failed run and expects nothing to be left.
 Reason to differ: damage to existing data and a false report that nothing was
-written. When the size afterwards cannot be confirmed, or another writer
-prevented the truncation, the key is reported `uncertain`, the summary is
+written. When the size afterwards cannot be confirmed, or the bytes could not
+be compared or another writer prevented the truncation, the key is reported `uncertain`, the summary is
 `uncertain`, and the user is told to check the file. This is difference D-17.
 
 ### Dry-Run Behavior
@@ -570,22 +574,18 @@ input; OpenSSH, PKCS#8, PKCS#1 RSA, EC, DSA, and encrypted variants share that
 armor. Test representative OpenSSH and PEM private key inputs, including mixed
 public/private content and forced mode, without sending their contents.
 
-#### CRLF Normalization
+#### Line Endings
 
-The reviewed upstream script does not explicitly strip CR from CRLF input.
-Normalize CRLF line endings in the public key installation input to LF for
-transmission. Preserve options and comments; do not rewrite existing remote
-file contents or modify the local source file. This is difference D-05. Test LF
-and CRLF inputs with restricted entries and comments through both transports and
-forced mode.
-
-Apparent intent: the upstream script was written for inputs produced on the same
-Unix host, where CRLF does not occur. Reason to differ: not settled. The reason
-first recorded, that a line ending in CR is not a usable key, does not hold for
-OpenSSH 9.6p1, whose sshd accepts such a line (validation row K01). Whether
-Dropbear, Windows OpenSSH and older OpenSSH releases accept it decides whether
-the normalization stays; until then it stays, and the
-[open questions](open-questions.md) track it.
+Key lines are sent with their line endings as given, as upstream sends them: a
+CR before an LF, or at the end of the input, stays in the line, and neither the
+existing remote contents nor the local source file are rewritten. Every sshd
+tested accepts a key line ending in CR: OpenSSH 7.6p1 and 9.6p1, Windows OpenSSH
+9.5p2, and Dropbear 2022.82, 2024.86 and 2025.89 (validation row K01), so no
+reason to differ remains. Where this tool reads a line, for the checks in this
+section, for telling a comment or blank line from a key entry, and for the
+installed-key check, a single CR at its end is not part of its content. Test LF
+and CRLF inputs with restricted entries, comments and blank lines through both
+transports and forced mode: the target receives the bytes given.
 
 Strict public key parsing, beyond the checks in this section, is not adopted.
 Input with no key entry is rejected, as upstream reports "No identities found".
