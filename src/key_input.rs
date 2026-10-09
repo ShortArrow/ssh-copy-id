@@ -1,10 +1,11 @@
-//! Validation and normalization of public key installation input.
+//! Validation of public key installation input.
 
-/// Input that passed validation, normalized for transfer to the remote side.
+/// Input that passed validation, as it is sent to the remote side.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedInput {
-    /// Every input line, in order, with its trailing CR and its leading and trailing
-    /// spaces and tabs removed and an LF appended; blank lines at the end are left out.
+    /// Every input line, in order, as the line reading of [`prepare`] or
+    /// [`prepare_verbatim`] gives it, with an LF appended; empty lines at the end
+    /// are left out. A CR that ends a line stays in it.
     pub text: Vec<u8>,
     /// Number of key entry lines in `text`.
     pub key_count: usize,
@@ -25,9 +26,13 @@ pub enum InputError {
     NoKeys,
 }
 
-/// Validates `input` as authorized_keys lines and normalizes it.
+/// Validates `input` as authorized_keys lines and reads them as upstream's
+/// `while read -r` does: leading and trailing spaces and tabs are removed, and
+/// lines that are then empty at the end are left out. A CR that ends a line is
+/// not a space or tab, so it stays, with the spaces and tabs before it.
 ///
-/// A leading UTF-8 BOM is removed. The private key check runs over all lines
+/// A line's content, which the checks classify, excludes one CR at its end. A
+/// leading UTF-8 BOM is removed. The private key check runs over all lines
 /// before any other check and wins over every other error. Otherwise the first
 /// failing line, checked for NUL, then standalone CR, then grammar, is reported.
 /// Line numbers count every input line, including the trailing blank lines left out of the text.
@@ -36,16 +41,31 @@ pub fn prepare(input: &[u8]) -> Result<PreparedInput, InputError> {
 }
 
 /// Validates `input` as [`prepare`] does but keeps every line as given, as upstream's
-/// `$(cat file)` under `-f` does: no spaces or tabs are removed, and only empty lines
-/// at the end are left out. The CR before each LF and a leading BOM are still removed.
+/// `$(cat file)` under `-f` does: no spaces, tabs or CRs are removed, and only empty
+/// lines at the end are left out. A leading BOM is still removed.
 pub fn prepare_verbatim(input: &[u8]) -> Result<PreparedInput, InputError> {
     prepare_lines(input, LineReading::Verbatim)
+}
+
+/// The key entry lines of `text`, which passed [`prepare`] or
+/// [`prepare_verbatim`], each with its line ending.
+pub fn key_lines(text: &[u8]) -> Vec<&[u8]> {
+    text.split_inclusive(|&b| b == b'\n')
+        .filter(|line| matches!(classify(content_of(line)), Some(LineKind::Key)))
+        .collect()
+}
+
+/// `line` without its LF and then one CR at its end, which are not part of its content.
+fn content_of(line: &[u8]) -> &[u8] {
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    line.strip_suffix(b"\r").unwrap_or(line)
 }
 
 /// How the lines that pass validation are written to the prepared text.
 #[derive(Clone, Copy)]
 enum LineReading {
-    /// Leading and trailing spaces and tabs removed, as `read -r` with the default IFS does.
+    /// Leading and trailing spaces and tabs removed, as `read -r` with the default IFS
+    /// does; a CR at the end is not one of them.
     Trimmed,
     /// As given.
     Verbatim,
@@ -60,17 +80,17 @@ fn prepare_lines(input: &[u8], reading: LineReading) -> Result<PreparedInput, In
     let mut key_count = 0;
     for (index, raw) in lines.iter().enumerate() {
         let line = index + 1;
-        let checked = check_line_bytes(raw, line)?;
-        let content = match reading {
-            LineReading::Trimmed => trim_separators(checked),
-            LineReading::Verbatim => checked,
+        check_line_bytes(raw, line)?;
+        let read = match reading {
+            LineReading::Trimmed => trim_separators(raw),
+            LineReading::Verbatim => raw,
         };
-        match classify(content) {
+        match classify(content_of(read)) {
             Some(LineKind::Key) => key_count += 1,
             Some(LineKind::BlankOrComment) => {}
             None => return Err(InputError::Malformed { line }),
         }
-        contents.push(content);
+        contents.push(read);
     }
     if key_count == 0 {
         return Err(InputError::NoKeys);
@@ -110,16 +130,15 @@ fn is_private_key_marker(line: &[u8]) -> bool {
     contains(line, b"-----BEGIN") && contains(line, b"PRIVATE KEY")
 }
 
-/// Returns the line without its trailing CR, or the NUL or standalone CR error.
-fn check_line_bytes(raw: &[u8], line: usize) -> Result<&[u8], InputError> {
+/// Rejects a line holding a NUL byte or a CR other than one at its end.
+fn check_line_bytes(raw: &[u8], line: usize) -> Result<(), InputError> {
     if raw.contains(&0) {
         return Err(InputError::Nul { line });
     }
-    let content = raw.strip_suffix(b"\r").unwrap_or(raw);
-    if content.contains(&b'\r') {
+    if content_of(raw).contains(&b'\r') {
         return Err(InputError::StandaloneCr { line });
     }
-    Ok(content)
+    Ok(())
 }
 
 fn is_separator(b: u8) -> bool {
@@ -141,7 +160,7 @@ fn trim_separators(s: &[u8]) -> &[u8] {
     &rest[..end]
 }
 
-/// Joins trimmed lines with LF after each, leaving out the blank lines at the end as `$(…)` does.
+/// Joins the read lines with LF after each, leaving out the empty lines at the end as `$(…)` does.
 fn join_without_trailing_blanks(contents: &[&[u8]]) -> Vec<u8> {
     let kept = contents
         .iter()
@@ -239,9 +258,9 @@ mod tests {
     }
 
     #[test]
-    fn a02_crlf_becomes_lf() {
+    fn a02_crlf_is_sent_as_given() {
         let given = input("ssh-ed25519 {K} u@h\r\n");
-        assert_eq!(prepare(&given), ok("ssh-ed25519 {K} u@h\n", 1));
+        assert_eq!(prepare(&given), ok("ssh-ed25519 {K} u@h\r\n", 1));
     }
 
     #[test]
@@ -330,9 +349,9 @@ mod tests {
     }
 
     #[test]
-    fn a16_cr_only_lines_become_blank() {
+    fn a16_cr_only_lines_are_blank_and_kept() {
         let given = input("\r\nssh-ed25519 {K}\n\r\n\r\n");
-        assert_eq!(prepare(&given), ok("\nssh-ed25519 {K}\n", 1));
+        assert_eq!(prepare(&given), ok("\r\nssh-ed25519 {K}\n\r\n\r\n", 1));
     }
 
     #[test]
@@ -431,9 +450,9 @@ mod tests {
     }
 
     #[test]
-    fn a32_trailing_whitespace_before_crlf_is_removed() {
+    fn a32_whitespace_before_a_cr_is_kept_as_read_keeps_it() {
         let given = input("ssh-ed25519 {K} me \t\r\n \r\n\r\n");
-        assert_eq!(prepare(&given), ok("ssh-ed25519 {K} me\n", 1));
+        assert_eq!(prepare(&given), ok("ssh-ed25519 {K} me \t\r\n\r\n\r\n", 1));
     }
 
     #[test]
@@ -470,10 +489,10 @@ mod tests {
     }
 
     #[test]
-    fn v03_verbatim_still_normalizes_crlf_and_the_bom() {
+    fn v03_verbatim_keeps_the_cr_and_removes_the_bom() {
         let mut given = vec![0xEF, 0xBB, 0xBF];
         given.extend(input(" ssh-ed25519 {K} \r\n"));
-        assert_eq!(prepare_verbatim(&given), ok(" ssh-ed25519 {K} \n", 1));
+        assert_eq!(prepare_verbatim(&given), ok(" ssh-ed25519 {K} \r\n", 1));
     }
 
     #[test]
@@ -490,5 +509,67 @@ mod tests {
         let mut given = vec![0xEF, 0xBB, 0xBF];
         given.extend(input("  ssh-ed25519 {K}\n"));
         assert_eq!(prepare(&given), ok("ssh-ed25519 {K}\n", 1));
+    }
+
+    #[test]
+    fn c01_crlf_comment_and_blank_lines_are_sent_byte_for_byte() {
+        let given = input("# c\r\n\r\nssh-ed25519 {K}\r\n");
+        assert_eq!(prepare(&given), ok("# c\r\n\r\nssh-ed25519 {K}\r\n", 1));
+    }
+
+    #[test]
+    fn c02_cr_at_the_end_of_the_input_is_kept_and_an_lf_added() {
+        let given = input("ssh-ed25519 {K}\r");
+        assert_eq!(prepare(&given), ok("ssh-ed25519 {K}\r\n", 1));
+    }
+
+    #[test]
+    fn c03_two_crs_before_the_lf_are_a_standalone_cr() {
+        let given = input("ssh-ed25519 {K}\r\r\n");
+        assert_eq!(prepare(&given), Err(InputError::StandaloneCr { line: 1 }));
+    }
+
+    #[test]
+    fn c04_trimming_stops_at_a_cr_as_read_does() {
+        let given = input("  ssh-ed25519 {K} c \r\n");
+        assert_eq!(prepare(&given), ok("ssh-ed25519 {K} c \r\n", 1));
+    }
+
+    #[test]
+    fn c05_verbatim_keeps_a_crlf_line_as_given() {
+        let given = input("  ssh-ed25519 {K} c \r\n");
+        assert_eq!(prepare_verbatim(&given), ok("  ssh-ed25519 {K} c \r\n", 1));
+    }
+
+    #[test]
+    fn c06_bom_is_removed_and_the_cr_kept() {
+        let mut given = vec![0xEF, 0xBB, 0xBF];
+        given.extend(input("ssh-ed25519 {K} c\r\n"));
+        assert_eq!(prepare(&given), ok("ssh-ed25519 {K} c\r\n", 1));
+    }
+
+    #[test]
+    fn c07_cr_only_and_crlf_comment_lines_are_not_keys() {
+        let given = input("\r\n \t\r\n#x\r\n  # y\r\nssh-ed25519 {K}\r\n");
+        assert_eq!(count(prepare(&given)), Ok(1));
+        assert_eq!(count(prepare_verbatim(&given)), Ok(1));
+    }
+
+    #[test]
+    fn c08_cr_ended_line_that_is_not_a_key_is_malformed() {
+        let given = input("ssh-ed25519 {K}\r\nhello\r\n");
+        assert_eq!(prepare(&given), Err(InputError::Malformed { line: 2 }));
+    }
+
+    #[test]
+    fn c09_key_lines_are_the_key_entries_with_their_line_endings() {
+        let text = input("# c\r\n\r\nssh-ed25519 {K} a\r\n \t\n  ssh-ed25519 {K} b\n");
+        assert_eq!(
+            key_lines(&text),
+            vec![
+                input("ssh-ed25519 {K} a\r\n").as_slice(),
+                input("  ssh-ed25519 {K} b\n").as_slice()
+            ]
+        );
     }
 }

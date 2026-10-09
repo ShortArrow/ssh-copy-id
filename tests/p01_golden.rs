@@ -408,6 +408,8 @@ enum KeyFile {
     /// The generated key's line with spaces and a tab around it, then a
     /// space-only line and an empty line.
     Untrimmed,
+    /// A comment line and the generated key's line, each ending in CR LF.
+    Crlf,
 }
 
 #[derive(Clone, Copy)]
@@ -453,7 +455,7 @@ const BASE: Scenario = Scenario {
     key_installed: false,
 };
 
-const SCENARIOS: [Scenario; 29] = [
+const SCENARIOS: [Scenario; 31] = [
     Scenario {
         title: "-h (no destination)",
         arguments: Arguments::Help,
@@ -610,6 +612,17 @@ const SCENARIOS: [Scenario; 29] = [
         arguments: Arguments::Trace,
         ..BASE
     },
+    Scenario {
+        title: "-f: a key file with CRLF line endings",
+        arguments: Arguments::ForceInstall,
+        key_file: KeyFile::Crlf,
+        ..BASE
+    },
+    Scenario {
+        title: "a key file with CRLF line endings",
+        key_file: KeyFile::Crlf,
+        ..BASE
+    },
 ];
 
 /// Upstream's usage, which the CLI's matches only from stage 1.5.
@@ -673,10 +686,10 @@ struct Expected {
     always: bool,
 }
 
-const EXPECTED: [Expected; 25] = [
+const EXPECTED: [Expected; 26] = [
     Expected {
         tag: "D-06",
-        scenarios: &[5, 9, 10, 12, 13],
+        scenarios: &[5, 9, 10, 12, 13, 31],
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::Remove(
@@ -726,7 +739,7 @@ const EXPECTED: [Expected; 25] = [
     },
     Expected {
         tag: "D-13",
-        scenarios: &[5, 6, 7, 8, 9, 10, 12, 13, 16, 22, 23, 26, 27, 28],
+        scenarios: &[5, 6, 7, 8, 9, 10, 12, 13, 16, 22, 23, 26, 27, 28, 31],
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::RemoveLine(
@@ -756,10 +769,21 @@ const EXPECTED: [Expected; 25] = [
     },
     Expected {
         tag: "D-18",
-        scenarios: &[25],
+        scenarios: &[25, 30, 31],
         field: Field::Stdout,
         tool: Tool::Upstream,
         edit: Edit::Replace("Number of key(s) added: 2\n", "Number of key(s) added: 1\n"),
+        always: true,
+    },
+    Expected {
+        tag: "D-18",
+        scenarios: &[31],
+        field: Field::Stderr,
+        tool: Tool::Upstream,
+        edit: Edit::Replace(
+            "ssh-copy-id: INFO: 2 key(s) remain to be installed",
+            "ssh-copy-id: INFO: 1 key(s) remain to be installed",
+        ),
         always: true,
     },
     Expected {
@@ -1021,6 +1045,14 @@ impl Harness {
                 let other = keygen(&dir, "other", "other@test");
                 let lines = format!("{}\n{}\n", public_line(&key), public_line(&other));
                 fs::write(key.with_extension("pub"), lines).unwrap();
+            }
+            KeyFile::Crlf => {
+                let line = public_line(&key);
+                fs::write(
+                    key.with_extension("pub"),
+                    format!("# comment\r\n{line}\r\n"),
+                )
+                .unwrap();
             }
             KeyFile::Untrimmed => {
                 let line = public_line(&key);

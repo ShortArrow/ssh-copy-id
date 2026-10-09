@@ -248,3 +248,20 @@ fn o5_d17_a_line_another_writer_appended_is_kept() {
     let after = fixture.read(DROPBEAR_KEYS);
     assert!(after.starts_with(&format!("{before}other\n")), "{after:?}");
 }
+
+#[test]
+#[ignore = "needs the L03 fixture image"]
+fn o6_a_crlf_key_file_is_sent_as_given_and_the_key_logs_in() {
+    let fixture = OpenWrt::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let line = public_line(&key);
+    fs::write(key.with_extension("pub"), format!("{line}\r\n")).unwrap();
+    let run = fixture.copy_id(&key, &[]);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert!(text(&run.stdout).contains("Number of key(s) added: 1\n"));
+    assert_eq!(
+        fixture.read(DROPBEAR_KEYS),
+        format!("{}\n{line}\r\n", public_line(&fixture.control))
+    );
+    assert!(fixture.logs_in_with(&key));
+}
