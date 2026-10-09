@@ -74,7 +74,7 @@ impl Fixture {
     }
 
     /// Runs the CLI as `copy_id` does, with `identity` in place of `-i <key>`,
-    /// `HOME` set to `home`, and `SSH_AUTH_SOCK` set to `agent` or removed, and
+    /// `HOME` and `USERPROFILE` set to `home`, and `SSH_AUTH_SOCK` set to `agent` or removed, and
     /// fails the test when a scratch directory remains in `home/.ssh`.
     fn copy_id_from_home(
         &self,
@@ -90,6 +90,7 @@ impl Fixture {
         command
             .args(&args)
             .env("HOME", home)
+            .env("USERPROFILE", home)
             .env("SSH_ASKPASS", self.askpass(&self.password))
             .env("SSH_ASKPASS_REQUIRE", "force")
             .stdin(Stdio::null())
