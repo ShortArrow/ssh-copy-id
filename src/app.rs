@@ -347,6 +347,7 @@ fn install(
     }
     let Written { added, target } = write_keys(ssh, invocation, &install, &text, remaining.len())?;
 
+    let to_check = what_to_check(&target, install.target);
     let login = login_command(invocation, selection.hint_identity(invocation.force));
     if (env.interrupted)() {
         summary(out, added, &login);
@@ -358,7 +359,7 @@ fn install(
             summary(out, added, &login);
             return stop("interrupted before the key was verified".to_string());
         }
-        report_verification(err, &key.label, verified, &target);
+        report_verification(err, &key.label, verified, &to_check);
     }
 
     summary(out, added, &login);
@@ -620,8 +621,22 @@ fn other_candidates(
     ))
 }
 
-/// Prints the result of a written key's post-installation check (D-06), after `label`.
-fn report_verification(err: &mut dyn Write, label: &str, verified: CheckResult, target: &str) {
+/// What a rejected verification asks the user to check about `target`, the
+/// file the script reported: with `-t`, also whether the server reads that
+/// file at all, since sshd reads only its `AuthorizedKeysFile`.
+fn what_to_check(target: &str, named: Option<&TargetPath>) -> String {
+    match named {
+        Some(_) => format!(
+            "that the server's AuthorizedKeysFile setting reads {target}, \
+             and the permissions of {target} and its directory"
+        ),
+        None => format!("the permissions of {target} and its directory"),
+    }
+}
+
+/// Prints the result of a written key's post-installation check (D-06), after
+/// `label`; a rejection names `to_check`, as `what_to_check` words it.
+fn report_verification(err: &mut dyn Write, label: &str, verified: CheckResult, to_check: &str) {
     match verified {
         CheckResult::Installed => info(
             err,
@@ -631,7 +646,7 @@ fn report_verification(err: &mut dyn Write, label: &str, verified: CheckResult, 
             err,
             &format!(
                 "the key was installed but could not be verified: the server still rejects it; \
-                 check the permissions of {target} and its directory"
+                 check {to_check}"
             ),
         ),
         CheckResult::Inconclusive(reason)
@@ -3316,6 +3331,50 @@ mod tests {
             run.err.ends_with(
                 "ssh-copy-id: ERROR: the connection ended without a result; \
                  keys/my file may or may not have changed\n"
+            ),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn t09_a_rejected_verification_after_target_names_the_server_setting() {
+        let run = execute_with(
+            &targeting("keys/my file", invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(TARGET_REPORT)
+                .probe(255, DENIED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(
+            run.err.contains(
+                "ssh-copy-id: WARNING: the key was installed but could not be verified: \
+                 the server still rejects it; check that the server's AuthorizedKeysFile \
+                 setting reads keys/my file, and the permissions of keys/my file and its \
+                 directory\n"
+            ),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn t10_a_rejected_verification_without_target_names_the_permissions() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(255, DENIED),
+        );
+        assert!(
+            run.err.contains(
+                "ssh-copy-id: WARNING: the key was installed but could not be verified: \
+                 the server still rejects it; check the permissions of .ssh/authorized_keys \
+                 and its directory\n"
             ),
             "{}",
             run.err

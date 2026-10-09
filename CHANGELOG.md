@@ -42,7 +42,9 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   command, so quotes, `!` and CR in it are data under any login shell, and a
   path containing LF is rejected before anything runs (D-11). The OpenWrt and
   Haiku targets apply only without `-t` (D-22). `-n` and `-f` work with it as
-  without it.
+  without it. When the server still rejects the key afterwards, the warning
+  asks to check that the server's `AuthorizedKeysFile` setting reads the file,
+  as well as its permissions (D-06).
 
 ### Changed
 

@@ -692,7 +692,7 @@ const EXPECTED: [Expected; 23] = [
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::Remove(
-            "ssh-copy-id: WARNING: the key was installed but could not be verified: the server still rejects it; check the permissions of keys/authorized and its directory\n",
+            "ssh-copy-id: WARNING: the key was installed but could not be verified: the server still rejects it; check that the server's AuthorizedKeysFile setting reads keys/authorized, and the permissions of keys/authorized and its directory\n",
         ),
         always: true,
     },
@@ -702,7 +702,7 @@ const EXPECTED: [Expected; 23] = [
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::Remove(
-            "ssh-copy-id: WARNING: the key was installed but could not be verified: the server still rejects it; check the permissions of my keys/authorized keys and its directory\n",
+            "ssh-copy-id: WARNING: the key was installed but could not be verified: the server still rejects it; check that the server's AuthorizedKeysFile setting reads my keys/authorized keys, and the permissions of my keys/authorized keys and its directory\n",
         ),
         always: true,
     },
@@ -712,7 +712,7 @@ const EXPECTED: [Expected; 23] = [
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::Remove(
-            "ssh-copy-id: WARNING: the key was installed but could not be verified: the server still rejects it; check the permissions of keys/it's and its directory\n",
+            "ssh-copy-id: WARNING: the key was installed but could not be verified: the server still rejects it; check that the server's AuthorizedKeysFile setting reads keys/it's, and the permissions of keys/it's and its directory\n",
         ),
         always: true,
     },
