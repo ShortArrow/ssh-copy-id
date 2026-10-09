@@ -381,6 +381,19 @@ enum Arguments {
     DryRun,
     /// `-n -f`, then `-i` with the private key path, the fixture options, and pwuser.
     DryRunForce,
+    /// `-t` with the given path, then `-i` with the private key path, the
+    /// fixture options, and pwuser.
+    Target(&'static str),
+}
+
+impl Arguments {
+    /// The file the arguments install into, relative to pwuser's home directory.
+    fn key_file(self) -> &'static str {
+        match self {
+            Arguments::Target(path) => path,
+            _ => ".ssh/authorized_keys",
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -438,7 +451,7 @@ const BASE: Scenario = Scenario {
     key_installed: false,
 };
 
-const SCENARIOS: [Scenario; 25] = [
+const SCENARIOS: [Scenario; 28] = [
     Scenario {
         title: "-h (no destination)",
         arguments: Arguments::Help,
@@ -575,6 +588,21 @@ const SCENARIOS: [Scenario; 25] = [
         key_file: KeyFile::Untrimmed,
         ..BASE
     },
+    Scenario {
+        title: "-t: a relative target in a new directory",
+        arguments: Arguments::Target("keys/authorized"),
+        ..BASE
+    },
+    Scenario {
+        title: "-t: a relative target with spaces",
+        arguments: Arguments::Target("my keys/authorized keys"),
+        ..BASE
+    },
+    Scenario {
+        title: "-t: a relative target with a single quote",
+        arguments: Arguments::Target("keys/it's"),
+        ..BASE
+    },
 ];
 
 /// Upstream's usage, which the CLI's matches only from stage 1.5.
@@ -587,15 +615,16 @@ const UPSTREAM_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-s|-x] [-i [identi
 ";
 
 /// The CLI's usage.
-const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n] [-i [identity_file]] [-t target_path] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
 \t-f: force mode -- copy keys without trying to check if they are already installed
 \t-n: dry run    -- no keys are actually copied
 \t-i: the public key to install; '.pub' is added when absent
+\t-t: the remote file to add the keys to, relative to the home directory
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
 \t-h|-?: print this help
 This release installs keys on a Unix-like host.
--s, -t, and -x are not available yet.
+-s and -x are not available yet.
 ";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -604,7 +633,8 @@ enum Field {
     ExitStatus,
     Stdout,
     Stderr,
-    /// pwuser's `authorized_keys` as the report shows it.
+    /// The file the scenario installs into, pwuser's `authorized_keys` unless
+    /// `-t` names another, as the report shows it.
     AuthorizedKeys,
 }
 
@@ -635,7 +665,7 @@ struct Expected {
     always: bool,
 }
 
-const EXPECTED: [Expected; 16] = [
+const EXPECTED: [Expected; 23] = [
     Expected {
         tag: "D-06",
         scenarios: &[5, 9, 10, 12, 13],
@@ -657,8 +687,38 @@ const EXPECTED: [Expected; 16] = [
         always: true,
     },
     Expected {
+        tag: "D-06",
+        scenarios: &[26],
+        field: Field::Stderr,
+        tool: Tool::Cli,
+        edit: Edit::Remove(
+            "ssh-copy-id: WARNING: the key was installed but could not be verified: the server still rejects it; check the permissions of keys/authorized and its directory\n",
+        ),
+        always: true,
+    },
+    Expected {
+        tag: "D-06",
+        scenarios: &[27],
+        field: Field::Stderr,
+        tool: Tool::Cli,
+        edit: Edit::Remove(
+            "ssh-copy-id: WARNING: the key was installed but could not be verified: the server still rejects it; check the permissions of my keys/authorized keys and its directory\n",
+        ),
+        always: true,
+    },
+    Expected {
+        tag: "D-06",
+        scenarios: &[28],
+        field: Field::Stderr,
+        tool: Tool::Cli,
+        edit: Edit::Remove(
+            "ssh-copy-id: WARNING: the key was installed but could not be verified: the server still rejects it; check the permissions of keys/it's and its directory\n",
+        ),
+        always: true,
+    },
+    Expected {
         tag: "D-13",
-        scenarios: &[5, 6, 7, 8, 9, 10, 12, 13, 16, 22, 23],
+        scenarios: &[5, 6, 7, 8, 9, 10, 12, 13, 16, 22, 23, 26, 27, 28],
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::RemoveLine(
@@ -743,6 +803,38 @@ const EXPECTED: [Expected; 16] = [
         scenarios: &[11],
         field: Field::AuthorizedKeys,
         tool: Tool::Upstream,
+        edit: Edit::Whole("(absent)"),
+        always: true,
+    },
+    Expected {
+        tag: "D-11",
+        scenarios: &[28],
+        field: Field::ExitStatus,
+        tool: Tool::Cli,
+        edit: Edit::Replace("0", "1"),
+        always: true,
+    },
+    Expected {
+        tag: "D-11",
+        scenarios: &[28],
+        field: Field::Stdout,
+        tool: Tool::Cli,
+        edit: Edit::Whole(""),
+        always: true,
+    },
+    Expected {
+        tag: "D-11",
+        scenarios: &[28],
+        field: Field::Stderr,
+        tool: Tool::Upstream,
+        edit: Edit::Remove("sh: 1: Syntax error: Unterminated quoted string\n"),
+        always: true,
+    },
+    Expected {
+        tag: "D-11",
+        scenarios: &[28],
+        field: Field::AuthorizedKeys,
+        tool: Tool::Cli,
         edit: Edit::Whole("(absent)"),
         always: true,
     },
@@ -1011,7 +1103,7 @@ impl Harness {
             status: output.status.code(),
             stdout: normalize(&text(&output.stdout), &with),
             stderr: normalize(&text(&output.stderr), &with),
-            authorized_keys: authorized_keys(&fixture),
+            authorized_keys: installed_file(&fixture, scenario.arguments.key_file()),
         }
     }
 }
@@ -1044,6 +1136,7 @@ fn arguments(arguments: Arguments, fixture: &Fixture, key: &Path) -> Vec<String>
         ],
         Arguments::DryRun => vec!["-n".into(), "-i".into(), display(key)],
         Arguments::DryRunForce => vec!["-n".into(), "-f".into(), "-i".into(), display(key)],
+        Arguments::Target(path) => vec!["-t".into(), path.into(), "-i".into(), display(key)],
     };
     let mut words = identity;
     words.extend([
@@ -1062,9 +1155,10 @@ fn arguments(arguments: Arguments, fixture: &Fixture, key: &Path) -> Vec<String>
     words
 }
 
-/// pwuser's `authorized_keys` read as root, or `None` when it does not exist.
-fn authorized_keys(fixture: &Fixture) -> Option<Vec<u8>> {
-    let path = format!("/home/{USER}/.ssh/authorized_keys");
+/// The file at `path` relative to pwuser's home directory, read as root, or
+/// `None` when it does not exist.
+fn installed_file(fixture: &Fixture, path: &str) -> Option<Vec<u8>> {
+    let path = format!("'/home/{USER}/{}'", path.replace('\'', r"'\''"));
     let read = fixture.exec_as_root(&format!("test -e {path} && cat {path}"));
     read.status.success().then_some(read.stdout)
 }

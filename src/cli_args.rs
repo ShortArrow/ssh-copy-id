@@ -43,6 +43,8 @@ pub struct Invocation {
     pub force: Force,
     /// `-n`: the keys that would be installed are listed instead of installed.
     pub dry_run: bool,
+    /// `-t target_path`, as given; the last one counts, as in upstream.
+    pub target: Option<String>,
 }
 
 /// Whether `-f` was given and whether it preceded the key selection. Upstream
@@ -95,8 +97,8 @@ pub enum ArgsError {
 /// Parses the arguments after the program name.
 ///
 /// Options follow upstream's `getopts` rules: they end at `--` or at the first
-/// argument that does not start with `-`, flags may be grouped, and `-o`, `-F`
-/// and `-p` take their value attached or as the next argument. `-i` takes the
+/// argument that does not start with `-`, flags may be grouped, and `-o`, `-F`,
+/// `-p` and `-t` take their value attached or as the next argument. `-i` takes the
 /// next argument as its file unless it looks like an option, as upstream does; when
 /// that argument is the last one, it is the destination and `-i` has no file,
 /// unless `names_a_key_file` holds for it, which is upstream's missing hostname.
@@ -109,6 +111,7 @@ pub fn parse(
     let mut ssh_options = Vec::new();
     let mut force = Force::Off;
     let mut dry_run = false;
+    let mut target = None;
     let mut index = 0;
     while let Some(arg) = args.get(index) {
         index += 1;
@@ -124,7 +127,7 @@ pub fn parse(
         };
         for (at, flag) in flags.char_indices() {
             match flag {
-                'o' | 'F' | 'p' => {
+                'o' | 'F' | 'p' | 't' => {
                     let attached = &flags[at + flag.len_utf8()..];
                     let value = if attached.is_empty() {
                         index += 1;
@@ -137,6 +140,7 @@ pub fn parse(
                     match flag {
                         'o' => ssh_options.push(SshOption::Option(value)),
                         'F' => ssh_options.push(SshOption::Config(value)),
+                        't' => target = Some(value),
                         _ => port = Some(value),
                     }
                     break;
@@ -159,7 +163,7 @@ pub fn parse(
                 'f' if force == Force::Off => force = Force::BeforeKeySelection,
                 'f' => {}
                 'n' => dry_run = true,
-                's' | 't' | 'x' => return Err(ArgsError::Unsupported(flag)),
+                's' | 'x' => return Err(ArgsError::Unsupported(flag)),
                 _ => return Err(ArgsError::IllegalOption(flag)),
             }
         }
@@ -177,6 +181,7 @@ pub fn parse(
         ssh_options,
         force,
         dry_run,
+        target,
     })
 }
 
@@ -220,6 +225,7 @@ mod tests {
             ssh_options: Vec::new(),
             force: Force::Off,
             dry_run: false,
+            target: None,
         }
     }
 
@@ -326,7 +332,7 @@ mod tests {
 
     #[test]
     fn p11_later_stage_options_are_unsupported() {
-        for flag in ['s', 't', 'x'] {
+        for flag in ['s', 'x'] {
             let given = args(&[&format!("-{flag}"), "-i", "k", "h"]);
             assert_eq!(
                 parse_plain(&given),
@@ -525,5 +531,40 @@ mod tests {
         let grouped = parse_plain(&args(&["-fn", "-i", "k", "h"])).unwrap();
         assert!(grouped.dry_run);
         assert_eq!(grouped.force, Force::BeforeKeySelection);
+    }
+
+    #[test]
+    fn p31_target_is_none_unless_given() {
+        assert_eq!(parse_plain(&args(&["-i", "k", "h"])).unwrap().target, None);
+    }
+
+    #[test]
+    fn p32_target_as_separate_or_attached_argument_is_taken_as_given() {
+        for (given, expected) in [
+            (
+                args(&["-t", "keys/my file", "-i", "k", "h"]),
+                "keys/my file",
+            ),
+            (args(&["-tkeys/x", "-i", "k", "h"]), "keys/x"),
+            (args(&["-ft", "-n", "-i", "k", "h"]), "-n"),
+            (args(&["-t", "a\nb", "h"]), "a\nb"),
+        ] {
+            let parsed = parse_plain(&given).unwrap();
+            assert_eq!(parsed.target.as_deref(), Some(expected), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn p33_target_without_a_value_is_reported_as_getopts_does() {
+        assert_eq!(
+            parse_plain(&args(&["-i", "k", "-t"])),
+            Err(ArgsError::MissingValue('t'))
+        );
+    }
+
+    #[test]
+    fn p34_a_later_target_replaces_an_earlier_one_as_upstream() {
+        let parsed = parse_plain(&args(&["-t", "a", "-t", "b", "h"])).unwrap();
+        assert_eq!(parsed.target.as_deref(), Some("b"));
     }
 }

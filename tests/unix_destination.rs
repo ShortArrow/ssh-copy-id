@@ -1,5 +1,5 @@
 //! Behavior against the L02 Linux fixture: requirements 1, 2, 3, 4, 5, 7, and 8,
-//! design D-01, D-15, D-16, D-17, D-18, and D-20, and default key selection.
+//! design D-01, D-03, D-11, D-15, D-16, D-17, D-18, and D-20, and default key selection.
 //! Every run of the CLI must leave no `ssh-copy-id.*` scratch directory in the
 //! local `~/.ssh` it uses.
 //!
@@ -733,4 +733,93 @@ fn i28_requirement_4_dry_run_with_force_makes_no_connection() {
     );
     assert_eq!(fixture.connections_logged(), connections);
     assert_eq!(fixture.key_file_state(), before);
+}
+
+impl Fixture {
+    /// The octal permission bits, owner and group of `path`, read as root.
+    fn stat_as_root(&self, path: &str) -> String {
+        let state = self.exec_as_root(&format!("stat -c '%a %U %G' {path}"));
+        assert!(state.status.success(), "{}", text(&state.stderr));
+        text(&state.stdout).trim().to_string()
+    }
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i29_target_relative_to_home_in_a_new_directory_is_created_private() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &["-t", "keys dir/my keys"]);
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(text(&run.stdout).contains("Number of key(s) added: 1"));
+    assert_eq!(
+        fixture.read_as_root("/home/pwuser/keys dir/my keys"),
+        format!("{}\n", public_line(&key))
+    );
+    assert_eq!(fixture.mode("pwuser", "'keys dir'"), "700");
+    assert_eq!(fixture.mode("pwuser", "'keys dir/my keys'"), "600");
+    assert!(
+        fixture
+            .exec("pwuser", "test ! -e .ssh/authorized_keys")
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i30_d03_target_in_an_existing_shared_directory_leaves_its_mode_unchanged() {
+    let fixture = Fixture::start();
+    let setup = fixture.exec_as_root("install -d -m 775 -o root -g pwuser /srv/shared");
+    assert!(setup.status.success(), "{}", text(&setup.stderr));
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &["-t", "/srv/shared/keys"]);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert_eq!(
+        fixture.read_as_root("/srv/shared/keys"),
+        format!("{}\n", public_line(&key))
+    );
+    assert_eq!(fixture.stat_as_root("/srv/shared"), "775 root pwuser");
+    assert_eq!(
+        fixture.stat_as_root("/srv/shared/keys"),
+        "600 pwuser pwuser"
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i31_d11_target_with_a_quote_and_an_exclamation_mark_is_data_under_tcsh() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let target = "keys/it's here!";
+    let run = fixture.copy_id(&key, "cshuser", &["-t", target]);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert_eq!(
+        fixture.read_as_root("/home/cshuser/keys/it's here!"),
+        format!("{}\n", public_line(&key))
+    );
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
+fn i32_d03_target_in_a_directory_without_write_access_is_reported_and_left_unchanged() {
+    let fixture = Fixture::start();
+    let setup = fixture.exec_as_root("install -d -m 755 -o root -g root /srv/locked");
+    assert!(setup.status.success(), "{}", text(&setup.stderr));
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "pwuser", &["-t", "/srv/locked/keys"]);
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("ssh-copy-id: ERROR: the key was not written to /srv/locked/keys\n"),
+        "{stderr}"
+    );
+    assert!(
+        fixture
+            .exec_as_root("test ! -e /srv/locked/keys")
+            .status
+            .success()
+    );
+    assert_eq!(fixture.stat_as_root("/srv/locked"), "755 root root");
 }
