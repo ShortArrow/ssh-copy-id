@@ -36,6 +36,8 @@ impl TargetPath {
 /// The command holds no part of the target: the script reads it from stdin, as
 /// [`install_input`] writes it, so quotes, `!` and CR in it are data whatever
 /// the login shell. The command depends only on whether a target is given.
+/// Every command that takes the target or its directory as an operand gets it
+/// after `--` or as an `of=` value, so a path starting with `-` is a file name.
 ///
 /// The command runs `exec sh -c` with the script quoted as one word, so the
 /// destination's login shell only has to run `exec`. The command is one line
@@ -189,7 +191,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     fi;
 done;
 if [ "$added" -gt 0 ] && command -v restorecon >/dev/null 2>&1; then
-    restorecon -F "$d" "$f" >/dev/null 2>&1;
+    restorecon -F -- "$d" "$f" >/dev/null 2>&1;
 fi;
 if [ "$uncertain" -ne 0 ]; then
     r=uncertain;
@@ -1218,6 +1220,34 @@ mod tests {
         assert_eq!(
             fs::read_to_string(home.file("config/settings/ssh/authorized_keys")).unwrap(),
             format!("{KEY_A}\n")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s47_target_paths_starting_with_a_dash_are_operands() {
+        let home = Home::new();
+        executable(
+            &home,
+            "bin/restorecon",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$HOME/restorecon.args\"\n",
+        );
+        let setup = with_bin_on_path(&home, "");
+        let (report, _) = home.run_after(&setup, Some("-R"), &format!("{KEY_A}\n"));
+        assert_eq!(report.keys, vec![added(1, b"-R")]);
+        assert_eq!(
+            fs::read_to_string(home.file("-R")).unwrap(),
+            format!("{KEY_A}\n")
+        );
+        let (report, _) = home.run_after(&setup, Some("-v/-n"), &format!("{KEY_B}\n"));
+        assert_eq!(report.keys, vec![added(1, b"-v/-n")]);
+        assert_eq!(
+            fs::read_to_string(home.file("-v/-n")).unwrap(),
+            format!("{KEY_B}\n")
+        );
+        assert_eq!(
+            fs::read_to_string(home.file("restorecon.args")).unwrap(),
+            "-F\n--\n.\n-R\n-F\n--\n-v\n-v/-n\n"
         );
     }
 }
