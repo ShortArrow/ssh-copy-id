@@ -14,10 +14,10 @@ result is stated in the [design](design.md).
 | Whether an inherited profile ACL alone passes sshd's check, making the explicit ACL unnecessary under profile directories | Validation row W07, first check |
 | The exact destination-detection probe command and its expected outputs | Validation row W09 |
 | How `-s` tells authentication rejection apart from other failures when the SFTP session cannot be established (D-02) | `-s` (stage 3) |
-| How a `-t` path containing `!`, CR, or LF reaches a csh or tcsh login shell, since the one-line installation command cannot quote them there | `-t` on Unix-like destinations (stage 1.5) |
 | How much concurrency `-s` supports beyond the change check before upload (D-08) | `-s` (stage 3) |
 | How to report a private key that Windows OpenSSH ignores because its ACL is too open, which makes an installed key look not installed; upstream behaves the same | Installed-key check (D-01) |
 | Whether upstream treats a remote startup file that reads stdin, and so truncates the keys, as a bug or as an accepted limit; upstream's repository, Debian and Red Hat trackers, and the OpenSSH manuals have no record, while mindrot Bugzilla (behind a login) and the openssh-unix-dev archive were not searched | Key transport on stdin; this tool behaves as upstream until settled |
 | Whether `od -v -An -tx1`, which the rollback's content check uses, exists on BusyBox destinations such as OpenWrt; without it the check cannot compare and a failed write may be reported uncertain instead of rolled back | Remote script on minimal destinations (stage 1.5, with a BusyBox fixture) |
+| Whether Dropbear, Windows OpenSSH and older OpenSSH releases accept an authorized_keys line ending in CR; if all do, D-05 has no reason left and the CRLF normalization goes | D-05, validation row K01 |
 | When to add the planned optimization that isolates the selected key, turning Inconclusive checks into conclusive ones | Selected-identity check (D-01) |
 | Which of a separate private repository or a runner created per dispatched run hosts the Windows fixture in CI, and whether a prepared guest disk may be distributed to hosted runners | Windows fixture in CI; the evaluation image's redistribution terms |

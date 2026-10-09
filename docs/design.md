@@ -2,7 +2,7 @@
 
 [日本語](design.jp.md)
 
-[Differences from upstream](compatibility.md)
+[Differences from upstream](compatibility.md) | [Behavior defined where the standards are silent](definitions.md)
 
 Status: v0.0.1 is released. The command installs one explicitly selected key on
 a Unix-like destination (stage 1). The [delivery plan](#delivery-plan) orders
@@ -47,7 +47,9 @@ Every decision in this document follows four commitments.
    difference, not a compatibility difference.
 4. Index every accepted difference. Differences from upstream are `D-xx` rows and
    destination differences are `O-xx` rows in [compatibility.md](compatibility.md);
-   each row links to the section here that states it.
+   each row links to the section here that states it. Behavior this tool defines
+   where the SSH and SFTP standards or the OpenSSH documentation are silent is
+   indexed the same way, as `U-xx` rows in [definitions.md](definitions.md).
 
 Upstream behavior is described neutrally. Stating a difference does not classify
 upstream as defective.
@@ -212,7 +214,7 @@ compatibility suite is part of stage 1.5.
 | `-f` | Skip the installed-key check, the post-installation verification, and the untested-client warning wherever `-f` appears; duplicates may result. As upstream, the private key is not required when `-f` comes before the `-i` that selects the file, or when there is no `-i`; `-f` after `-i` still requires it, and the login hint then names it. After `-f -i`, the login hint shows `-i` without a value, as upstream prints it |
 | `-n` | Display the keys that would be installed without performing installation operations. Connect for installed-key checks unless skipped with `-f` |
 | `-s` | Install keys using SFTP |
-| `-t target_path` | Specify the destination file |
+| `-t target_path` | Specify the destination file. The path reaches the remote script as data, not inside the command (D-11); a path containing LF is rejected before connecting. The OpenWrt and Haiku targets apply only without `-t` (D-22) |
 | `-x` | Print each client command and the remote script before running them (D-14) |
 | `-h`, `-?` | Display help |
 | `--target-os unix\|windows` | Override destination detection (D-12); not in upstream |
@@ -279,7 +281,13 @@ matched on both. The log is not free of server text either: `ssh` logs a
 received disconnect message with its text, newlines kept (`packet.c`,
 `log.c`), so a peer can plant a line there before the host key is checked. A
 disconnect always ends `ssh` with status 255, so a probe that exits 255 is never
-Installed, and only the first `Authenticated to` line in the log counts.
+Installed, and only the first `Authenticated to` line in the log counts. A log
+that holds a `Received disconnect from` line is no evidence at all. When the
+first authentication line is `Authenticated using "publickey" with partial
+success.`, the server accepted the selected key and asks for a further method,
+as `AuthenticationMethods` can require; the key is then Installed if it was the
+only candidate and Inconclusive otherwise, although the probe ends with
+`Permission denied`, which upstream reads as not installed.
 A log that cannot be read makes the check Inconclusive. The line decides even
 when the probe exits with another nonzero status, as it does for a key
 restricted by `command=`;
@@ -352,9 +360,14 @@ to the profile directory. Concurrent installations in normal mode rely on
 appending, as upstream's `cat >>` does, and no lock is added. None of these is a
 difference.
 
-The `-t` path is embedded in the Unix script with POSIX single-quote escaping and
-in the Windows script as a PowerShell single-quoted literal, so quotes in the
-path are data. Upstream embeds the path inside a single-quoted `sh -c` argument,
+The `-t` path reaches the Unix script as the first line of its standard input,
+before the keys, and the Windows script as a PowerShell single-quoted literal, so
+quotes, `!`, and CR in the path are data whatever the login shell; csh and tcsh
+would expand `!` even inside single quotes. The second line is the path in the
+`%XX` form of the result lines, for `path=`. A path containing LF cannot be one
+line and is rejected before connecting. Every command in the script takes the
+path after `--` or as `of=`, so a path starting with `-` is a file name. A
+repeated `-t` keeps the last value, as upstream's option loop does. Upstream embeds the path inside a single-quoted `sh -c` argument,
 so a quote in the path ends the script text early and the rest of the path is
 read as shell syntax. Apparent intent: `-t` names a plain path relative to the
 home directory. Reason to differ: the run fails or executes text from the path in
@@ -390,6 +403,15 @@ The upstream special cases stay. For the default target, OpenWrt as root
 installs into `/etc/dropbear/authorized_keys` and Haiku uses
 `config/settings/ssh/authorized_keys`. NetScreen keys are installed one per
 command as upstream does; that case belongs to stage 1.5.
+
+### Recorded Difference: Explicit Target on OpenWrt and Haiku
+
+With `-t`, the given path is written on every destination. Upstream sets its
+OpenWrt-root and Haiku targets after reading `-t` and writes there instead. Its
+history adds `-t` two weeks after the OpenWrt case without touching it, and no
+record says the override is meant; that intent is inferred. Reason to differ: a
+change the user did not ask for, since the file the user named stays as it was
+and another file gains the key. This is difference D-22.
 
 The Unix installation command is one line, as upstream's is, so that csh and
 tcsh login shells can run `exec sh -c '…'`: they reject a newline inside single
@@ -506,7 +528,8 @@ installed-key check for each written key unless `-f` was given. Report each key
 as installed and verified, or as installed but not verified with the reason. A
 rejected verification does not change the exit status: the file was written, and
 the message names what to check next, such as the shared administrator file or
-the file's ACL. The verification uses the three results of the selected-identity
+the file's ACL; with `-t` it also asks whether the server's `AuthorizedKeysFile`
+setting reads the target, since sshd reads no other file. The verification uses the three results of the selected-identity
 check; an inconclusive result is reported as not verified.
 
 The reviewed upstream script does not verify after writing; it prints a suggested
@@ -551,8 +574,12 @@ and CRLF inputs with restricted entries and comments through both transports and
 forced mode.
 
 Apparent intent: the upstream script was written for inputs produced on the same
-Unix host, where CRLF does not occur. Reason to differ: a false success report,
-since a line ending in CR is not a usable key.
+Unix host, where CRLF does not occur. Reason to differ: not settled. The reason
+first recorded, that a line ending in CR is not a usable key, does not hold for
+OpenSSH 9.6p1, whose sshd accepts such a line (validation row K01). Whether
+Dropbear, Windows OpenSSH and older OpenSSH releases accept it decides whether
+the normalization stays; until then it stays, and the
+[open questions](open-questions.md) track it.
 
 Strict public key parsing, beyond the checks in this section, is not adopted.
 Input with no key entry is rejected, as upstream reports "No identities found".

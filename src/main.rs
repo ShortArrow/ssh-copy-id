@@ -8,15 +8,16 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n] [-i [identity_file]] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+const USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n] [-i [identity_file]] [-t target_path] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
 \t-f: force mode -- copy keys without trying to check if they are already installed
 \t-n: dry run    -- no keys are actually copied
 \t-i: the public key to install; '.pub' is added when absent
+\t-t: the remote file to add the keys to, relative to the home directory
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
 \t-h|-?: print this help
 This release installs keys on a Unix-like host.
--s, -t, and -x are not available yet.";
+-s and -x are not available yet.";
 
 fn main() -> ExitCode {
     let mut args = Vec::new();
@@ -227,7 +228,21 @@ mod tests {
             "{USAGE}"
         );
         assert!(
-            USAGE.ends_with("\n-s, -t, and -x are not available yet."),
+            USAGE.ends_with("\n-s and -x are not available yet."),
+            "{USAGE}"
+        );
+    }
+
+    #[test]
+    fn m15_the_usage_offers_a_target_path_where_upstream_s_does() {
+        assert!(
+            USAGE.contains("[-i [identity_file]] [-t target_path] "),
+            "{USAGE}"
+        );
+        assert!(
+            USAGE.contains(
+                "\n\t-t: the remote file to add the keys to, relative to the home directory\n"
+            ),
             "{USAGE}"
         );
     }

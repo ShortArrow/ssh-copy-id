@@ -7,6 +7,7 @@
 | Design: [English](design.md), [Japanese](design.jp.md) | The current design in the present tense: scope, decisions with the reasons that still hold, and the delivery plan. Edited in place when the design changes. |
 | [Open questions](open-questions.md) | What is not decided yet, and what will decide each item. |
 | Differences from upstream: [English](compatibility.md), [Japanese](compatibility.jp.md) | Concise comparison tables with stable IDs: `D-xx` for upstream behavior versus project behavior, `O-xx` for Unix-like versus Windows destinations, each linked to the detailed design decision. |
+| Behavior defined where the standards are silent: [English](definitions.md), [Japanese](definitions.jp.md) | `U-xx` rows: where the SSH and SFTP standards or the OpenSSH documentation leave a behavior undefined and this tool defines it, with the source and a link to the design. |
 | [Adversarial design review](design-review.md) | A record of review findings and their dispositions, frozen when written. Proposals are not requirements unless the design states them. |
 | [Validation plan and results](validation.md) | Scenario IDs, reproducible checks, observed results, verification narratives, and pending coverage. Fixture success is distinct from product conformance. |
 
@@ -17,6 +18,7 @@ and [Windows dockur fixture](../tests/environments/windows/README.md).
 
 - Write primary documentation in English. Keep existing Japanese translations in sync when changing the corresponding English documents.
 - Keep detailed decisions in the design document. The differences list contains summaries and links, not duplicated explanations of rationale, scope, implementation, or open questions.
+- When the design defines a behavior the standards or the OpenSSH documentation leave open, add or update its `U-xx` row in both language versions of [definitions.md](definitions.md), citing the source section.
 - When a difference is accepted, update the design document and add or update its comparison row in both language versions of the differences list. Preserve its ID and link to the detailed decision.
 - If a decision originated in the review, record its disposition there and link to the design. Keep unaccepted proposals distinct from accepted requirements.
 - Describe upstream differences neutrally; do not label them as defects or bug fixes without an explicit decision to do so. Each difference states the apparent upstream intent and the reason to differ, taken from the design stance list.

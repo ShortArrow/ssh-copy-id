@@ -35,6 +35,16 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   runs, so keys already installed are skipped as without `-n`; with `-f` no
   connection is made and every selected key is listed. The list holds the lines
   that would be sent, comment and blank lines included (D-18).
+- `-t target_path` installs into the given file on a Unix-like host, relative
+  to the home directory unless absolute. Missing parent directories are created
+  under `umask 077` and existing ones keep their modes, as upstream's. The path
+  reaches the remote script as the first line of its input, never inside the
+  command, so quotes, `!` and CR in it are data under any login shell, and a
+  path containing LF is rejected before anything runs (D-11). The OpenWrt and
+  Haiku targets apply only without `-t` (D-22). `-n` and `-f` work with it as
+  without it. When the server still rejects the key afterwards, the warning
+  asks to check that the server's `AuthorizedKeysFile` setting reads the file,
+  as well as its permissions (D-06).
 
 ### Changed
 
@@ -54,6 +64,10 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 - A selected key file holding more than one key is still rejected before
   anything is sent, now with the rule it breaks: the file must hold the one
   public key of its private key (D-21).
+- A key the server accepts with partial success, asking for a further method
+  such as a password, counts as installed when no other identity could have
+  been offered, in the check and in the verification; with other candidates
+  the check is inconclusive and the key is installed (D-01).
 
 ## [0.0.1] - 2026-10-04
 

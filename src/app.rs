@@ -6,7 +6,7 @@ use crate::installed_check::{
     CheckResult, classify, is_certificate, is_tested_client, other_candidates_matching,
 };
 use crate::key_input::{InputError, PreparedInput, prepare, prepare_verbatim};
-use crate::remote_script::{install_command, sh_quote};
+use crate::remote_script::{TargetPath, install_command, install_input, sh_quote};
 use crate::result_line::{Outcome, parse_report};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 pub const TARGET: &str = ".ssh/authorized_keys";
 
 const NOTHING_WRITTEN: &str = "interrupted; nothing was written";
+const MULTI_LINE_TARGET: &str =
+    "the -t path contains a line feed, which cannot be sent as one line";
 const CERTIFICATE_REASON: &str =
     "the key is a certificate, which authorized_keys does not authenticate";
 
@@ -242,6 +244,10 @@ fn install(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), Stop> {
+    let target = match &invocation.target {
+        Some(path) => Some(TargetPath::new(path).ok_or(MULTI_LINE_TARGET.to_string())?),
+        None => None,
+    };
     let selection = select_keys(invocation, env, ssh, err)?;
     let scratch = ScratchDir {
         path: (env.create_scratch_dir)(&env.home.join(".ssh")).map_err(|_| {
@@ -253,13 +259,17 @@ fn install(
         remove: env.remove_dir,
     };
     let common = common_args(invocation, env);
+    let install = Install {
+        target: target.as_ref(),
+        common: &common,
+    };
     if invocation.force.is_on() {
         if invocation.dry_run {
             report_dry_run(out, &selection.texts().concat());
             return Ok(());
         }
         announce_batch_mode(env, err);
-        return install_unchecked(invocation, env, ssh, out, &selection, &common);
+        return install_unchecked(invocation, env, ssh, out, &selection, &install);
     }
     let keys = selection.keys(&scratch.path, env)?;
 
@@ -335,8 +345,9 @@ fn install(
         report_dry_run(out, &text);
         return Ok(());
     }
-    let Written { added, target } = write_keys(ssh, invocation, &common, &text, remaining.len())?;
+    let Written { added, target } = write_keys(ssh, invocation, &install, &text, remaining.len())?;
 
+    let to_check = what_to_check(&target, install.target);
     let login = login_command(invocation, selection.hint_identity(invocation.force));
     if (env.interrupted)() {
         summary(out, added, &login);
@@ -348,7 +359,7 @@ fn install(
             summary(out, added, &login);
             return stop("interrupted before the key was verified".to_string());
         }
-        report_verification(err, &key.label, verified, &target);
+        report_verification(err, &key.label, verified, &to_check);
     }
 
     summary(out, added, &login);
@@ -363,10 +374,10 @@ fn install_unchecked(
     ssh: &mut dyn Ssh,
     out: &mut dyn Write,
     selection: &Selection,
-    common: &[String],
+    install: &Install,
 ) -> Result<(), Stop> {
     let texts = selection.texts();
-    let Written { added, .. } = write_keys(ssh, invocation, common, &texts.concat(), texts.len())?;
+    let Written { added, .. } = write_keys(ssh, invocation, install, &texts.concat(), texts.len())?;
     summary(
         out,
         added,
@@ -393,21 +404,31 @@ struct Written {
     target: String,
 }
 
+/// Where and how the installation connection writes.
+struct Install<'a> {
+    /// The `-t` path, or `None` for the default target.
+    target: Option<&'a TargetPath>,
+    /// The arguments every `ssh` run of the invocation shares.
+    common: &'a [String],
+}
+
 /// Sends `text`, holding `sent` key lines, to the installation script and
 /// returns its report when every key was written; any other outcome stops the
-/// run with what may have changed.
+/// run with what may have changed. A message names the target the script
+/// reported, or the one asked for when it reported none.
 fn write_keys(
     ssh: &mut dyn Ssh,
     invocation: &Invocation,
-    common: &[String],
+    install: &Install,
     text: &[u8],
     sent: usize,
 ) -> Result<Written, Stop> {
     let mut install_args = vec!["-o".to_string(), "RequestTTY=no".to_string()];
-    install_args.extend(common.iter().cloned());
+    install_args.extend(install.common.iter().cloned());
     install_args.push(invocation.destination.clone());
-    install_args.push(install_command(None));
-    let installed = run_ssh(ssh, &install_args, text, false)?;
+    install_args.push(install_command(install.target));
+    let input = install_input(install.target, text);
+    let installed = run_ssh(ssh, &install_args, &input, false)?;
     if installed.status == Some(255) && !has_report_line(&installed.stdout) {
         return stop(
             "ssh exited with status 255 before the installation script reported \
@@ -420,7 +441,12 @@ fn write_keys(
         .keys
         .first()
         .map(|key| String::from_utf8_lossy(&key.path).into_owned())
-        .unwrap_or_else(|| TARGET.to_string());
+        .unwrap_or_else(|| {
+            install
+                .target
+                .map_or(TARGET, TargetPath::as_str)
+                .to_string()
+        });
     let added = report
         .keys
         .iter()
@@ -595,8 +621,22 @@ fn other_candidates(
     ))
 }
 
-/// Prints the result of a written key's post-installation check (D-06), after `label`.
-fn report_verification(err: &mut dyn Write, label: &str, verified: CheckResult, target: &str) {
+/// What a rejected verification asks the user to check about `target`, the
+/// file the script reported: with `-t`, also whether the server reads that
+/// file at all, since sshd reads only its `AuthorizedKeysFile`.
+fn what_to_check(target: &str, named: Option<&TargetPath>) -> String {
+    match named {
+        Some(_) => format!(
+            "that the server's AuthorizedKeysFile setting reads {target}, \
+             and the permissions of {target} and its directory"
+        ),
+        None => format!("the permissions of {target} and its directory"),
+    }
+}
+
+/// Prints the result of a written key's post-installation check (D-06), after
+/// `label`; a rejection names `to_check`, as `what_to_check` words it.
+fn report_verification(err: &mut dyn Write, label: &str, verified: CheckResult, to_check: &str) {
     match verified {
         CheckResult::Installed => info(
             err,
@@ -606,7 +646,7 @@ fn report_verification(err: &mut dyn Write, label: &str, verified: CheckResult, 
             err,
             &format!(
                 "the key was installed but could not be verified: the server still rejects it; \
-                 check the permissions of {target} and its directory"
+                 check {to_check}"
             ),
         ),
         CheckResult::Inconclusive(reason)
@@ -883,7 +923,7 @@ fn warn(err: &mut dyn Write, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote_script::install_command;
+    use crate::remote_script::{TargetPath, install_command};
     use std::cell::{Cell, RefCell};
     use std::collections::{HashMap, HashSet};
     use std::ffi::OsString;
@@ -1092,6 +1132,7 @@ mod tests {
             ssh_options: Vec::new(),
             force: Force::Off,
             dry_run: false,
+            target: None,
         }
     }
 
@@ -2153,6 +2194,30 @@ mod tests {
         );
     }
 
+    const PARTIAL: &str = "Authenticated using \"publickey\" with partial success.\r\n\
+                           u@h: Permission denied (password).\r\n";
+
+    #[test]
+    fn a59_a_key_accepted_with_partial_success_is_skipped() {
+        let run = execute(FakeSsh::new().probe(255, PARTIAL));
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
+        assert!(run.err.contains("All keys were skipped"), "{}", run.err);
+    }
+
+    #[test]
+    fn a60_a_written_key_accepted_with_partial_success_is_verified() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(255, PARTIAL),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(run.err.contains("the key authenticates"), "{}", run.err);
+        assert!(!run.err.contains("could not be verified"), "{}", run.err);
+    }
+
     fn home_ssh(name: &str) -> PathBuf {
         Path::new("C:/home").join(".ssh").join(name)
     }
@@ -3122,5 +3187,197 @@ mod tests {
             run.err
         );
         removed_only_the_scratch_directory(&run);
+    }
+
+    fn targeting(path: &str, invocation: Invocation) -> Invocation {
+        Invocation {
+            target: Some(path.to_string()),
+            ..invocation
+        }
+    }
+
+    const TARGET_REPORT: &str = "ssh-copy-id: key=1 result=added path=keys/my%20file\nssh-copy-id: result=installed added=1\n";
+
+    #[test]
+    fn t01_a_target_holding_a_line_feed_stops_before_anything_runs() {
+        let run = execute_with(
+            &targeting("keys/a\nb", invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new(),
+        );
+        assert_eq!(run.status, 1);
+        assert!(run.ssh.calls.is_empty(), "{:?}", run.ssh.kinds());
+        assert!(run.ssh.scratch_parents.borrow().is_empty());
+        assert_eq!(run.out, "");
+        assert_eq!(
+            run.err,
+            "ssh-copy-id: ERROR: the -t path contains a line feed, which cannot be sent as one line\n"
+        );
+    }
+
+    #[test]
+    fn t02_the_target_path_and_its_encoded_form_precede_the_key_lines() {
+        let run = execute_with(
+            &targeting("keys/my file", invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(TARGET_REPORT)
+                .probe(0, ACCEPTED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        let (args, stdin, _) = run.ssh.call("install");
+        assert_eq!(
+            stdin,
+            &format!("keys/my file\nkeys/my%20file\n{KEY}\n").into_bytes()
+        );
+        let target = TargetPath::new("keys/my file").unwrap();
+        assert_eq!(args.last().unwrap(), &install_command(Some(&target)));
+        assert!(!args.iter().any(|arg| arg.contains("my file")), "{args:?}");
+    }
+
+    #[test]
+    fn t03_without_a_target_the_input_is_the_key_lines_alone() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(0, ACCEPTED),
+        );
+        let (_, stdin, _) = run.ssh.call("install");
+        assert_eq!(stdin, &format!("{KEY}\n").into_bytes());
+    }
+
+    #[test]
+    fn t04_force_sends_the_target_lines_before_the_key_lines() {
+        let run = execute_with(
+            &forced(targeting("keys/my file", invocation())),
+            files(),
+            true,
+            false,
+            FakeSsh::new().installs(TARGET_REPORT),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["install"]);
+        let (_, stdin, _) = run.ssh.call("install");
+        assert_eq!(
+            stdin,
+            &format!("keys/my file\nkeys/my%20file\n{KEY}\n").into_bytes()
+        );
+    }
+
+    #[test]
+    fn t05_dry_run_with_a_target_lists_only_the_key_lines() {
+        let run = execute_with(
+            &dry(targeting("keys/my file", invocation())),
+            files(),
+            true,
+            false,
+            FakeSsh::new().probe(255, DENIED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
+        assert_eq!(run.out, would_have_added(&format!("{KEY}\n")));
+    }
+
+    #[test]
+    fn t06_dry_run_with_force_and_a_target_runs_no_ssh() {
+        let run = execute_with(
+            &dry(forced(targeting("keys/my file", invocation()))),
+            files(),
+            true,
+            false,
+            FakeSsh::new(),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(run.ssh.calls.is_empty(), "{:?}", run.ssh.kinds());
+        assert_eq!(run.out, would_have_added(&format!("{KEY}\n")));
+    }
+
+    #[test]
+    fn t07_messages_name_the_reported_target() {
+        let failed = "ssh-copy-id: key=1 result=failed path=keys/my%20file\nssh-copy-id: result=unchanged added=0\n";
+        let run = execute_with(
+            &targeting("keys/my file", invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new().probe(255, DENIED).installs(failed),
+        );
+        assert_eq!(run.status, 1);
+        assert!(
+            run.err
+                .ends_with("ssh-copy-id: ERROR: the key was not written to keys/my file\n"),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn t08_without_a_reported_path_messages_name_the_given_target() {
+        let run = execute_with(
+            &targeting("keys/my file", invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new().probe(255, DENIED).installs(""),
+        );
+        assert_eq!(run.status, 1);
+        assert!(
+            run.err.ends_with(
+                "ssh-copy-id: ERROR: the connection ended without a result; \
+                 keys/my file may or may not have changed\n"
+            ),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn t09_a_rejected_verification_after_target_names_the_server_setting() {
+        let run = execute_with(
+            &targeting("keys/my file", invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(TARGET_REPORT)
+                .probe(255, DENIED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(
+            run.err.contains(
+                "ssh-copy-id: WARNING: the key was installed but could not be verified: \
+                 the server still rejects it; check that the server's AuthorizedKeysFile \
+                 setting reads keys/my file, and the permissions of keys/my file and its \
+                 directory\n"
+            ),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn t10_a_rejected_verification_without_target_names_the_permissions() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(INSTALLED)
+                .probe(255, DENIED),
+        );
+        assert!(
+            run.err.contains(
+                "ssh-copy-id: WARNING: the key was installed but could not be verified: \
+                 the server still rejects it; check the permissions of .ssh/authorized_keys \
+                 and its directory\n"
+            ),
+            "{}",
+            run.err
+        );
     }
 }
