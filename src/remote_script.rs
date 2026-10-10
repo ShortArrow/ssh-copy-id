@@ -26,9 +26,8 @@ impl TargetPath {
 
 /// Builds the remote command that appends the key lines read from stdin to a target file.
 ///
-/// `None` targets `.ssh/authorized_keys` with upstream's special cases: OpenWrt as
-/// root uses `/etc/dropbear/authorized_keys` and Haiku uses
-/// `config/settings/ssh/authorized_keys`. `Some(target)` uses the target as
+/// `None` targets `.ssh/authorized_keys`, except that OpenWrt as root uses
+/// `/etc/dropbear/authorized_keys`. `Some(target)` uses the target as
 /// given on every destination. A relative target is relative to the home
 /// directory; missing parent directories are created under `umask 077`, and
 /// existing ones keep their modes.
@@ -123,9 +122,6 @@ fn one_line(script: &str) -> String {
 const DEFAULT_TARGET_SELECTION: &str = r##"f=.ssh/authorized_keys;
 if [ -f /etc/openwrt_release ] && { [ "$LOGNAME" = root ] || [ "$(id -u)" = 0 ]; }; then
     f=/etc/dropbear/authorized_keys;
-fi;
-if [ "$(uname -s)" = Haiku ]; then
-    f=config/settings/ssh/authorized_keys;
 fi;
 p=$f;
 "##;
@@ -622,24 +618,23 @@ mod tests {
     }
 
     #[test]
-    fn s14_default_target_keeps_upstream_special_cases() {
+    fn s14_default_target_keeps_only_the_openwrt_special_case() {
         let command = install_command(None, false);
-        for expected in [
-            "/etc/openwrt_release",
-            "/etc/dropbear/authorized_keys",
-            "Haiku",
-            "config/settings/ssh/authorized_keys",
-        ] {
+        for expected in ["/etc/openwrt_release", "/etc/dropbear/authorized_keys"] {
             assert!(command.contains(expected), "{expected} in {command}");
+        }
+        for unexpected in ["Haiku", "config/settings/ssh/authorized_keys"] {
+            assert!(!command.contains(unexpected), "{unexpected} in {command}");
         }
     }
 
     #[test]
     fn s15_explicit_target_has_no_special_cases() {
         let command = install_command(Some(&TargetPath::new(".ssh/x").unwrap()), false);
-        for unexpected in ["/etc/openwrt_release", "Haiku"] {
-            assert!(!command.contains(unexpected), "{unexpected} in {command}");
-        }
+        assert!(
+            !command.contains("/etc/openwrt_release"),
+            "OpenWrt case in {command}"
+        );
     }
 
     #[cfg(unix)]
@@ -1327,25 +1322,17 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn s46_haiku_target_applies_only_without_an_explicit_target() {
+    fn s46_haiku_uses_the_default_target() {
         let home = Home::new();
         executable(&home, "bin/uname", "#!/bin/sh\necho Haiku\n");
         let setup = with_bin_on_path(&home, "");
         let (default, _) = home.run_after(&setup, None, &format!("{KEY_A}\n"));
+        assert_eq!(default.keys, vec![added(1, b".ssh/authorized_keys")]);
         assert_eq!(
-            default.keys,
-            vec![added(1, b"config/settings/ssh/authorized_keys")]
-        );
-        let (explicit, _) = home.run_after(&setup, Some(".ssh/x"), &format!("{KEY_B}\n"));
-        assert_eq!(explicit.keys, vec![added(1, b".ssh/x")]);
-        assert_eq!(
-            fs::read_to_string(home.file(".ssh/x")).unwrap(),
-            format!("{KEY_B}\n")
-        );
-        assert_eq!(
-            fs::read_to_string(home.file("config/settings/ssh/authorized_keys")).unwrap(),
+            fs::read_to_string(home.file(".ssh/authorized_keys")).unwrap(),
             format!("{KEY_A}\n")
         );
+        assert!(!home.file("config").exists());
     }
 
     #[cfg(unix)]
