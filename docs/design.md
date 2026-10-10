@@ -214,7 +214,7 @@ compatibility suite is part of stage 1.5.
 | `-f` | Skip the installed-key check, the post-installation verification, and the untested-client warning wherever `-f` appears; duplicates may result. As upstream, the private key is not required when `-f` comes before the `-i` that selects the file, or when there is no `-i`; `-f` after `-i` still requires it, and the login hint then names it. After `-f -i`, the login hint shows `-i` without a value, as upstream prints it |
 | `-n` | Display the keys that would be installed without performing installation operations. Connect for installed-key checks unless skipped with `-f` |
 | `-s` | Install keys using SFTP |
-| `-t target_path` | Specify the destination file. The path reaches the remote script as data, not inside the command (D-11); a path containing LF is rejected before connecting. The OpenWrt and Haiku targets apply only without `-t` (D-22) |
+| `-t target_path` | Specify the destination file. The path reaches the remote script as data, not inside the command (D-11); a path containing LF is rejected before connecting. The OpenWrt target applies only without `-t` (D-22) |
 | `-x` | Print each client command before running it, and trace the remote script with `set -x` (D-14) |
 | `-h`, `-?` | Display help |
 | `--target-os unix\|windows` | Override destination detection (D-12); not in upstream |
@@ -405,12 +405,27 @@ on both sides. Reason to differ on the client side: a compiled program has no
 shell trace, so the platform cannot perform the upstream behavior there. This is
 difference D-14; the client-side format differs, the purpose does not.
 
-The upstream special cases stay. For the default target, OpenWrt as root
-installs into `/etc/dropbear/authorized_keys` and Haiku uses
-`config/settings/ssh/authorized_keys`. NetScreen destinations are not detected
-(D-23).
+No standard fixes where a server reads public keys: the SSH protocol leaves it
+to the server, and `.ssh/authorized_keys` is OpenSSH's default. The default
+target is therefore `.ssh/authorized_keys`, and a destination gets a target of
+its own only when its server reads another file in its default configuration,
+the key would otherwise not be used, and a fixture tests the case. OpenWrt as
+root installs into `/etc/dropbear/authorized_keys` (L03), and Windows
+administrators into `administrators_authorized_keys` (O-01). Upstream's Haiku
+and NetScreen cases have no fixture and are not kept (D-24, D-23).
 
-### Recorded Difference: Explicit Target on OpenWrt and Haiku
+### Recorded Difference: Haiku Destinations
+
+Upstream installs into `config/settings/ssh/authorized_keys` when `uname -s`
+prints `Haiku` and no `-t` is given. This tool uses `.ssh/authorized_keys` there
+as anywhere else. No Haiku fixture tests the case. Reason to differ: a false
+report, since an untested target could report a key as installed in a file the
+server may not read; with
+the default target, a server that does not read the file leaves the key
+unverified, which the post-installation check reports (D-06). That outcome on
+Haiku is inferred, not observed. This is difference D-24.
+
+### Recorded Difference: Explicit Target on OpenWrt
 
 With `-t`, the given path is written on every destination. Upstream sets its
 OpenWrt-root and Haiku targets after reading `-t` and writes there instead. Its

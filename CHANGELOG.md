@@ -40,8 +40,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   under `umask 077` and existing ones keep their modes, as upstream's. The path
   reaches the remote script as the first line of its input, never inside the
   command, so quotes, `!` and CR in it are data under any login shell, and a
-  path containing LF is rejected before anything runs (D-11). The OpenWrt and
-  Haiku targets apply only without `-t` (D-22). `-n` and `-f` work with it as
+  path containing LF is rejected before anything runs (D-11). The OpenWrt
+  target applies only without `-t` (D-22). `-n` and `-f` work with it as
   without it. When the server still rejects the key afterwards, the warning
   asks to check that the server's `AuthorizedKeysFile` setting reads the file,
   as well as its permissions (D-06).
@@ -85,6 +85,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   such as a password, counts as installed when no other identity could have
   been offered, in the check and in the verification; with other candidates
   the check is inconclusive and the key is installed (D-01).
+- On Haiku the default target is `.ssh/authorized_keys`, as anywhere else,
+  instead of upstream's `config/settings/ssh/authorized_keys` (D-24).
 
 ## [0.0.1] - 2026-10-04
 
