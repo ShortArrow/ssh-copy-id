@@ -88,6 +88,13 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 - On Haiku the default target is `.ssh/authorized_keys`, as anywhere else,
   instead of upstream's `config/settings/ssh/authorized_keys` (D-24).
 
+### Fixed
+
+- The `ssh-copy-id.exe` in the release archive runs on Windows without the
+  Visual C++ runtime installed: the C runtime is linked statically. The 0.0.1
+  executable exits at once with status 0xC0000135 when `VCRUNTIME140.dll` is
+  missing.
+
 ## [0.0.1] - 2026-10-04
 
 ### Added
