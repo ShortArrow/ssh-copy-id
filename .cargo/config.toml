@@ -1,0 +1,4 @@
+# Link the C runtime statically on Windows MSVC targets, so that the executable
+# runs without the Visual C++ runtime installed.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
