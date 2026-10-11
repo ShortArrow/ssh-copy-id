@@ -6,8 +6,7 @@ result is stated in the [design](design.md).
 | Question | Related to |
 | --- | --- |
 | `cargo install` on Linux installs a binary named `ssh-copy-id`, which can shadow OpenSSH's command in `PATH`, while Linux packages use `ssh-copy-id-rs`. Which name should the crate's binary use on Linux? | Crate publishing and Linux distribution |
-| Whether the repository is public by v0.0.1; while it is private, the crate's repository link and the GitHub release are not visible to its users, and build provenance is not attested | v0.0.1 publishing |
-| When to ship an `aarch64-pc-windows-msvc` build; GitHub's Windows Arm runners are not used while the repository is private, and no fixture runs on Arm | Release targets |
+| When to ship an `aarch64-pc-windows-msvc` build; no fixture runs on Arm | Release targets |
 | Package names for APT, pacman, and similar systems | Linux packages (stage 3) |
 | Install channels beyond crates.io and GitHub releases, such as winget | Releases after v0.0.1 |
 | Whether destinations with only `pwsh`, without Windows PowerShell, are supported | Validation row W06 |

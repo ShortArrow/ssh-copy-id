@@ -13,7 +13,7 @@
 
 mod common;
 
-use common::{Agent, Fixture, keygen, public_line, text, wait_with_deadline};
+use common::{Agent, Fixture, keygen, public_entry, public_line, text, wait_with_deadline};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -170,10 +170,7 @@ fn i1_requirement_2_installs_into_a_missing_file_and_the_key_logs_in() {
     let run = fixture.copy_id(&key, "pwuser", &[]);
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
     assert!(text(&run.stdout).contains("Number of key(s) added: 1"));
-    assert_eq!(
-        fixture.authorized_keys("pwuser"),
-        format!("{}\n", public_line(&key))
-    );
+    assert_eq!(fixture.authorized_keys("pwuser"), public_entry(&key));
     assert_eq!(fixture.mode("pwuser", ".ssh"), "700");
     assert_eq!(fixture.mode("pwuser", ".ssh/authorized_keys"), "600");
     assert!(fixture.logs_in_with(&key, "pwuser"));
@@ -188,10 +185,7 @@ fn i2_requirement_1_a_second_run_adds_nothing() {
     let again = fixture.copy_id(&key, "pwuser", &[]);
     assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
     assert!(text(&again.stderr).contains("All keys were skipped"));
-    assert_eq!(
-        fixture.authorized_keys("pwuser"),
-        format!("{}\n", public_line(&key))
-    );
+    assert_eq!(fixture.authorized_keys("pwuser"), public_entry(&key));
 }
 
 #[test]
@@ -224,7 +218,7 @@ fn i4_requirement_2_appends_after_a_missing_final_newline() {
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
     assert_eq!(
         fixture.authorized_keys("pwuser"),
-        format!("existing\n{}\n", public_line(&key))
+        format!("existing\n{}", public_entry(&key))
     );
 }
 
@@ -250,10 +244,7 @@ fn i6_requirement_7_comments_with_spaces_quotes_japanese_and_format_text_are_dat
     let key = keygen(&fixture.work, "new", r#"名前 it's "quoted" $HOME %s \t"#);
     let run = fixture.copy_id(&key, "pwuser", &[]);
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
-    assert_eq!(
-        fixture.authorized_keys("pwuser"),
-        format!("{}\n", public_line(&key))
-    );
+    assert_eq!(fixture.authorized_keys("pwuser"), public_entry(&key));
 }
 
 #[test]
@@ -286,10 +277,7 @@ fn i8_a_tcsh_login_shell_runs_the_installation_command() {
     let key = keygen(&fixture.work, "new", "new@test");
     let run = fixture.copy_id(&key, "cshuser", &[]);
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
-    assert_eq!(
-        fixture.authorized_keys("cshuser"),
-        format!("{}\n", public_line(&key))
-    );
+    assert_eq!(fixture.authorized_keys("cshuser"), public_entry(&key));
 }
 
 #[test]
@@ -304,10 +292,7 @@ fn i9_requirement_2_an_empty_file_gets_no_leading_newline() {
     let key = keygen(&fixture.work, "new", "new@test");
     let run = fixture.copy_id(&key, "pwuser", &[]);
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
-    assert_eq!(
-        fixture.authorized_keys("pwuser"),
-        format!("{}\n", public_line(&key))
-    );
+    assert_eq!(fixture.authorized_keys("pwuser"), public_entry(&key));
 }
 
 #[test]
@@ -358,10 +343,7 @@ fn i12_requirement_7_key_paths_with_spaces_quotes_and_japanese_are_used_as_given
     let stderr = text(&run.stderr);
     assert_eq!(run.status.code(), Some(0), "{stderr}");
     assert!(stderr.contains("the key authenticates"), "{stderr}");
-    assert_eq!(
-        fixture.authorized_keys("pwuser"),
-        format!("{}\n", public_line(&key))
-    );
+    assert_eq!(fixture.authorized_keys("pwuser"), public_entry(&key));
     assert!(fixture.logs_in_with(&key, "pwuser"));
 }
 
@@ -372,10 +354,7 @@ fn i13_d15_a_forced_tty_does_not_hang_the_installation() {
     let key = keygen(&fixture.work, "new", "new@test");
     let run = fixture.copy_id(&key, "pwuser", &["-o", "RequestTTY=force"]);
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
-    assert_eq!(
-        fixture.authorized_keys("pwuser"),
-        format!("{}\n", public_line(&key))
-    );
+    assert_eq!(fixture.authorized_keys("pwuser"), public_entry(&key));
 }
 
 #[test]
@@ -392,10 +371,7 @@ fn i14_d01_a_banner_forging_publickey_authentication_is_not_taken_as_installed()
     let stderr = text(&run.stderr);
     assert_eq!(run.status.code(), Some(0), "{stderr}");
     assert!(!stderr.contains("All keys were skipped"), "{stderr}");
-    assert_eq!(
-        fixture.authorized_keys("emptyuser"),
-        format!("{}\n", public_line(&key))
-    );
+    assert_eq!(fixture.authorized_keys("emptyuser"), public_entry(&key));
 }
 
 #[test]
@@ -517,10 +493,7 @@ fn i20_without_identity_or_agent_the_default_key_file_is_installed() {
         "{}",
         text(&run.stdout)
     );
-    assert_eq!(
-        fixture.authorized_keys("pwuser"),
-        format!("{}\n", public_line(&key))
-    );
+    assert_eq!(fixture.authorized_keys("pwuser"), public_entry(&key));
 }
 
 #[test]
@@ -539,10 +512,7 @@ fn i21_identity_without_a_file_installs_the_default_key_file() {
         "{}",
         text(&run.stdout)
     );
-    assert_eq!(
-        fixture.authorized_keys("pwuser"),
-        format!("{}\n", public_line(&key))
-    );
+    assert_eq!(fixture.authorized_keys("pwuser"), public_entry(&key));
 }
 
 #[test]
@@ -606,10 +576,7 @@ fn i23_requirement_5_force_before_identity_installs_from_the_public_key_alone() 
     assert_eq!(run.status.code(), Some(0), "{stderr}");
     assert!(!stderr.contains("attempting to log in"), "{stderr}");
     assert!(text(&run.stdout).contains("Number of key(s) added: 1"));
-    assert_eq!(
-        fixture.authorized_keys("pwuser"),
-        format!("{}\n", public_line(&key))
-    );
+    assert_eq!(fixture.authorized_keys("pwuser"), public_entry(&key));
     fs::rename(&held, &key).unwrap();
     assert!(fixture.logs_in_with(&key, "pwuser"));
 }
@@ -625,7 +592,7 @@ fn i24_requirement_5_force_after_identity_appends_an_installed_key_again() {
     assert!(text(&again.stdout).contains("Number of key(s) added: 1"));
     assert_eq!(
         fixture.authorized_keys("pwuser"),
-        format!("{}\n{}\n", public_line(&key), public_line(&key))
+        public_entry(&key).repeat(2)
     );
 }
 
@@ -669,10 +636,7 @@ fn i25_requirement_4_dry_run_checks_lists_the_key_and_creates_nothing() {
         stderr.contains("1 key(s) remain to be installed"),
         "{stderr}"
     );
-    assert_eq!(
-        text(&run.stdout),
-        dry_run_list(&format!("{}\n", public_line(&key)))
-    );
+    assert_eq!(text(&run.stdout), dry_run_list(&public_entry(&key)));
     assert!(
         fixture.exec("pwuser", "test ! -e .ssh").status.success(),
         "the dry run created .ssh"
@@ -728,10 +692,7 @@ fn i28_requirement_4_dry_run_with_force_makes_no_connection() {
     let stderr = text(&run.stderr);
     assert_eq!(run.status.code(), Some(0), "{stderr}");
     assert!(!stderr.contains("attempting to log in"), "{stderr}");
-    assert_eq!(
-        text(&run.stdout),
-        dry_run_list(&format!("{}\n", public_line(&key)))
-    );
+    assert_eq!(text(&run.stdout), dry_run_list(&public_entry(&key)));
     assert_eq!(fixture.connections_logged(), connections);
     assert_eq!(fixture.key_file_state(), before);
 }
@@ -756,7 +717,7 @@ fn i29_target_relative_to_home_in_a_new_directory_is_created_private() {
     assert!(text(&run.stdout).contains("Number of key(s) added: 1"));
     assert_eq!(
         fixture.read_as_root("/home/pwuser/keys dir/my keys"),
-        format!("{}\n", public_line(&key))
+        public_entry(&key)
     );
     assert_eq!(fixture.mode("pwuser", "'keys dir'"), "700");
     assert_eq!(fixture.mode("pwuser", "'keys dir/my keys'"), "600");
@@ -777,10 +738,7 @@ fn i30_d03_target_in_an_existing_shared_directory_leaves_its_mode_unchanged() {
     let key = keygen(&fixture.work, "new", "new@test");
     let run = fixture.copy_id(&key, "pwuser", &["-t", "/srv/shared/keys"]);
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
-    assert_eq!(
-        fixture.read_as_root("/srv/shared/keys"),
-        format!("{}\n", public_line(&key))
-    );
+    assert_eq!(fixture.read_as_root("/srv/shared/keys"), public_entry(&key));
     assert_eq!(fixture.stat_as_root("/srv/shared"), "775 root pwuser");
     assert_eq!(
         fixture.stat_as_root("/srv/shared/keys"),
@@ -798,7 +756,7 @@ fn i31_d11_target_with_a_quote_and_an_exclamation_mark_is_data_under_tcsh() {
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
     assert_eq!(
         fixture.read_as_root("/home/cshuser/keys/it's here!"),
-        format!("{}\n", public_line(&key))
+        public_entry(&key)
     );
 }
 
@@ -862,7 +820,7 @@ fn i34_d14_trace_prints_the_client_commands_and_the_remote_script() {
         assert!(text(&run.stdout).contains("Number of key(s) added: 1"));
         assert_eq!(
             fixture.read_as_root(&format!("/home/{user}/.ssh/authorized_keys")),
-            format!("{}\n", public_line(&key))
+            public_entry(&key)
         );
         let client: Vec<&str> = stderr
             .lines()

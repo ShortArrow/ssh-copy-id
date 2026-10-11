@@ -33,8 +33,9 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for destination detection (D-12); include a login shell that prints a banner. |
 | U01 | Stage 1: CLI installs one key on a Unix-like destination; requirements 1, 2, 3, 7, and 8 | Passed | [Stage 1 run](#stage-1-on-a-unix-like-destination-2026-10-01): 19 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, also run in CI. |
+| U02 | Stage 1.5: `-n`, `-f`, `-t`, `-i` without a file, default key selection, agent keys, and `-x` on a Unix-like destination; requirements 4 and 5 | Passed | [Stage 1.5 run](#fixture-tests-u02): 35 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, except i22 with Windows OpenSSH, whose agent A02 covers; also run in CI. |
 | K01 | Line endings and encoding sshd accepts in authorized_keys (line endings, D-07) | Passed | 2026-10-09, checked by logging in with the key: a key line ending in CR authenticates, with or without a comment, on OpenSSH 9.6p1 (L02 image), [OpenSSH 7.6p1, Dropbear 2022.82, 2024.86 and 2025.89, and Windows OpenSSH 9.5p2](#key-line-endings-k01). A line starting with a UTF-8 BOM is rejected on all of them, except that Windows OpenSSH accepts one at the start of the file. |
-| A01 | Password and passphrase prompts with public keys on stdin, cancellation, no terminal, agent confirmation | Passed | [Prompt experiment](../tests/prototypes/ssh-prompt/README.md): prompts and cancellation pass with both tested Windows clients; no-terminal behavior differs by client; the Windows agent refuses keys with confirmation. |
+| A01 | Password and passphrase prompts with public keys on stdin, cancellation, no terminal, agent confirmation | Passed | [Prompt experiment](../tests/prototypes/ssh-prompt/README.md): prompts and cancellation pass with both tested Windows clients; no-terminal behavior differs by client; the Windows agent refuses keys with confirmation. [Through the CLI](#authentication-prompts-through-the-cli-a01), with `ssh`'s streams on files, prompts and Ctrl-C pass with both clients and a run without a console fails at once. |
 | C01 | Windows client run without a console, from an sshd session | Passed | In the dockur Windows 11 guest's sshd session, Windows OpenSSH 9.5p2 hung on `ssh -G` with stderr on a pipe and on the installation with stdin and stdout on pipes; with every stream on a file, the run appends and verifies the key, and a second run skips it. The same run passes in the desktop session (A02). |
 | A02 | Agent-selected identities | Passed | Linux: a private `ssh-agent` with two keys, one installed, appends only the other (`unix_destination` i22 and golden scenario 16). Windows: in a dockur Windows 11 guest's desktop session, with `SSH_AUTH_SOCK` unset and two keys in the guest's own OpenSSH 9.5p2 agent, one installed on L02, the run appends and verifies only the other, and a second run skips both (D-20). |
 | F01 | Interrupted writes and uncertain remote state | Pending | Inject disconnects and record actual file state and exit status. |
@@ -379,6 +380,46 @@ o2 found the blank line; o5 found `the key was not written to
 image rebuilt with a static BusyBox 1.37.0 from `busybox:1.37.0-musl` copied to
 `/usr/bin/od`, all five passed on Windows. o4 passes without `od` because no
 other writer touched the file. smoke.sh passed on Windows and WSL.
+
+## Stage 1.5 on a Unix-like Destination: 2026-10-11
+
+Host: Windows 11 Pro 26300, rustc 1.97.1, Docker Engine 28.5.1. Destination:
+the L02 fixture image. The CLI gives `ssh` and `ssh-add` files as their standard
+streams.
+
+### Fixture Tests (U02)
+
+Command, with each client's directory first on `PATH` and `SSH_AUTH_SOCK` unset:
+
+```sh
+cargo test --test unix_destination -- --ignored --test-threads=1
+```
+
+| Client first on `PATH` | Result |
+| --- | --- |
+| Git for Windows `OpenSSH_10.0p2` | 35 passed |
+| `OpenSSH_for_Windows_9.5p2` | 34 passed; i22 cannot run |
+
+The 35 tests include requirement 4 (i25 to i28: `-n` checks, lists the key, and
+creates or changes nothing; with `-f` it makes no connection) and requirement 5
+(i23 and i24: `-f` installs without the private key file before `-i` and appends
+an installed key again). i22 starts a private `ssh-agent` on a socket, which the
+Windows OpenSSH agent, a service, does not create; the Windows agent is covered
+by A02. Windows OpenSSH's `ssh-keygen` ends the `.pub` file with CRLF and Git's
+with LF; the tests expect the line as the file gives it ([line endings](design.md#line-endings)).
+
+### Authentication Prompts through the CLI (A01)
+
+[cli_probe.py](../tests/prototypes/ssh-prompt/cli_probe.py) ran
+`ssh-copy-id.exe` in a ConPTY pseudo console (Python 3.12.11, pywinpty 3.0.5);
+each case installs a new key and then logs in with it.
+
+| Case | `OpenSSH_for_Windows_9.5p2` | Git for Windows `OpenSSH_10.0p2` |
+| --- | --- | --- |
+| Password typed at the console prompt | Exit 0, the key logs in | Exit 0, the key logs in |
+| Passphrase of the encrypted control key typed at the console prompt | Exit 0, the key logs in; asked twice, for the check and the installation | Exit 0, the key logs in; asked once |
+| Ctrl-C at the password prompt | Exit 1, the key is not installed | Exit 1, the key is not installed |
+| No console, password authentication | Exit 1 after 1.7 s, the key is not installed | Exit 1 after 1.7 s, the key is not installed |
 
 ## Linux Selected-Identity Experiment: 2026-09-20
 

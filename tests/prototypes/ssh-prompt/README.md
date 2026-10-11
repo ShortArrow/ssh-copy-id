@@ -33,3 +33,19 @@ through the agent, run the script with `--identity` set to the private key path,
 then `ssh-add -d` with the public key and compare `ssh-add -l` with its output
 before the experiment. The Windows OpenSSH agent refuses `ssh-add -c`, so with
 that agent the script observes a public-key rejection.
+
+`cli_probe.py` runs the same prompts through `ssh-copy-id.exe` itself, which
+gives `ssh` files instead of pipes as its standard streams. It installs four
+new keys: one after a password prompt, one after the passphrase prompt of the
+encrypted control key, one with Ctrl-C at the password prompt, and one with no
+console. Put the client to test first on `PATH`, start the fixture as above,
+and run:
+
+```powershell
+cargo build --release
+foreach ($i in 1..4) { ssh-keygen -q -t ed25519 -N '' -C "a01-k$i" -f "work/a01/k$i" }
+uv run --no-project --with pywinpty python tests/prototypes/ssh-prompt/cli_probe.py `
+  --cli target/release/ssh-copy-id.exe --ssh (Get-Command ssh).Source --port 22022 `
+  --known-hosts work/a01/known_hosts --control-key work/a01/enc_key --passphrase 'pass phrase 1' `
+  --password $password --keys work/a01/k1 work/a01/k2 work/a01/k3 work/a01/k4
+```

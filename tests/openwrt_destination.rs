@@ -14,8 +14,8 @@
 mod common;
 
 use common::{
-    base_ssh_args, command, keygen, public_line, run_container, text, wait_with_deadline,
-    write_askpass,
+    base_ssh_args, command, keygen, public_entry, public_line, run_container, text,
+    wait_with_deadline, write_askpass,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -196,7 +196,7 @@ fn o2_the_key_line_follows_a_final_newline_directly() {
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
     assert_eq!(
         fixture.read(DROPBEAR_KEYS),
-        format!("{}\n{}\n", public_line(&fixture.control), public_line(&key))
+        format!("{}\n{}", public_line(&fixture.control), public_entry(&key))
     );
 }
 
@@ -210,7 +210,7 @@ fn o3_d22_an_explicit_target_is_written_instead_of_the_dropbear_file() {
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
     assert_eq!(
         fixture.read("/root/.ssh/authorized_keys"),
-        format!("{}\n", public_line(&key))
+        public_entry(&key)
     );
     assert_eq!(fixture.read(DROPBEAR_KEYS), before);
 }

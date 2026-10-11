@@ -278,6 +278,12 @@ pub fn public_line(key: &Path) -> String {
         .to_string()
 }
 
+/// The key's public key file as the CLI sends it: its one line, ending as
+/// `ssh-keygen` wrote it, which is CRLF for Windows OpenSSH 9.5p2.
+pub fn public_entry(key: &Path) -> String {
+    fs::read_to_string(key.with_extension("pub")).unwrap()
+}
+
 /// A private `ssh-agent` listening on a socket in its own directory, killed when dropped.
 pub struct Agent {
     pub socket: PathBuf,
