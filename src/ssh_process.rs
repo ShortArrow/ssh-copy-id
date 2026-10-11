@@ -1,13 +1,13 @@
 //! The real `Ssh` backend: runs the system `ssh` client as a child process.
 
 use crate::app::{Ssh, SshOutput};
+use crate::platform;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
-use std::process::{self, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 /// Runs `ssh` found on `PATH`, or the program given to `SystemSsh::with_program`,
 /// and `ssh-add` found on `PATH`.
@@ -58,9 +58,10 @@ impl Ssh for SystemSsh {
     }
 }
 
-/// Runs `command` to completion with its standard streams on temporary files,
-/// never on pipes: Windows OpenSSH can hang reading or writing a pipe when it
-/// runs without a console (PowerShell/Win32-OpenSSH#1330, #1427).
+/// Runs `command` to completion with its standard streams on files in a new
+/// private directory, never on pipes: Windows OpenSSH can hang reading or
+/// writing a pipe when it runs without a console
+/// (PowerShell/Win32-OpenSSH#1330, #1427).
 ///
 /// Standard input holds `stdin`. Uncaptured stderr is inherited when it is a
 /// terminal, so that messages appear as they are written; otherwise it is
@@ -71,25 +72,25 @@ fn run_through_files(
     stdin: &[u8],
     capture_stderr: bool,
 ) -> io::Result<SshOutput> {
-    let input = TempFile::create()?;
-    fs::write(&input.path, stdin)?;
-    let output = TempFile::create()?;
-    let errors = if capture_stderr || !io::stderr().is_terminal() {
-        Some(TempFile::create()?)
-    } else {
-        None
-    };
+    let dir = StreamDir::create()?;
+    let input = dir.file("stdin");
+    let output = dir.file("stdout");
+    let errors = dir.file("stderr");
+    fs::write(&input, stdin)?;
+    let to_file = capture_stderr || !io::stderr().is_terminal();
     let status = command
-        .stdin(File::open(&input.path)?)
-        .stdout(output.writer()?)
-        .stderr(match &errors {
-            Some(file) => Stdio::from(file.writer()?),
-            None => Stdio::inherit(),
+        .stdin(File::open(&input)?)
+        .stdout(create(&output)?)
+        .stderr(if to_file {
+            Stdio::from(create(&errors)?)
+        } else {
+            Stdio::inherit()
         })
         .status()?;
-    let mut stderr = match &errors {
-        Some(file) => fs::read(&file.path)?,
-        None => Vec::new(),
+    let mut stderr = if to_file {
+        fs::read(&errors)?
+    } else {
+        Vec::new()
     };
     if !capture_stderr {
         io::stderr().write_all(&stderr)?;
@@ -97,41 +98,37 @@ fn run_through_files(
     }
     Ok(SshOutput {
         status: status.code(),
-        stdout: fs::read(&output.path)?,
+        stdout: fs::read(&output)?,
         stderr,
     })
 }
 
-/// A new, empty file in the temporary directory for one standard stream of a
-/// child, removed when dropped. The child gets its own handle, opened only for
-/// reading or only for writing, as a shell redirection opens one.
-struct TempFile {
+/// Opens a new file at `path` only for writing, as a shell redirection opens one.
+fn create(path: &Path) -> io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
+}
+
+/// A new directory for one run's stream files in the temporary directory, named
+/// and protected as the scratch directory is, and removed when dropped.
+struct StreamDir {
     path: PathBuf,
 }
 
-impl TempFile {
-    fn create() -> io::Result<TempFile> {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let path = env::temp_dir().join(format!(
-            "ssh-copy-id-{}-{}",
-            process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        Ok(TempFile { path })
+impl StreamDir {
+    fn create() -> io::Result<StreamDir> {
+        Ok(StreamDir {
+            path: platform::create_scratch_dir(&env::temp_dir())?,
+        })
     }
 
-    fn writer(&self) -> io::Result<File> {
-        OpenOptions::new().write(true).open(&self.path)
+    fn file(&self, name: &str) -> PathBuf {
+        self.path.join(name)
     }
 }
 
-impl Drop for TempFile {
+impl Drop for StreamDir {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        platform::remove_scratch_dir(&self.path);
     }
 }
 
@@ -192,5 +189,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(output.stdout, b"key 1\nkey 2");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn r06_stream_files_are_in_a_directory_only_the_owner_can_enter() {
+        let output =
+            sh(r#"d=$(dirname "$(readlink /proc/self/fd/0)"); stat -c %a "$d"; basename "$d""#);
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some("700"), "{text}");
+        let name = lines.next().unwrap();
+        assert!(name.starts_with("ssh-copy-id."), "{text}");
+        assert!(
+            !std::path::Path::new(&std::env::temp_dir())
+                .join(name)
+                .exists()
+        );
     }
 }

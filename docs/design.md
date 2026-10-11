@@ -862,7 +862,9 @@ writing, as a shell redirection opens it; a handle open for both hung the same
 way. Standard input is written before `ssh` starts, and
 standard output and captured standard error are read after it exits.
 Uncaptured standard error is inherited when it is a terminal; otherwise it is
-copied to this CLI's standard error once `ssh` exits.
+copied to this CLI's standard error once `ssh` exits. The files are in a new
+directory under the temporary directory, named as the scratch directory is and,
+on Unix, entered only by the owner; it is removed when `ssh` exits.
 
 The remote script reads the keys from the same stdin after the login shell has
 run its startup files, as upstream's `cat` does ("the cat adds the keys we're
