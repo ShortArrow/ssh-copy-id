@@ -850,11 +850,22 @@ confirmation requests to SSH and the agent. This CLI does not collect or store
 passwords or passphrases. This follows upstream behavior and adds no compatibility
 difference.
 
-Public keys travel on the stdin pipe of `ssh`, and both tested Windows clients
+Public keys travel on the stdin of `ssh`, and both tested Windows clients
 read password and passphrase prompts from the console, not from stdin, so the
-two coexist (validation row A01). Keep authentication interaction separate from
+two coexist (validation row A01, measured with stdin on a pipe). Keep
+authentication interaction separate from
 the public key data stream; do not solve prompt handling by collecting
 credentials in this CLI or globally enabling `BatchMode=yes`.
+
+The standard streams of `ssh` and `ssh-add` are temporary files, never pipes:
+run without a console, as from an sshd session, Windows OpenSSH 9.5p2 can fail to
+exit when one of them is a pipe (PowerShell/Win32-OpenSSH#1330 and #1427;
+validation row C01). Each is opened for `ssh` only for reading or only for
+writing, as a shell redirection opens it; a handle open for both hung the same
+way. Standard input is written before `ssh` starts, and
+standard output and captured standard error are read after it exits.
+Uncaptured standard error is inherited when it is a terminal; otherwise it is
+copied to this CLI's standard error once `ssh` exits.
 
 The remote script reads the keys from the same stdin after the login shell has
 run its startup files, as upstream's `cat` does ("the cat adds the keys we're

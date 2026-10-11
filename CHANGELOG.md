@@ -94,6 +94,11 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   Visual C++ runtime installed: the C runtime is linked statically. The 0.0.1
   executable exits at once with status 0xC0000135 when `VCRUNTIME140.dll` is
   missing.
+- Run without a console, as from an sshd session on Windows, the run no longer
+  hangs: `ssh` and `ssh-add` get temporary files as their standard streams
+  instead of pipes, which Windows OpenSSH 9.5p2 can fail to exit on. When this
+  CLI's stderr is not a terminal, the installation connection's messages
+  appear once it ends.
 
 ## [0.0.1] - 2026-10-04
 
