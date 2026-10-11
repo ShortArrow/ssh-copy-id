@@ -9,7 +9,7 @@ result is stated in the [design](design.md).
 | Whether the repository is public by v0.0.1; while it is private, the crate's repository link and the GitHub release are not visible to its users, and build provenance is not attested | v0.0.1 publishing |
 | When to ship an `aarch64-pc-windows-msvc` build; GitHub's Windows Arm runners are not used while the repository is private, and no fixture runs on Arm | Release targets |
 | Package names for APT, pacman, and similar systems | Linux packages (stage 3) |
-| Install channels beyond crates.io and GitHub releases, such as winget, which runex and gitreant use | Releases after v0.0.1 |
+| Install channels beyond crates.io and GitHub releases, such as winget | Releases after v0.0.1 |
 | Whether destinations with only `pwsh`, without Windows PowerShell, are supported | Validation row W06 |
 | Whether an inherited profile ACL alone passes sshd's check, making the explicit ACL unnecessary under profile directories | Validation row W07, first check |
 | The exact destination-detection probe command and its expected outputs | Validation row W09 |
