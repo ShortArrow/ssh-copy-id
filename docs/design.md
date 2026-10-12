@@ -890,7 +890,7 @@ input-closed modes:
 | Situation | Behavior |
 | --- | --- |
 | The CLI has a console | Prompts appear inline on that console, as upstream's do on a terminal |
-| No console (`CONIN$` cannot be opened) and `SSH_ASKPASS` is set | `ssh` uses the user's askpass program |
+| No console (`CONIN$` cannot be opened, or the console has no window, as one created with `CREATE_NO_WINDOW` by an IDE task or a CI runner; nobody can type into it, while a pseudo console has a window) and `SSH_ASKPASS` is set | `ssh` uses the user's askpass program |
 | No console and no `SSH_ASKPASS` | Pass `BatchMode=yes` ahead of the user's options, so a configured `BatchMode no` cannot reopen the wait: key and agent authentication still work, and a password or passphrase request fails at once with a message naming the reason |
 
 Without the last rule, Windows OpenSSH waits indefinitely at a password prompt

@@ -105,6 +105,10 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   to exit on. No other temporary directory is used. When this
   CLI's stderr is not a terminal, the installation connection's messages
   appear once it ends.
+- Started in a console without a window, as an IDE task or a CI runner starts
+  a process with `CREATE_NO_WINDOW`, the run no longer waits at a password
+  prompt nobody can answer: such a console counts as no console, so `ssh` runs
+  with `BatchMode=yes` unless `SSH_ASKPASS` is set.
 
 ## [0.0.1] - 2026-10-04
 
