@@ -863,8 +863,14 @@ way. Standard input is written before `ssh` starts, and
 standard output and captured standard error are read after it exits.
 Uncaptured standard error is inherited when it is a terminal; otherwise it is
 copied to this CLI's standard error once `ssh` exits. The files are in a new
-directory under the temporary directory, named as the scratch directory is and,
-on Unix, entered only by the owner; it is removed when `ssh` exits.
+directory under `~/.ssh`, created as the scratch directory is, and removed when
+`ssh` exits. Standard input holds the keys while `ssh` authenticates, so the
+directory is where only the user may write: on Unix it is entered only by the
+owner, and on Windows it inherits the ACL of `~/.ssh`, not that of `%TEMP%`,
+which other accounts may be allowed to modify. A run therefore needs no
+temporary directory beyond `~/.ssh`. When `~/.ssh` is unusable, a run without
+`-i` sees `ssh-add -L` fail and selects the default key file, and creating the
+scratch directory then reports the failure as upstream does.
 
 The remote script reads the keys from the same stdin after the login shell has
 run its startup files, as upstream's `cat` does ("the cat adds the keys we're
