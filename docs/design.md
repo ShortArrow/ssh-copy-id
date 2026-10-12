@@ -264,8 +264,8 @@ The check has three results.
 | Result | Condition | Consequence |
 | --- | --- | --- |
 | Installed | The selected key was the only candidate the client could offer, and `ssh`'s log records authentication with the `publickey` method, whatever the exit status | Skip the key |
-| Not installed | The server answered `Permission denied (…)`, so no candidate authenticated | Install the key |
-| Inconclusive | Another identity or certificate was a candidate, authentication used another method such as `none`, or the client reported an error that matches no known pattern | Install the key and print the reason; duplicates are possible, as with `-f` |
+| Not installed | The server answered `Permission denied (…)` and the client loaded every identity, so no candidate authenticated | Install the key |
+| Inconclusive | Another identity or certificate was a candidate, authentication used another method such as `none`, the client could not load an identity (`Load key "…":`, `Identity file … not accessible`), as Windows OpenSSH reports a private key whose ACL is too open, or the client reported an error that matches no known pattern | Install the key and print the reason; duplicates are possible, as with `-f` |
 
 The probe runs with `LogLevel=VERBOSE` and `-E` naming a file in a fresh
 directory under the local `~/.ssh`, created with mode 700 like upstream's scratch

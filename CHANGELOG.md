@@ -85,6 +85,11 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   such as a password, counts as installed when no other identity could have
   been offered, in the check and in the verification; with other candidates
   the check is inconclusive and the key is installed (D-01).
+- When `ssh` reports an identity it could not load, as Windows OpenSSH reports
+  a private key whose ACL is too open, the installed-key check and the
+  verification are inconclusive and print that line, instead of counting the
+  key as not installed or as rejected by the server. The key is still
+  appended, as upstream appends it (D-01).
 - On Haiku the default target is `.ssh/authorized_keys`, as anywhere else,
   instead of upstream's `config/settings/ssh/authorized_keys` (D-24).
 
