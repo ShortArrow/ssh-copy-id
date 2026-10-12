@@ -264,8 +264,8 @@ The check has three results.
 | Result | Condition | Consequence |
 | --- | --- | --- |
 | Installed | The selected key was the only candidate the client could offer, and `ssh`'s log records authentication with the `publickey` method, whatever the exit status | Skip the key |
-| Not installed | The server answered `Permission denied (…)`, so no candidate authenticated | Install the key |
-| Inconclusive | Another identity or certificate was a candidate, authentication used another method such as `none`, or the client reported an error that matches no known pattern | Install the key and print the reason; duplicates are possible, as with `-f` |
+| Not installed | The server answered `Permission denied (…)` and the client loaded every identity, so no candidate authenticated | Install the key |
+| Inconclusive | Another identity or certificate was a candidate, authentication used another method such as `none`, the client could not load an identity (`Load key "…":`, `Identity file … not accessible`), as Windows OpenSSH reports a private key whose ACL is too open, or the client reported an error that matches no known pattern | Install the key and print the reason; duplicates are possible, as with `-f` |
 
 The probe runs with `LogLevel=VERBOSE` and `-E` naming a file in a fresh
 directory under the local `~/.ssh`, created with mode 700 like upstream's scratch
@@ -863,8 +863,14 @@ way. Standard input is written before `ssh` starts, and
 standard output and captured standard error are read after it exits.
 Uncaptured standard error is inherited when it is a terminal; otherwise it is
 copied to this CLI's standard error once `ssh` exits. The files are in a new
-directory under the temporary directory, named as the scratch directory is and,
-on Unix, entered only by the owner; it is removed when `ssh` exits.
+directory under `~/.ssh`, created as the scratch directory is, and removed when
+`ssh` exits. Standard input holds the keys while `ssh` authenticates, so the
+directory is where only the user may write: on Unix it is entered only by the
+owner, and on Windows it inherits the ACL of `~/.ssh`, not that of `%TEMP%`,
+which other accounts may be allowed to modify. A run therefore needs no
+temporary directory beyond `~/.ssh`. When `~/.ssh` is unusable, a run without
+`-i` sees `ssh-add -L` fail and selects the default key file, and creating the
+scratch directory then reports the failure as upstream does.
 
 The remote script reads the keys from the same stdin after the login shell has
 run its startup files, as upstream's `cat` does ("the cat adds the keys we're
@@ -884,7 +890,7 @@ input-closed modes:
 | Situation | Behavior |
 | --- | --- |
 | The CLI has a console | Prompts appear inline on that console, as upstream's do on a terminal |
-| No console (`CONIN$` cannot be opened) and `SSH_ASKPASS` is set | `ssh` uses the user's askpass program |
+| No console (`CONIN$` cannot be opened, or the console has no window, as one created with `CREATE_NO_WINDOW` by an IDE task or a CI runner; nobody can type into it, while a pseudo console has a window) and `SSH_ASKPASS` is set | `ssh` uses the user's askpass program |
 | No console and no `SSH_ASKPASS` | Pass `BatchMode=yes` ahead of the user's options, so a configured `BatchMode no` cannot reopen the wait: key and agent authentication still work, and a password or passphrase request fails at once with a message naming the reason |
 
 Without the last rule, Windows OpenSSH waits indefinitely at a password prompt

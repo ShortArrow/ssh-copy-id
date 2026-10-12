@@ -16,7 +16,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   stops with upstream's `No identities found` or `no ID file found`. The login
   hint names the key only when `-i` was given, as upstream's does.
 - Without `-i`, the keys `ssh-add -L` lists are installed, also when
-  `SSH_AUTH_SOCK` is unset, so the Windows agent is used (D-20); when it lists
+  `SSH_AUTH_SOCK` is unset, so the Windows OpenSSH agent is used when its
+  `ssh-add` comes first on `PATH` (D-20); when it lists
   none or fails, the default key file is used. Each agent key is checked alone
   from a one-line public key file in the scratch directory, the keys not yet
   installed are appended in one run, and each written key is verified (D-06).
@@ -46,8 +47,9 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   asks to check that the server's `AuthorizedKeysFile` setting reads the file,
   as well as its permissions (D-06).
 - `-x` prints each `ssh` and `ssh-add` command to stderr before running it, as
-  a `+ ` line with the arguments quoted as `set -x` quotes them; standard input
-  is not printed (D-14). As upstream's, the installation script starts with
+  a `+ ` line with the arguments quoted as bash's `set -x` quotes them, except
+  that a control character or a lone quote is single-quoted; standard input is
+  not printed (D-14). As upstream's, the installation script starts with
   `set -x`, so the destination's shell traces it to stderr. `-n`, `-f` and
   `-t` work with it as without it.
 
@@ -71,8 +73,9 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   shared: the login hint leaves the `-i` and `-p` values unquoted, a key file
   that cannot be opened is reported with the reason, the skipped-keys warning
   has upstream's blank lines, a host key or connection failure relays `ssh`'s
-  own messages, a missing destination prints only the usage, and an unknown
-  option prints `illegal option -- <letter>`.
+  own messages, a missing destination prints only the usage, an unknown option prints
+  `illegal option -- <letter>`, and an option without its value prints
+  `option requires an argument -- <letter>` before the usage.
 - A missing private key file and the warning that every key was skipped now
   end with upstream's hint to use `-f`.
 - When `ssh` ends before the installation script reports anything, the extra
@@ -85,6 +88,11 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   such as a password, counts as installed when no other identity could have
   been offered, in the check and in the verification; with other candidates
   the check is inconclusive and the key is installed (D-01).
+- When `ssh` reports an identity it could not load, as Windows OpenSSH reports
+  a private key whose ACL is too open, the installed-key check and the
+  verification are inconclusive and print that line, instead of counting the
+  key as not installed or as rejected by the server. The key is still
+  appended, as upstream appends it (D-01).
 - On Haiku the default target is `.ssh/authorized_keys`, as anywhere else,
   instead of upstream's `config/settings/ssh/authorized_keys` (D-24).
 
@@ -95,10 +103,15 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   executable exits at once with status 0xC0000135 when `VCRUNTIME140.dll` is
   missing.
 - Run without a console, as from an sshd session on Windows, the run no longer
-  hangs: `ssh` and `ssh-add` get temporary files as their standard streams
-  instead of pipes, which Windows OpenSSH 9.5p2 can fail to exit on. When this
+  hangs: `ssh` and `ssh-add` get files in a new directory under `~/.ssh` as
+  their standard streams instead of pipes, which Windows OpenSSH 9.5p2 can fail
+  to exit on. No other temporary directory is used. When this
   CLI's stderr is not a terminal, the installation connection's messages
   appear once it ends.
+- Started in a console without a window, as an IDE task or a CI runner starts
+  a process with `CREATE_NO_WINDOW`, the run no longer waits at a password
+  prompt nobody can answer: such a console counts as no console, so `ssh` runs
+  with `BatchMode=yes` unless `SSH_ASKPASS` is set.
 
 ## [0.0.1] - 2026-10-04
 

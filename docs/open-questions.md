@@ -14,7 +14,6 @@ result is stated in the [design](design.md).
 | The exact destination-detection probe command and its expected outputs | Validation row W09 |
 | How `-s` tells authentication rejection apart from other failures when the SFTP session cannot be established (D-02) | `-s` (stage 3) |
 | How much concurrency `-s` supports beyond the change check before upload (D-08) | `-s` (stage 3) |
-| How to report a private key that Windows OpenSSH ignores because its ACL is too open, which makes an installed key look not installed; upstream behaves the same | Installed-key check (D-01) |
 | Whether upstream treats a remote startup file that reads stdin, and so truncates the keys, as a bug or as an accepted limit; upstream's repository, Debian and Red Hat trackers, and the OpenSSH manuals have no record, while mindrot Bugzilla (behind a login) and the openssh-unix-dev archive were not searched | Key transport on stdin; this tool behaves as upstream until settled |
 | When to add the planned optimization that isolates the selected key, turning Inconclusive checks into conclusive ones | Selected-identity check (D-01) |
 | Which of a separate private repository or a runner created per dispatched run hosts the Windows fixture in CI, and whether a prepared guest disk may be distributed to hosted runners | Windows fixture in CI; the evaluation image's redistribution terms |

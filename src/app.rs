@@ -702,8 +702,8 @@ fn report_verification(err: &mut dyn Write, label: &str, verified: CheckResult, 
         CheckResult::NotInstalled => warn(
             err,
             &format!(
-                "the key was installed but could not be verified: the server still rejects it; \
-                 check {to_check}"
+                "{label}the key was installed but could not be verified: the server still \
+                 rejects it; check {to_check}"
             ),
         ),
         CheckResult::Inconclusive(reason)
@@ -2756,6 +2756,29 @@ mod tests {
             run.err.contains(
                 "ssh-copy-id: WARNING: key 2 from ssh-add -L: could not tell whether the key \
                  is already installed"
+            ),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn c15_several_agent_keys_name_the_key_in_a_rejected_verification() {
+        let ssh = two_agent_keys(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .probe(255, DENIED)
+                .installs(INSTALLED_TWO)
+                .probe(0, ACCEPTED)
+                .probe(255, DENIED),
+        );
+        let run = without_identity(ssh);
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert!(
+            run.err.contains(
+                "ssh-copy-id: WARNING: key 2 from ssh-add -L: the key was installed but could \
+                 not be verified: the server still rejects it; check the permissions of \
+                 .ssh/authorized_keys and its directory\n"
             ),
             "{}",
             run.err

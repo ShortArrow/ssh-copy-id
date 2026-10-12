@@ -138,7 +138,8 @@ const NO_AUTHENTICATION_FAILURES: [&str; 12] = [
 /// method, such as `none`, lets the probe succeed without the key. Exit 0 with
 /// no `Authenticated to` line in the log is `Failed`, since `ssh` exits 0 only after authenticating. A process
 /// terminated by a signal is `Failed`. Exit 255 is `NotInstalled` on
-/// `Permission denied (`, `NotAttempted` naming the last line with a recognised
+/// `Permission denied (`, unless `ssh` reports an identity it could not load,
+/// which makes it `Inconclusive` with that line; `NotAttempted` naming the last line with a recognised
 /// host key or connection failure, and `Inconclusive` otherwise; these patterns
 /// are matched on the log and stderr together.
 ///
@@ -173,7 +174,15 @@ pub fn classify(exit: Option<i32>, log: &str, stderr: &str, others: &[String]) -
                 CheckResult::Failed("ssh exited without recording an authentication".to_string())
             }
         },
-        Some(255) if output.contains("Permission denied (") => CheckResult::NotInstalled,
+        Some(255) if output.contains("Permission denied (") => {
+            match unloaded_identity_line(&output) {
+                Some(line) => {
+                    CheckResult::Inconclusive(format!("ssh could not load an identity: {line}"))
+                }
+                None => CheckResult::NotInstalled,
+            }
+        }
+
         Some(255) => match (failure_line(&output), last_line(&output)) {
             (Some(line), _) => CheckResult::NotAttempted {
                 failure: line,
@@ -252,6 +261,19 @@ fn authenticated_method(log: &str) -> Option<&str> {
     let after = &line[line.find("Authenticated to ")?..];
     let quoted = &after[after.find(" using \"")? + " using \"".len()..];
     quoted.split_once('"').map(|(method, _)| method)
+}
+
+/// The first line in which `ssh` reports an identity it could not load, as
+/// `sshconnect2.c` logs `Load key "<file>": <reason>` and `ssh.c` logs
+/// `Identity file <file> not accessible`; Windows OpenSSH reports a private key
+/// whose ACL is too open this way. Such a key is never offered.
+fn unloaded_identity_line(text: &str) -> Option<String> {
+    trimmed_lines(text)
+        .find(|line| {
+            line.starts_with("Load key \"")
+                || (line.contains("Identity file ") && line.contains(" not accessible"))
+        })
+        .map(str::to_string)
 }
 
 fn failure_line(text: &str) -> Option<String> {
@@ -849,6 +871,30 @@ Authenticated to h ([127.0.0.1]:22) using \"publickey\".
         let log = "Authenticated to h ([127.0.0.1]:22) using \"none\".\r\n\
                    Authenticated using \"publickey\" with partial success.\r\n";
         assert_ne!(classify(Some(1), log, "", &[]), CheckResult::Installed);
+    }
+
+    #[test]
+    fn k34_permission_denied_after_a_key_that_could_not_be_loaded_is_inconclusive() {
+        let log = "Bad permissions. Try removing permissions for user: \\\\Everyone (S-1-1-0) on file C:/k/kacl.\r\n\
+                   Load key \"k\\\\kacl\": bad permissions\r\n\
+                   u@h: Permission denied (publickey,password).\r\n";
+        assert_eq!(
+            classify(Some(255), log, "", &[]),
+            CheckResult::Inconclusive(
+                "ssh could not load an identity: Load key \"k\\\\kacl\": bad permissions"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn k35_permission_denied_after_an_inaccessible_identity_file_is_inconclusive() {
+        let log = "Warning: Identity file \\\\?\\C:\\k\\x not accessible: Invalid argument.\r\n\
+                   u@h: Permission denied (publickey).\r\n";
+        assert!(matches!(
+            classify(Some(255), log, "", &[]),
+            CheckResult::Inconclusive(reason) if reason.ends_with("not accessible: Invalid argument.")
+        ));
     }
 
     #[test]

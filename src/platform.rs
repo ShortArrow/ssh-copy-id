@@ -99,7 +99,9 @@ fn record_interrupt() {
 }
 
 /// Whether the process can open its console (`CONIN$` on Windows, `/dev/tty`
-/// elsewhere), which is where `ssh` reads password and passphrase prompts.
+/// elsewhere), which is where `ssh` reads password and passphrase prompts. On
+/// Windows the console must also have a window, as a pseudo console does: one
+/// created without a window, by `CREATE_NO_WINDOW`, takes no input.
 pub fn has_console() -> bool {
     let device = if cfg!(windows) { "CONIN$" } else { "/dev/tty" };
     OpenOptions::new()
@@ -107,6 +109,20 @@ pub fn has_console() -> bool {
         .write(true)
         .open(device)
         .is_ok()
+        && console_has_a_window()
+}
+
+#[cfg(windows)]
+fn console_has_a_window() -> bool {
+    unsafe extern "system" {
+        fn GetConsoleWindow() -> *mut std::ffi::c_void;
+    }
+    !unsafe { GetConsoleWindow() }.is_null()
+}
+
+#[cfg(not(windows))]
+fn console_has_a_window() -> bool {
+    true
 }
 
 /// The home directory: `USERPROFILE` on Windows, `HOME` elsewhere, as `ssh` expands `~`.

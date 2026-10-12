@@ -2,7 +2,6 @@
 
 use crate::app::{Ssh, SshOutput};
 use crate::platform;
-use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Write};
@@ -10,10 +9,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Runs `ssh` found on `PATH`, or the program given to `SystemSsh::with_program`,
-/// and `ssh-add` found on `PATH`.
+/// and `ssh-add` found on `PATH`, with their standard streams on files in a new
+/// directory inside `stream_parent`.
 pub struct SystemSsh {
     program: OsString,
     agent_program: OsString,
+    stream_parent: PathBuf,
 }
 
 impl SystemSsh {
@@ -27,7 +28,14 @@ impl SystemSsh {
         SystemSsh {
             program: program.into(),
             agent_program: OsString::from("ssh-add"),
+            stream_parent: platform::home_dir().join(".ssh"),
         }
+    }
+
+    /// Puts the stream files in a new directory inside `parent` instead of `~/.ssh`.
+    pub fn streams_in(mut self, parent: &Path) -> SystemSsh {
+        self.stream_parent = parent.to_path_buf();
+        self
     }
 }
 
@@ -47,20 +55,20 @@ impl Ssh for SystemSsh {
     ) -> io::Result<SshOutput> {
         let mut command = Command::new(&self.program);
         command.args(args);
-        run_through_files(command, stdin, capture_stderr)
+        run_through_files(command, &self.stream_parent, stdin, capture_stderr)
     }
 
     /// Runs `ssh-add -L` with empty input, as upstream's `ssh-add -L` reads nothing.
     fn list_agent_keys(&mut self) -> io::Result<SshOutput> {
         let mut command = Command::new(&self.agent_program);
         command.arg("-L");
-        run_through_files(command, b"", true)
+        run_through_files(command, &self.stream_parent, b"", true)
     }
 }
 
 /// Runs `command` to completion with its standard streams on files in a new
-/// private directory, never on pipes: Windows OpenSSH can hang reading or
-/// writing a pipe when it runs without a console
+/// directory inside `parent`, never on pipes: Windows OpenSSH can hang reading
+/// or writing a pipe when it runs without a console
 /// (PowerShell/Win32-OpenSSH#1330, #1427).
 ///
 /// Standard input holds `stdin`. Uncaptured stderr is inherited when it is a
@@ -69,10 +77,11 @@ impl Ssh for SystemSsh {
 /// `SshOutput::stderr` is empty.
 fn run_through_files(
     mut command: Command,
+    parent: &Path,
     stdin: &[u8],
     capture_stderr: bool,
 ) -> io::Result<SshOutput> {
-    let dir = StreamDir::create()?;
+    let dir = StreamDir::create(parent)?;
     let input = dir.file("stdin");
     let output = dir.file("stdout");
     let errors = dir.file("stderr");
@@ -108,16 +117,16 @@ fn create(path: &Path) -> io::Result<File> {
     OpenOptions::new().write(true).create_new(true).open(path)
 }
 
-/// A new directory for one run's stream files in the temporary directory, named
-/// and protected as the scratch directory is, and removed when dropped.
+/// A new directory for one run's stream files, created as the scratch directory
+/// is, and removed when dropped.
 struct StreamDir {
     path: PathBuf,
 }
 
 impl StreamDir {
-    fn create() -> io::Result<StreamDir> {
+    fn create(parent: &Path) -> io::Result<StreamDir> {
         Ok(StreamDir {
-            path: platform::create_scratch_dir(&env::temp_dir())?,
+            path: platform::create_scratch_dir(parent)?,
         })
     }
 
@@ -136,8 +145,13 @@ impl Drop for StreamDir {
 mod tests {
     use super::*;
 
+    /// `sh` as the program, with its stream files in the temporary directory.
+    fn sh_program() -> SystemSsh {
+        SystemSsh::with_program("sh").streams_in(&std::env::temp_dir())
+    }
+
     fn sh(script: &str) -> SshOutput {
-        SystemSsh::with_program("sh")
+        sh_program()
             .run(&["-c".to_string(), script.to_string()], b"", true)
             .unwrap()
     }
@@ -158,7 +172,7 @@ mod tests {
 
     #[test]
     fn r03_uncaptured_stderr_is_not_a_pipe() {
-        let output = SystemSsh::with_program("sh")
+        let output = sh_program()
             .run(
                 &[
                     "-c".to_string(),
@@ -181,7 +195,7 @@ mod tests {
 
     #[test]
     fn r05_stdin_carries_the_given_bytes() {
-        let output = SystemSsh::with_program("sh")
+        let output = sh_program()
             .run(
                 &["-c".to_string(), "cat".to_string()],
                 b"key 1\nkey 2",
@@ -193,18 +207,36 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn r06_stream_files_are_in_a_directory_only_the_owner_can_enter() {
-        let output =
-            sh(r#"d=$(dirname "$(readlink /proc/self/fd/0)"); stat -c %a "$d"; basename "$d""#);
+    fn r06_stream_files_are_in_a_new_owner_only_directory_in_the_given_one() {
+        let parent = std::env::temp_dir().join(format!("r06-{}", std::process::id()));
+        fs::create_dir(&parent).unwrap();
+        let output = SystemSsh::with_program("sh")
+            .streams_in(&parent)
+            .run(
+                &[
+                    "-c".to_string(),
+                    r#"d=$(dirname "$(readlink /proc/self/fd/0)"); stat -c %a "$d"; dirname "$d"; basename "$d""#
+                        .to_string(),
+                ],
+                b"",
+                true,
+            )
+            .unwrap();
         let text = String::from_utf8_lossy(&output.stdout);
         let mut lines = text.lines();
         assert_eq!(lines.next(), Some("700"), "{text}");
-        let name = lines.next().unwrap();
-        assert!(name.starts_with("ssh-copy-id."), "{text}");
-        assert!(
-            !std::path::Path::new(&std::env::temp_dir())
-                .join(name)
-                .exists()
+        assert_eq!(lines.next(), parent.to_str(), "{text}");
+        assert!(lines.next().unwrap().starts_with("ssh-copy-id."), "{text}");
+        let left = fs::read_dir(&parent).unwrap().count();
+        fs::remove_dir(&parent).unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn r07_stream_files_go_under_the_home_ssh_directory_by_default() {
+        assert_eq!(
+            SystemSsh::new().stream_parent,
+            platform::home_dir().join(".ssh")
         );
     }
 }
