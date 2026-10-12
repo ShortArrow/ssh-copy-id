@@ -16,7 +16,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   stops with upstream's `No identities found` or `no ID file found`. The login
   hint names the key only when `-i` was given, as upstream's does.
 - Without `-i`, the keys `ssh-add -L` lists are installed, also when
-  `SSH_AUTH_SOCK` is unset, so the Windows agent is used (D-20); when it lists
+  `SSH_AUTH_SOCK` is unset, so the Windows OpenSSH agent is used when its
+  `ssh-add` comes first on `PATH` (D-20); when it lists
   none or fails, the default key file is used. Each agent key is checked alone
   from a one-line public key file in the scratch directory, the keys not yet
   installed are appended in one run, and each written key is verified (D-06).
@@ -46,8 +47,9 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   asks to check that the server's `AuthorizedKeysFile` setting reads the file,
   as well as its permissions (D-06).
 - `-x` prints each `ssh` and `ssh-add` command to stderr before running it, as
-  a `+ ` line with the arguments quoted as `set -x` quotes them; standard input
-  is not printed (D-14). As upstream's, the installation script starts with
+  a `+ ` line with the arguments quoted as bash's `set -x` quotes them, except
+  that a control character or a lone quote is single-quoted; standard input is
+  not printed (D-14). As upstream's, the installation script starts with
   `set -x`, so the destination's shell traces it to stderr. `-n`, `-f` and
   `-t` work with it as without it.
 
@@ -71,8 +73,9 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   shared: the login hint leaves the `-i` and `-p` values unquoted, a key file
   that cannot be opened is reported with the reason, the skipped-keys warning
   has upstream's blank lines, a host key or connection failure relays `ssh`'s
-  own messages, a missing destination prints only the usage, and an unknown
-  option prints `illegal option -- <letter>`.
+  own messages, a missing destination prints only the usage, an unknown option prints
+  `illegal option -- <letter>`, and an option without its value prints
+  `option requires an argument -- <letter>` before the usage.
 - A missing private key file and the warning that every key was skipped now
   end with upstream's hint to use `-f`.
 - When `ssh` ends before the installation script reports anything, the extra

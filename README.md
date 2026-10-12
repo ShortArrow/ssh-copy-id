@@ -7,7 +7,7 @@ This is `ssh-copy-id` for Windows.
 > [!WARNING]
 > This project is experimental until it reaches `v1.0.0`,
 > and is subject to breaking changes in any release before then.
-> Version 0.0.1 installs only one explicitly selected key on a Unix-like host.
+> It installs keys on Unix-like hosts only; Windows hosts and `-s` are not supported yet.
 > Do not rely on it for access to machines you cannot reach another way.
 
 ## Summary
@@ -38,14 +38,27 @@ Or download `ssh-copy-id-x86_64-pc-windows-msvc.zip` from the
 [latest release](https://github.com/ShortArrow/ssh-copy-id/releases/latest) and
 put `ssh-copy-id.exe` on `PATH`. The system OpenSSH client (`ssh.exe`) is
 required.
+The executable `cargo install` builds needs the Visual C++ runtime, while the
+one in the release archive does not, so copy the latter to a machine without
+that runtime.
 
 ## Usage
 
-Version 0.0.1 installs one explicitly selected key on a Unix-like host:
+Install the keys of the running `ssh-agent`, or else the newest `~/.ssh/id*.pub`
+with its private key, on a Unix-like host:
+
+```powershell
+ssh-copy-id user@host
+```
+
+Install one key file, or list what would be installed without writing anything:
 
 ```powershell
 ssh-copy-id -i ~/.ssh/id_ed25519.pub user@host
+ssh-copy-id -n user@host
 ```
+
+`ssh-copy-id -h` lists the options.
 
 The remaining features follow the [delivery plan](docs/design.md#delivery-plan).
 
