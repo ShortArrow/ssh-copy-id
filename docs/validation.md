@@ -421,6 +421,20 @@ each case installs a new key and then logs in with it.
 | Ctrl-C at the password prompt | Exit 1, the key is not installed | Exit 1, the key is not installed |
 | No console, password authentication | Exit 1 after 1.7 s, the key is not installed | Exit 1 after 1.7 s, the key is not installed |
 
+### Recheck after the Release Review: 2026-10-12
+
+After the stream files moved under `~/.ssh` and a console without a window
+started counting as no console, the fixture tests gave the same results as
+above with both clients, and every case of the CLI prompt probe passed again
+with both. With Windows OpenSSH 9.5p2 against L02:
+
+| Case | Result |
+| --- | --- |
+| `TEMP` and `TMP` naming a path under a regular file | The key is installed and verified, exit 0 |
+| A private key readable by Everyone, first run | Checked as not installed, since `ssh` reads the private key only after the server accepts the public key; installed, then the verification warns with `ssh`'s `Load key "…": bad permissions` line |
+| The same key, second run | The check is inconclusive with that line and the key is appended again, as upstream appends it |
+| Started with `CREATE_NO_WINDOW` or `DETACHED_PROCESS` | `ssh` runs with `BatchMode=yes` ([windows_console.rs](../tests/windows_console.rs), also run in CI) |
+
 ## Linux Selected-Identity Experiment: 2026-09-20
 
 The [Docker experiment](../tests/prototypes/identity-isolation/README.md) (L01)
