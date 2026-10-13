@@ -531,9 +531,10 @@ Each run reports one of four outcomes, mapped to upstream's two exit statuses.
 
 The remote installation script prints result lines, and the CLI derives the
 outcome from them alone. The remote exit status is not used, because a Windows
-default shell can replace it: with Windows PowerShell as the default shell, a
-native child command's nonzero exit status reaches the client as 1 (destination
-difference [O-04](compatibility.md#destination-differences), validation row W05).
+default shell can replace it: with Windows PowerShell or `pwsh` as the default
+shell, a native child command's nonzero exit status reaches the client as 1
+(destination difference [O-04](compatibility.md#destination-differences),
+validation rows W05 and W06).
 Usage errors exit 1, as in upstream.
 
 The format is one line per key,

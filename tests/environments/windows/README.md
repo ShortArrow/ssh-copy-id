@@ -33,8 +33,10 @@ removed keys, mixed-newline stdin, remote exit 37, and binary SFTP transfer.
 It requires an initialized user profile. On 2026-09-23 a second project,
 `ssh-copy-id-win11-ps`, was created from a copy of this disk and switched to
 Windows PowerShell as the sshd default shell; both account tests passed there.
-The `pwsh` default shell, key installation by the product, and the broader ACL
-matrix remain pending. See the [validation matrix](../../../docs/validation.md)
+On 2026-10-14 a third project, `ssh-copy-id-win11-pwsh`, was created from a copy
+of that disk, PowerShell 7 was installed, and `pwsh` became the default shell;
+both account tests passed there too. Key installation by the product and the
+broader ACL matrix remain pending. See the [validation matrix](../../../docs/validation.md)
 for scope and findings.
 
 ## Start a Fixture
