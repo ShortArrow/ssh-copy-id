@@ -31,7 +31,8 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W06 | pwsh as the sshd default shell | Passed | [Cloned fixture with PowerShell 7.6.7](#pwsh-default-shell-w06-2026-10-14), both account tests; exit statuses as under Windows PowerShell (W05). |
 | W07 | Default administrator shared key-file scope and invalid ACL rejection | First check passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. Pending: positive/negative ACL cases for the shared administrator file, an extra read-only ACE, and a second administrator. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
-| W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for destination detection (D-12); include a login shell that prints a banner. |
+| W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Passed | [Probe outputs](#shell-family-probe-w09-2026-10-14) under each, also `tcsh`, `pwsh` as a Linux login shell, and startup steps that print a line. |
+| W10 | A Windows sshd whose default shell starts WSL, and an sshd inside WSL | Pending | Record the probe output and which key file sshd reads in each; decide whether the probe can tell them apart. |
 | U01 | Stage 1: CLI installs one key on a Unix-like destination; requirements 1, 2, 3, 7, and 8 | Passed | [Stage 1 run](#stage-1-on-a-unix-like-destination-2026-10-01): 19 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, also run in CI. |
 | U02 | Stage 1.5: `-n`, `-f`, `-t`, `-i` without a file, default key selection, agent keys, and `-x` on a Unix-like destination; requirements 4 and 5 | Passed | [Stage 1.5 run](#fixture-tests-u02): 35 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, except i22 with Windows OpenSSH, whose agent A02 covers; also run in CI. |
 | K01 | Line endings and encoding sshd accepts in authorized_keys (line endings, D-07) | Passed | 2026-10-09, checked by logging in with the key: a key line ending in CR authenticates, with or without a comment, on OpenSSH 9.6p1 (L02 image), [OpenSSH 7.6p1, Dropbear 2022.82, 2024.86 and 2025.89, and Windows OpenSSH 9.5p2](#key-line-endings-k01). A line starting with a UTF-8 BOM is rejected on all of them, except that Windows OpenSSH accepts one at the start of the file. |
@@ -517,6 +518,44 @@ The `-EncodedCommand` row has the form the CLI sends to a Windows destination,
 so its script's exit status does not reach the client under a PowerShell
 default shell either. Under `pwsh` the error for an unknown command reached the
 client with ANSI color sequences although no terminal was requested.
+
+## Shell-Family Probe (W09): 2026-10-14
+
+Windows side: the `ssh-copy-id-win11-pwsh` guest of W06, with the default shell
+switched to `cmd.exe`, Windows PowerShell, and `pwsh` in turn and restored to
+`pwsh` afterwards. Unix side: a throwaway container of the L02 image, with
+`keyuser`'s login shell switched to `/bin/sh` (dash), `/bin/dash`, `/bin/bash`,
+`/usr/bin/tcsh`, and `pwsh` 7.6.7 extracted from `powershell-7.6.7-linux-x64.tar.gz`
+of the PowerShell GitHub release, whose SHA-256 matched the release's
+`hashes.sha256`. Commands from the repository root:
+
+```powershell
+./tests/environments/windows/Test-ShellProbe.ps1
+docker run --rm --entrypoint sh -v "$PWD/tests/environments/linux:/probe:ro" -v "<dir with pwsh.tar.gz>:/pwsh:ro" ssh-copy-id-l02:local /probe/probe-shells.sh
+```
+
+Each probe ran as the SSH command without a startup step and with one that
+prints `startup-line`: `.bashrc`, `.cshrc`, cmd's `AutoRun` value, and a
+PowerShell profile under the default execution policy and under
+`RemoteSigned`. Every run exited 0. Standard output after the
+`ssh-copy-id-probe:` marker, CRLF line endings on Windows:
+
+| Default or login shell | `echo ssh-copy-id-probe:%OS%:$0` | `echo ssh-copy-id-probe:%OS%:$0/$home` |
+| --- | --- | --- |
+| `cmd.exe` | `Windows_NT:$0` | `Windows_NT:$0/$home` |
+| Windows PowerShell | `%OS%:` | `%OS%:/C:\Users\fixtureadmin` |
+| `pwsh` on Windows | `%OS%:` | `%OS%:/C:\Users\fixtureadmin` |
+| `pwsh` on Linux | `%OS%:` | `%OS%://home/keyuser` |
+| `sh`, `dash`, `bash` | `%OS%:sh`, `%OS%:dash`, `%OS%:bash` | `%OS%:sh/`, `%OS%:dash/`, `%OS%:bash/` |
+| `tcsh` | `%OS%:tcsh` | `%OS%:tcsh//home/keyuser` |
+
+Every startup line came before the probe line. Under Windows PowerShell's
+default execution policy the profile was not loaded and its error went to
+standard error, leaving standard output unchanged. Without `$home`, `pwsh` on
+Linux prints the same as PowerShell on Windows; with it, the home path tells
+them apart. Afterwards the guest had no `AutoRun` value or profile, the
+current user's execution policy was `Undefined`, and the default shell was
+`pwsh` again.
 
 ## Linux Selected-Identity Experiment: 2026-09-20
 

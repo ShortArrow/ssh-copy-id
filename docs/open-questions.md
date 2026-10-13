@@ -9,7 +9,7 @@ result is stated in the [design](design.md).
 | When to ship an `aarch64-pc-windows-msvc` build; no fixture runs on Arm | Release targets |
 | Package names for APT, pacman, and similar systems | Linux packages (stage 3) |
 | Install channels beyond crates.io and GitHub releases, such as winget | Releases after v0.0.1 |
-| The exact destination-detection probe command and its expected outputs | Validation row W09 |
+| Whether a Windows sshd whose default shell starts WSL (`wsl.exe`, `bash.exe`) can be told apart from an sshd inside WSL, since the probe reports a Unix-like shell while sshd reads the Windows profile's key file | Validation row W10 |
 | How `-s` tells authentication rejection apart from other failures when the SFTP session cannot be established (D-02) | `-s` (stage 3) |
 | How much concurrency `-s` supports beyond the change check before upload (D-08) | `-s` (stage 3) |
 | Whether upstream treats a remote startup file that reads stdin, and so truncates the keys, as a bug or as an accepted limit; upstream's repository, Debian and Red Hat trackers, and the OpenSSH manuals have no record, while mindrot Bugzilla (behind a login) and the openssh-unix-dev archive were not searched | Key transport on stdin; this tool behaves as upstream until settled |
