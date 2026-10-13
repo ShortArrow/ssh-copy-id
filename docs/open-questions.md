@@ -9,7 +9,6 @@ result is stated in the [design](design.md).
 | When to ship an `aarch64-pc-windows-msvc` build; no fixture runs on Arm | Release targets |
 | Package names for APT, pacman, and similar systems | Linux packages (stage 3) |
 | Install channels beyond crates.io and GitHub releases, such as winget | Releases after v0.0.1 |
-| Whether destinations with only `pwsh`, without Windows PowerShell, are supported | Validation row W06 |
 | The exact destination-detection probe command and its expected outputs | Validation row W09 |
 | How `-s` tells authentication rejection apart from other failures when the SFTP session cannot be established (D-02) | `-s` (stage 3) |
 | How much concurrency `-s` supports beyond the change check before upload (D-08) | `-s` (stage 3) |

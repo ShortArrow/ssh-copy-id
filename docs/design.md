@@ -726,7 +726,9 @@ The command sent to a Windows destination is exactly
 only letters, digits, and base64, so `cmd.exe /c`, `powershell.exe -c`, and
 `pwsh -c` interpret it identically. Every parameter, including the target path,
 is inside the encoded script; public keys arrive on stdin. `powershell.exe` and,
-when ACLs are set, `icacls.exe` are remote runtime requirements to document.
+when ACLs are set, `icacls.exe` are remote runtime requirements to document. A
+destination without Windows PowerShell, such as one with only `pwsh`, is not
+supported: the fixed command is what makes every default shell read it alike.
 Under `cmd.exe` sshd runs `cmd.exe /c "<command>"`, and under Windows PowerShell
 it runs `powershell.exe -c "<command>"`, where `$`, `;`, and quotes in a plain
 command would be interpreted (destination difference O-03).
