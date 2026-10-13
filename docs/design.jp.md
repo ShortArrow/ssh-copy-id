@@ -587,12 +587,20 @@ SSHがコマンドを最初に解釈させる既定シェルと、登録スク�
 - 既定シェルが `cmd`・Windows PowerShell・`pwsh` の場合の起動を検証する。
 - Linux上の `pwsh` などもあるため、シェル名からOSを決めつけない。
 
-通常方式では書き込み前に、POSIX `sh`・`cmd.exe`・PowerShellで出力が異なる1コマンドを
-送り、接続先のシェル系統を判定する。どれにも一致しなければ、何も書かずにエラーで止める。
+通常方式では書き込み前に `echo ssh-copy-id-probe:%OS%:$0/$home` を1回送り、
+標準出力のうち `ssh-copy-id-probe:` で始まる最初の行を、末尾のCRを除いて読む。
+起動ファイルが出力する行はこの行より前に出る。残りが `Windows_NT:$0/$home`
+（`cmd.exe` は `%OS%` だけを展開する）か、`%OS%:/` にドライブ文字・コロン・
+バックスラッシュが続く形（Windows PowerShellと `pwsh` は `$home` だけを展開し、
+ここではWindowsのパスになる）ならWindowsとする。残りが `%OS%:`、`/` を含まない
+1文字以上のシェル名、`/` の順ならUnix系とする（`sh`・`dash`・`bash`・`tcsh` は
+`$0` に自分の名前が入り、`tcsh` は `$home` も展開する）。それ以外の行か、行が無いときは、
+何も書かずにエラーで止め、`--target-os` を案内する。Linuxのログインシェルとしての
+`pwsh` も、`$home` がUnixのパスになるためここで止まる。PowerShellはWindowsでも
+Linuxでも `%OS%:` を出すので、Windowsと決めるのはホームのパスである（検証表のW09）。
+WSLの中で動くsshdが受け持つWSL内のアカウントは、Unix系の接続先とする。
 `--target-os unix|windows` は判定を上書きする。`-s` はこの判定ができないため、
-`--target-os` が無ければUnix系を想定する。判定コマンドとその期待出力は、`cmd.exe`・
-Windows PowerShell・`pwsh`・`sh`・`bash`・`dash` での実測（検証表のW09。未実施）で決める。
-最初の候補は `echo %OS%:$0`。上流は確認せずに `sh` スクリプトを送る。読み取った意図:
+`--target-os` が無ければUnix系を想定する。上流は確認せずに `sh` スクリプトを送る。読み取った意図:
 接続先はPOSIXシェルを持つ。変える理由: Windows接続先ではそのスクリプトを実行できない。
 これは差異D-12で、通常方式では接続が1回増え、`--target-os` という新しいオプションが加わる。
 

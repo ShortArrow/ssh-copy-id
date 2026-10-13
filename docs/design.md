@@ -708,13 +708,21 @@ shell that executes the installation script. For example:
 - Do not infer the OS from the shell name; `pwsh`, for example, also runs on Linux.
 
 In normal mode, detect the destination shell family before writing with one
-command whose output differs between POSIX `sh`, `cmd.exe`, and PowerShell, and
-stop with an error before any write when the output matches none.
+command, `echo ssh-copy-id-probe:%OS%:$0/$home`, and read the first line of its
+standard output that starts with `ssh-copy-id-probe:`, without a trailing CR;
+lines that a startup file prints come before it. The destination is Windows
+when the rest of that line is `Windows_NT:$0/$home` (`cmd.exe` expands only
+`%OS%`), or `%OS%:/` followed by a drive letter, a colon, and a backslash
+(Windows PowerShell or `pwsh` expands only `$home`, here a Windows path). It is
+Unix-like when the rest is `%OS%:`, a nonempty shell name without `/`, and `/`
+(`sh`, `dash`, `bash`, and `tcsh` name themselves in `$0`; `tcsh` also expands
+`$home`). Any other line, or none, stops the run with an error before any write
+that suggests `--target-os`; so does `pwsh` as a Linux login shell, whose
+`$home` is a Unix path. PowerShell prints `%OS%:` on Windows and Linux alike,
+so the home path is what makes it Windows (validation row W09). An account
+inside WSL, served by an sshd running there, is a Unix-like destination.
 `--target-os unix|windows` overrides detection. `-s` cannot run the probe and
-assumes a Unix-like destination unless `--target-os` says otherwise. The probe
-command and its expected outputs come from measurements under `cmd.exe`, Windows
-PowerShell, `pwsh`, `sh`, `bash`, and `dash` (validation row W09, not yet run);
-`echo %OS%:$0` is the starting candidate. Apparent intent of upstream, which sends
+assumes a Unix-like destination unless `--target-os` says otherwise. Apparent intent of upstream, which sends
 its `sh` script without checking: destinations run a POSIX shell. Reason to
 differ: Windows destinations cannot run that script. This is difference D-12:
 normal mode makes one more connection, and `--target-os` is a new option.
