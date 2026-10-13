@@ -10,7 +10,6 @@ result is stated in the [design](design.md).
 | Package names for APT, pacman, and similar systems | Linux packages (stage 3) |
 | Install channels beyond crates.io and GitHub releases, such as winget | Releases after v0.0.1 |
 | Whether destinations with only `pwsh`, without Windows PowerShell, are supported | Validation row W06 |
-| Whether an inherited profile ACL alone passes sshd's check, making the explicit ACL unnecessary under profile directories | Validation row W07, first check |
 | The exact destination-detection probe command and its expected outputs | Validation row W09 |
 | How `-s` tells authentication rejection apart from other failures when the SFTP session cannot be established (D-02) | `-s` (stage 3) |
 | How much concurrency `-s` supports beyond the change check before upload (D-08) | `-s` (stage 3) |

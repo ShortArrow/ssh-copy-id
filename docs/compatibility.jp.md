@@ -51,7 +51,7 @@ Unix系とWindowsの接続先は、プラットフォームが許す限り同じ
 | ID | Unix系の接続先 | Windowsの接続先 | 詳細 |
 | --- | --- | --- | --- |
 | O-01 | すべてのアカウントの鍵を `.ssh/authorized_keys` に置く。 | 管理者の鍵は、既定のサーバー設定では共有の `administrators_authorized_keys` に置く。 | [Windows管理者への登録範囲](design.jp.md#windows管理者への登録範囲) |
-| O-02 | 新規作成のディレクトリとファイルは `umask` で700と600になる。 | 新規作成分には `icacls.exe` でアカウント・SYSTEM・Administratorsの最小ACLを設定する。既存のものはどちらも変更しない。 | [権限とサービスの操作範囲](design.jp.md#権限とサービスの操作範囲) |
+| O-02 | 新規作成のディレクトリとファイルは `umask` で700と600になる。 | プロファイル配下の新規作成分は、プロファイルから継承したACLのままとする。既定のプロファイルでは、アカウント・SYSTEM・Administratorsだけに許可するACLになる。既存のものはどちらも変更しない。 | [権限とサービスの操作範囲](design.jp.md#権限とサービスの操作範囲) |
 | O-03 | アカウントのPOSIXシェルが `sh` スクリプトを実行する。 | 既定シェル（`cmd.exe`・Windows PowerShell・`pwsh`）がコマンドを包む。送るのは `EncodedCommand` の1行だけ。 | [Windows向けのリモートコマンド](design.jp.md#windows向けのリモートコマンド) |
 | O-04 | 接続先の終了コードがクライアントに届く。 | 既定シェルがPowerShellだと子プロセスの0以外の終了コードは1になる。そのため両接続先とも結果行で結果を伝える。 | [登録結果](design.jp.md#登録結果) |
 | O-05 | `-s` はファイルを600にする。親は変更しない（D-03）。 | `-s` はACLを設定できない。正しいACLのディレクトリがあることを前提条件とする。 | [SFTP方式](design.jp.md#sftp方式) |

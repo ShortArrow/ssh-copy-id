@@ -104,7 +104,7 @@ Each stage ends when its checks pass; the IDs are rows of the
 | 0. Feasibility | none | Prototype of `ssh.exe` on Windows with authentication prompts while public keys go to stdin; a Linux sshd fixture for CLI integration tests | A01 passes for a password, an encrypted key's passphrase, agent confirmation (or the agent's refusal of it), cancellation, and no terminal; L02 passes and runs in CI |
 | 1. Unix destination, one key (first milestone) | v0.0.1 | `[user@]host`, `-i file`, `-p`, `-o`, `-F`; the installed-key check with three results; the `sh` installation script with result lines; post-installation verification; exit statuses | Initial requirements 1, 2, 3, 7, and 8 pass as tests against L02 |
 | 1.5. CLI compatibility | v0.0.2 before stage 2; otherwise per the versioning rule | `-n`, `-f`, `-t` on Unix-like destinations, `-i` without a file, key files with several keys, default key selection, agent keys, `-x`, upstream messages | Requirements 4 and 5 pass; the D-03 and D-11 tests pass; golden tests against the pinned script (P01) pass for the shared behavior |
-| 2. Windows standard user (second milestone) | v0.1.0 | One explicitly selected key for one standard user in normal mode: destination detection, the PowerShell installation script, ACLs on new objects | W06, W09, and W07's first check (whether an inherited profile ACL alone passes) pass before the implementation; requirements 1, 2, 3, 7, and 8 pass against the dockur fixture |
+| 2. Windows standard user (second milestone) | v0.1.0 | One explicitly selected key for one standard user in normal mode: destination detection, the PowerShell installation script | W06, W09, and W07's first check (whether an inherited profile ACL alone passes) pass before the implementation; requirements 1, 2, 3, 7, and 8 pass against the dockur fixture |
 | 3. Later increments | 0.1.x or later | Shared administrator file (the rest of W07), `-t` on Windows destinations (W08), `-s` (requirement 6), Linux packages | Decided per increment |
 
 Stage 0 comes first because a failed prototype would invalidate the choice of
@@ -690,7 +690,7 @@ Unix-like destination by default, as the Linux version does.
 | Destination | Usual key file | Permission handling |
 | --- | --- | --- |
 | Unix-like system | `.ssh/authorized_keys` | Normal mode: new directory 700 and new file 600 through `umask 077`, existing permissions unchanged. `-s`: `chmod 700` on a directory it created and `chmod 600` on the key file it uploads |
-| Standard Windows user | `.ssh/authorized_keys` in the user profile | Minimal ACL on new objects; existing ACLs unchanged |
+| Standard Windows user | `.ssh/authorized_keys` in the user profile | New objects keep the ACL inherited from the profile; existing ACLs unchanged |
 | Windows user in the Administrators group | `%ProgramData%/ssh/administrators_authorized_keys` under the default configuration | Restrict access to SYSTEM and Administrators |
 
 Server configuration can change the destination. The OS alone cannot establish
@@ -754,16 +754,17 @@ installations into a standard user's key file.
 ### Permissions and Service Boundaries
 
 Follow the upstream Unix rule, where `umask 077` restricts only newly created
-objects. A directory or key file that this tool creates receives the minimal ACL
-that Windows OpenSSH accepts: inheritance removed, owner set to the account, and
-full control for the account, SYSTEM, and Administrators, applied with
-`icacls.exe` by SID with its exit code checked. Existing directories and files
-keep their ACLs, including extra entries. A key that the server then rejects is
-reported by the post-installation verification (D-06) with the file's entries
-listed, and the user decides what to remove. Whether an inherited profile ACL
-alone passes the server's check, which would make the explicit ACL unnecessary
-under profile directories, is an open question settled by validation row W07. Explain permission failures without automatically
-elevating privileges or managing services.
+objects. Under a Windows profile the inherited ACL already does this, so a
+directory or key file that this tool creates there keeps the ACL it inherits
+and the tool sets no ACL. On a default profile that ACL gives full control to
+the account, SYSTEM, and Administrators, with the account as owner, and Windows
+OpenSSH accepts it (validation row W07, first check). Existing directories and
+files keep their ACLs, including extra entries. A key that the server then
+rejects, such as one whose file inherited a writable entry for another account,
+is reported by the post-installation verification (D-06) with the file's
+entries listed, and the user decides what to remove. The ACL of the shared
+administrator file is settled with the rest of row W07. Explain permission
+failures without automatically elevating privileges or managing services.
 
 `ssh-agent` is a helper service for private keys. Installing public keys on the
 remote host does not require starting or restarting it. Do not automatically

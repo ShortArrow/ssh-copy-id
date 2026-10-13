@@ -29,7 +29,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W04 | Standard-user SFTP binary upload, download, byte comparison, deletion | Passed | Same script; not an append or atomic-replacement test. |
 | W05 | Windows PowerShell as the sshd default shell | Passed | [Cloned fixture](#windows-powershell-default-shell-2026-09-23), both account tests; a native child command's nonzero exit code reaches the client as 1. |
 | W06 | pwsh as the sshd default shell | Pending | Clone a fixture, install pwsh, run `Set-DefaultShell.ps1 -Shell pwsh`, record the pwsh version, and repeat both account tests. |
-| W07 | Default administrator shared key-file scope and invalid ACL rejection | Pending | First check whether an inherited profile ACL alone passes sshd's check (needed for stage 2); then positive/negative ACL cases, an extra read-only and an extra writable ACE, and a second administrator. |
+| W07 | Default administrator shared key-file scope and invalid ACL rejection | First check passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. Pending: positive/negative ACL cases for the shared administrator file, an extra read-only ACE, and a second administrator. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for destination detection (D-12); include a login shell that prints a banner. |
 | U01 | Stage 1: CLI installs one key on a Unix-like destination; requirements 1, 2, 3, 7, and 8 | Passed | [Stage 1 run](#stage-1-on-a-unix-like-destination-2026-10-01): 19 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, also run in CI. |
@@ -434,6 +434,41 @@ with both. With Windows OpenSSH 9.5p2 against L02:
 | A private key readable by Everyone, first run | Checked as not installed, since `ssh` reads the private key only after the server accepts the public key; installed, then the verification warns with `ssh`'s `Load key "…": bad permissions` line |
 | The same key, second run | The check is inconclusive with that line and the key is appended again, as upstream appends it |
 | Started with `CREATE_NO_WINDOW` or `DETACHED_PROCESS` | `ssh` runs with `BatchMode=yes` ([windows_console.rs](../tests/windows_console.rs), also run in CI) |
+
+## Inherited Profile ACL (W07, First Check): 2026-10-13
+
+Environment: the `ssh-copy-id-win11-ps` guest (build `26200`, guest OpenSSH
+`9.5.5.1`, `StrictModes` not set, so its default `yes`, and
+`AuthorizedKeysFile .ssh/authorized_keys`), host client
+`OpenSSH_for_Windows_9.5p2`. Command from the repository root (PowerShell 7):
+
+```powershell
+./tests/environments/windows/Test-InheritedAcl.ps1 -IdentityFile work/windows-fixture-ps/smoke_key -KnownHostsFile work/windows-fixture-ps/known_hosts -Port 22223 -EvidenceRoot work/windows-fixture-ps
+```
+
+`fixtureuser` had no `.ssh`. In its own password-authenticated session, as
+ssh-copy-id has it before a key is installed, it created `.ssh` and
+`authorized_keys` with `New-Item` and `WriteAllText`, changing no ACL. The
+three checks passed:
+
+| Check | Result |
+| --- | --- |
+| Public-key login with that key file | Accepted |
+| The same login after an administrator granted `BUILTIN\Users:(M)` on the file | Rejected; sshd logged `Bad permissions. Try removing permissions for user: BUILTIN\\Users (S-1-5-32-545) on file C:/Users/fixtureuser/.ssh/authorized_keys.` and `Authentication refused.` |
+| The same login after cleanup removed the file and `.ssh` | Rejected |
+
+The ACLs as created:
+
+| Object | Owner | Entries |
+| --- | --- | --- |
+| `C:\Users\fixtureuser` | `SYSTEM` | `SYSTEM`, `Administrators`, `fixtureuser`: `(OI)(CI)(F)`; a capability SID with `(S,X)`, not inheritable |
+| `.ssh` | `fixtureuser` | `SYSTEM`, `Administrators`, `fixtureuser`: `(I)(OI)(CI)(F)` |
+| `.ssh\authorized_keys` | `fixtureuser` | `SYSTEM`, `Administrators`, `fixtureuser`: `(I)(F)` |
+
+On a default profile the inherited entries are the same principals and rights
+as the explicit ACL in the design, and the owner is already the account. A
+profile whose inheritable entries grant write to another principal would pass
+that entry on to new objects; this run did not cover such a profile.
 
 ## Linux Selected-Identity Experiment: 2026-09-20
 
