@@ -1,6 +1,6 @@
 # ssh-copy-id for Windows 設計
 
-[English](design.md)
+[English](design.md) | 日本語
 
 [既存版との差異一覧](compatibility.jp.md) | [規格が定めていない動作の定義](definitions.jp.md)
 

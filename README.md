@@ -18,13 +18,13 @@ It targets the role of `ssh-copy-id`, not the full OpenSSH suite. Key generation
 key lifecycle management, and SSH server or service administration are out of scope.
 Windows is the primary client platform; Linux distribution is planned.
 
-Design and implementation plan: [English](docs/design.md) | [日本語](docs/design.jp.md).
+[Design and implementation plan](docs/design.md).
 
 Documentation structure and update policy: [docs/README.md](docs/README.md).
 
-Differences from upstream: [English](docs/compatibility.md) | [日本語](docs/compatibility.jp.md).
+[Differences from upstream](docs/compatibility.md).
 
-Behavior defined where the standards are silent: [English](docs/definitions.md) | [日本語](docs/definitions.jp.md).
+[Behavior defined where the standards are silent](docs/definitions.md).
 
 ## Install
 

@@ -1,6 +1,8 @@
 # 規格が定めていない動作の定義
 
-[English](definitions.md) | [設計書](design.jp.md) | [既存版との差異](compatibility.jp.md)
+[English](definitions.md) | 日本語
+
+[設計書](design.jp.md) | [既存版との差異](compatibility.jp.md)
 
 SSHとSFTPの規格、およびOpenSSHとWindows OpenSSHの文書が、定めていない、未規定とする、
 または実装に任せている動作のうち、本ツールが定めているものの索引である。各定義は設計書に

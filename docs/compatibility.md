@@ -1,6 +1,8 @@
 # Differences from Upstream ssh-copy-id
 
-[日本語](compatibility.jp.md) | [Design](design.md)
+English | [日本語](compatibility.jp.md)
+
+[Design](design.md)
 
 This is an index of accepted design differences, not a claim
 that they have been implemented or tested. Differences are not classified as
