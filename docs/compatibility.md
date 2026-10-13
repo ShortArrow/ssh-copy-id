@@ -53,7 +53,7 @@ with links to the decisions.
 | ID | Unix-like destination | Windows destination | Details |
 | --- | --- | --- | --- |
 | O-01 | Every account's keys go to `.ssh/authorized_keys`. | Administrators' keys go to the shared `administrators_authorized_keys` under the default server configuration. | [Administrator scope](design.md#windows-administrator-scope) |
-| O-02 | New directories and files get modes 700 and 600 through `umask`. | New directories and files get the minimal ACL for the account, SYSTEM, and Administrators through `icacls.exe`. Existing objects are untouched on both. | [Permissions](design.md#permissions-and-service-boundaries) |
+| O-02 | New directories and files get modes 700 and 600 through `umask`. | New directories and files under the profile keep the ACL inherited from it, which on a default profile allows only the account, SYSTEM, and Administrators. Existing objects are untouched on both. | [Permissions](design.md#permissions-and-service-boundaries) |
 | O-03 | The account's POSIX shell runs an `sh` script. | The default shell (`cmd.exe`, Windows PowerShell, or `pwsh`) wraps the command; only an `EncodedCommand` line is sent. | [Windows remote command](design.md#windows-remote-command) |
 | O-04 | The remote exit status reaches the client. | A PowerShell default shell reports a child's nonzero status as 1. Both destinations therefore report the outcome on a result line. | [Installation outcome](design.md#installation-outcome) |
 | O-05 | `-s` sets file mode 600; the parent is unchanged (D-03). | `-s` cannot set ACLs; a directory with a correct ACL is a prerequisite. | [SFTP mode](design.md#sftp-mode) |
