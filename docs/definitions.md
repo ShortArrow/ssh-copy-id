@@ -1,6 +1,8 @@
 # Behavior Defined Where the Standards Are Silent
 
-[日本語](definitions.jp.md) | [Design](design.md) | [Differences from upstream](compatibility.md)
+English | [日本語](definitions.jp.md)
+
+[Design](design.md) | [Differences from upstream](compatibility.md)
 
 This is an index of places where the SSH and SFTP standards and the OpenSSH or
 Windows OpenSSH documentation leave a behavior undefined, unspecified, or

@@ -1,6 +1,6 @@
 # ssh-copy-id for Windows Design
 
-[日本語](design.jp.md)
+English | [日本語](design.jp.md)
 
 [Differences from upstream](compatibility.md) | [Behavior defined where the standards are silent](definitions.md)
 

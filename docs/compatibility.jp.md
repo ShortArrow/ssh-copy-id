@@ -1,6 +1,8 @@
 # 既存のssh-copy-idとの差異
 
-[English](compatibility.md) | [設計書](design.jp.md)
+[English](compatibility.md) | 日本語
+
+[設計書](design.jp.md)
 
 合意済みの設計差異の一覧であり、実装済み・検証済みを示すものではない。
 差異を上流の不具合や不具合修正とは分類せず、元の設計者の意図も断定しない。
