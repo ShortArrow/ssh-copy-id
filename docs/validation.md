@@ -28,7 +28,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W03 | Standard-user CRLF/LF stdin and explicit cmd exit 37 | Passed | Same script; default shell remains cmd. |
 | W04 | Standard-user SFTP binary upload, download, byte comparison, deletion | Passed | Same script; not an append or atomic-replacement test. |
 | W05 | Windows PowerShell as the sshd default shell | Passed | [Cloned fixture](#windows-powershell-default-shell-2026-09-23), both account tests; a native child command's nonzero exit code reaches the client as 1. |
-| W06 | pwsh as the sshd default shell | Pending | Clone a fixture, install pwsh, run `Set-DefaultShell.ps1 -Shell pwsh`, record the pwsh version, and repeat both account tests. |
+| W06 | pwsh as the sshd default shell | Passed | [Cloned fixture with PowerShell 7.6.7](#pwsh-default-shell-w06-2026-10-14), both account tests; exit statuses as under Windows PowerShell (W05). |
 | W07 | Default administrator shared key-file scope and invalid ACL rejection | First check passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. Pending: positive/negative ACL cases for the shared administrator file, an extra read-only ACE, and a second administrator. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Pending | Fix the probe command and its expected outputs for destination detection (D-12); include a login shell that prints a banner. |
@@ -469,6 +469,54 @@ On a default profile the inherited entries are the same principals and rights
 as the explicit ACL in the design, and the owner is already the account. A
 profile whose inheritable entries grant write to another principal would pass
 that entry on to new objects; this run did not cover such a profile.
+
+## pwsh Default Shell (W06): 2026-10-14
+
+Environment: a third dockur project, `ssh-copy-id-win11-pwsh`, created from a
+copy of the `ssh-copy-id-win11-ps` disk while that guest was stopped. Same
+guest build `26200.6584` and guest OpenSSH `9.5.5.1`; host client
+`OpenSSH_for_Windows_9.5p2`. Host bindings: web `8008`, SSH `22224`. PowerShell
+7.6.7 was installed from `PowerShell-7.6.7-win-x64.msi` of the PowerShell
+GitHub release `v7.6.7`, whose SHA-256 matched the release's `hashes.sha256` on
+the host and again in the guest, with `msiexec /i … /qn /norestart ADD_PATH=1`
+(exit 0). Windows PowerShell stays installed. Default shell:
+`C:\Program Files\PowerShell\7\pwsh.exe`, file version `7.6.7.500`. Evidence remains under
+ignored `work/windows-fixture-pwsh/`; the administrator control key is the one
+in `work/windows-fixture-ps/`, since the disk is a copy.
+
+Commands from the repository root (PowerShell 7):
+
+```powershell
+$fixture = @{ Port = 22224; IdentityFile = 'work/windows-fixture-ps/smoke_key'; KnownHostsFile = 'work/windows-fixture-pwsh/known_hosts' }
+./tests/environments/windows/Set-DefaultShell.ps1 -Shell pwsh @fixture
+./tests/environments/windows/Test-Smoke.ps1 -ExpectedShellProcess pwsh.exe @fixture
+./tests/environments/windows/Test-StandardUser.ps1 -ExpectedShellProcess pwsh.exe -ExpectedCmdExitCode 1 -EvidenceRoot work/windows-fixture-pwsh @fixture
+```
+
+The administrator smoke test passed with `pwsh.exe` as the process that
+interprets the SSH command, whose command line was
+`"c:\program files\powershell\7\pwsh.exe" -c "<command>"`. The standard-user
+test passed its five assertions with the expected exit code 1; a first run
+expecting 37 failed only at that assertion, after the earlier ones had passed.
+
+Administrator probes, recorded in `work/windows-fixture-pwsh/exit-code-probes.json`,
+gave the same statuses as under Windows PowerShell:
+
+| SSH command | Exit status |
+| --- | --- |
+| `exit 37` | 37 |
+| `cmd.exe /d /c exit 37` | 1 |
+| `cmd.exe /d /c exit 0` | 0 |
+| `powershell.exe -NoProfile -Command "exit 37"` | 1 |
+| `powershell.exe -NoProfile -NonInteractive -EncodedCommand <exit 37>` | 1 |
+| `cmd.exe /d /c exit 37; exit $LASTEXITCODE` | 37 |
+| `$host.SetShouldExit(37)` | 37 |
+| `nonexistent-command-xyz` | 1 |
+
+The `-EncodedCommand` row has the form the CLI sends to a Windows destination,
+so its script's exit status does not reach the client under a PowerShell
+default shell either. Under `pwsh` the error for an unknown command reached the
+client with ANSI color sequences although no terminal was requested.
 
 ## Linux Selected-Identity Experiment: 2026-09-20
 
