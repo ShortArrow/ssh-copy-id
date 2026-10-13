@@ -8,6 +8,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-10-12
+
 ### Added
 
 - Without `-i`, and with `-i` not followed by a file, the most recently
