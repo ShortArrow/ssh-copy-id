@@ -32,7 +32,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W07 | Default administrator shared key-file scope and invalid ACL rejection | First check passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. Pending: positive/negative ACL cases for the shared administrator file, an extra read-only ACE, and a second administrator. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Passed | [Probe outputs](#shell-family-probe-w09-2026-10-14) under each, also `tcsh`, `pwsh` as a Linux login shell, and startup steps that print a line. |
-| W10 | A Windows sshd whose default shell starts WSL, and an sshd inside WSL | Pending | Record the probe output and which key file sshd reads in each; decide whether the probe can tell them apart. |
+| W10 | A Windows sshd whose default shell starts WSL, and an sshd inside WSL | Passed | [Probe outputs and key files](#wsl-default-shell-and-sshd-inside-wsl-w10-2026-10-15): with `wsl.exe` or `bash.exe` as the default shell the probe stops the run, and a key in the WSL home does not authenticate; an sshd inside WSL answers as a Unix-like shell and reads the WSL home. |
 | U01 | Stage 1: CLI installs one key on a Unix-like destination; requirements 1, 2, 3, 7, and 8 | Passed | [Stage 1 run](#stage-1-on-a-unix-like-destination-2026-10-01): 19 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, also run in CI. |
 | U02 | Stage 1.5: `-n`, `-f`, `-t`, `-i` without a file, default key selection, agent keys, and `-x` on a Unix-like destination; requirements 4 and 5 | Passed | [Stage 1.5 run](#fixture-tests-u02): 35 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, except i22 with Windows OpenSSH, whose agent A02 covers; also run in CI. |
 | K01 | Line endings and encoding sshd accepts in authorized_keys (line endings, D-07) | Passed | 2026-10-09, checked by logging in with the key: a key line ending in CR authenticates, with or without a comment, on OpenSSH 9.6p1 (L02 image), [OpenSSH 7.6p1, Dropbear 2022.82, 2024.86 and 2025.89, and Windows OpenSSH 9.5p2](#key-line-endings-k01). A line starting with a UTF-8 BOM is rejected on all of them, except that Windows OpenSSH accepts one at the start of the file. |
@@ -556,6 +556,51 @@ Linux prints the same as PowerShell on Windows; with it, the home path tells
 them apart. Afterwards the guest had no `AutoRun` value or profile, the
 current user's execution policy was `Undefined`, and the default shell was
 `pwsh` again.
+
+## WSL Default Shell and sshd Inside WSL (W10): 2026-10-15
+
+A copy of the `ssh-copy-id-win11-ps` disk (Windows PowerShell default shell) ran
+under the pinned dockur image on a second Linux host with nested KVM (Intel
+Celeron J4125), with `VMX: "Y"` in a Compose override: with dockur's default
+`-vmx`, WSL 2 failed with `HCS_E_HYPERV_NOT_INSTALLED`. Its ports were bound to
+that host's loopback and reached through an SSH tunnel. In the guest, the
+Windows Subsystem for Linux and Virtual Machine Platform features were enabled,
+WSL 3.0.3 was installed from `wsl.3.0.3.0.x64.msi` of the microsoft/WSL GitHub
+release (SHA-256 `AE977286974255BD26BF925F00F40F5692C6B2084155CBC0563C09AEA091F211`),
+since the inbox `wsl.exe` would not install it from an sshd session, and
+Ubuntu 24.04.5 was installed for `fixtureadmin` with `wsl --install --web-download`.
+Its default user `wsluser` had a fresh test key in `~/.ssh/authorized_keys`.
+Command from the repository root:
+
+```powershell
+./tests/environments/windows/Test-WslShell.ps1
+```
+
+The script set the Windows sshd's `DefaultShell` to `wsl.exe`, to `wsl.exe`
+with `DefaultShellCommandOption` `--`, and to `bash.exe`, each time with a
+scheduled task that restores Windows PowerShell, and then started an sshd on
+port 2222 inside WSL, reached through the Windows sshd's TCP forwarding. The
+probe and the environment listing ran as `fixtureadmin` with the control key,
+whose key file is the shared administrator file; the test key logged in as
+`fixtureadmin` on the Windows sshd and as `wsluser` on the sshd inside WSL.
+
+| Destination | Probe exit and output | `SSH_`/`WSL` variables | Test key |
+| --- | --- | --- | --- |
+| Windows sshd, `wsl.exe` | 255; `Invalid command line argument: -c` in UTF-16 on standard output | Command failed the same way | Rejected |
+| Windows sshd, `wsl.exe`, option `--` | 127; nothing on standard output; `bash` reports the whole expanded line, `echo ssh-copy-id-probe:%OS%:/bin/bash/`, as a missing command | Command failed the same way | Rejected |
+| Windows sshd, `bash.exe` | 0; `ssh-copy-id-probe:%OS%:/bin/bash/` | No `SSH_` variable; `WSL_DISTRO_NAME`, `WSL_INTEROP`, empty `WSLENV` | Rejected |
+| sshd inside WSL | 0; `ssh-copy-id-probe:%OS%:bash/` | `SSH_CLIENT`, `SSH_CONNECTION`; no `WSL` variable | Accepted |
+
+Wherever a shell ran inside WSL, it was `wsluser`'s, with `HOME` `/home/wsluser`.
+With a default shell that starts WSL, a key in the WSL home does not
+authenticate, since the Windows sshd reads the Windows account's key file. The
+probe stops each of those runs before any write: two print no marker line, and
+`bash.exe` puts the shell's path in `$0`, which the Unix-like form excludes,
+while an sshd inside WSL passes the bare name, as on Linux (W09). WSL also
+printed `Failed to start the systemd user session` to standard error in the
+`wsl.exe` run with `--`. Afterwards the default shell was Windows
+PowerShell with no `DefaultShellCommandOption`, the restore task was gone, and
+the guest was stopped.
 
 ## Linux Selected-Identity Experiment: 2026-09-20
 
