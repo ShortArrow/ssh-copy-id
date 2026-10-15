@@ -35,7 +35,11 @@ It requires an initialized user profile. On 2026-09-23 a second project,
 Windows PowerShell as the sshd default shell; both account tests passed there.
 On 2026-10-14 a third project, `ssh-copy-id-win11-pwsh`, was created from a copy
 of that disk, PowerShell 7 was installed, and `pwsh` became the default shell;
-both account tests passed there too. Key installation by the product and the
+both account tests passed there too. On 2026-10-15 a copy of the
+`ssh-copy-id-win11-ps` disk ran on a second Linux host with nested KVM, with
+`VMX: "Y"` in a Compose override so that WSL 2 could start in the guest; the
+dockur image turns VMX off for Windows guests by default. WSL and Ubuntu 24.04
+were installed there for validation row W10. Key installation by the product and the
 broader ACL matrix remain pending. See the [validation matrix](../../../docs/validation.md)
 for scope and findings.
 

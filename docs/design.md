@@ -720,7 +720,10 @@ Unix-like when the rest is `%OS%:`, a nonempty shell name without `/`, and `/`
 that suggests `--target-os`; so does `pwsh` as a Linux login shell, whose
 `$home` is a Unix path. PowerShell prints `%OS%:` on Windows and Linux alike,
 so the home path is what makes it Windows (validation row W09). An account
-inside WSL, served by an sshd running there, is a Unix-like destination.
+inside WSL, served by an sshd running there, is a Unix-like destination. A
+Windows sshd whose default shell starts WSL reads the Windows account's key
+file, and the probe stops the run there: `wsl.exe` does not run the command,
+and `bash.exe` passes the shell's path in `$0` (validation row W10).
 `--target-os unix|windows` overrides detection. `-s` cannot run the probe and
 assumes a Unix-like destination unless `--target-os` says otherwise. Apparent intent of upstream, which sends
 its `sh` script without checking: destinations run a POSIX shell. Reason to
