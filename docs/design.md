@@ -714,9 +714,9 @@ lines that a startup file prints come before it. The destination is Windows
 when the rest of that line is `Windows_NT:$0/$home` (`cmd.exe` expands only
 `%OS%`), or `%OS%:/` followed by a drive letter, a colon, and a backslash
 (Windows PowerShell or `pwsh` expands only `$home`, here a Windows path). It is
-Unix-like when the rest is `%OS%:`, a nonempty shell name without `/`, and `/`
-(`sh`, `dash`, `bash`, and `tcsh` name themselves in `$0`; `tcsh` also expands
-`$home`). Any other line, or none, stops the run with an error before any write
+Unix-like when the rest is `%OS%:`, a nonempty shell name without `/`, `/`, and
+whatever `$home` expands to (`sh`, `dash`, `bash`, and `tcsh` name themselves in
+`$0`; only `tcsh` expands `$home`, to its home path). Any other line, or none, stops the run with an error before any write
 that suggests `--target-os`; so does `pwsh` as a Linux login shell, whose
 `$home` is a Unix path. PowerShell prints `%OS%:` on Windows and Linux alike,
 so the home path is what makes it Windows (validation row W09). An account
