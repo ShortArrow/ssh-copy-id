@@ -214,7 +214,7 @@ compatibility suite is part of stage 1.5.
 | `-t target_path` | Specify the destination file. The path reaches the remote script as data, not inside the command (D-11); a path containing LF is rejected before connecting. The OpenWrt target applies only without `-t` (D-22) |
 | `-x` | Print each client command before running it, and trace the remote script with `set -x` (D-14) |
 | `-h`, `-?` | Display help |
-| `--target-os unix\|windows` | Override destination detection (D-12); not in upstream |
+| `--target-os unix\|windows` | Override destination detection (D-12); not in upstream. The value follows as the next argument or after `=`, among the other options, and the last one counts, as with `-t`. Any other value, or none, prints the usage and exits 1 |
 
 Normally, determine whether a key is already installed by checking whether it can
 authenticate. Do not substitute a text comparison against `authorized_keys`.
