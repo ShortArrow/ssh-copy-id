@@ -8,6 +8,7 @@ use crate::installed_check::{
 use crate::key_input::{InputError, PreparedInput, key_lines, prepare, prepare_verbatim};
 use crate::remote_script::{TargetPath, install_command, install_input, sh_quote};
 use crate::result_line::{Outcome, parse_report};
+use crate::shell_family::ShellFamily;
 use crate::trace::command_line;
 use std::cell::RefCell;
 use std::io::{self, Write};
@@ -17,6 +18,7 @@ use std::path::{Path, PathBuf};
 pub const TARGET: &str = ".ssh/authorized_keys";
 
 const NOTHING_WRITTEN: &str = "interrupted; nothing was written";
+const WINDOWS_NOT_AVAILABLE: &str = "Windows destinations are not available in this release";
 const MULTI_LINE_TARGET: &str =
     "the -t path contains a line feed, which cannot be sent as one line";
 const CERTIFICATE_REASON: &str =
@@ -303,6 +305,9 @@ fn install(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), Stop> {
+    if invocation.target_os == Some(ShellFamily::Windows) {
+        return Err(Stop::Error(WINDOWS_NOT_AVAILABLE.to_string()));
+    }
     let target = match &invocation.target {
         Some(path) => Some(TargetPath::new(path).ok_or(MULTI_LINE_TARGET.to_string())?),
         None => None,
@@ -1192,6 +1197,7 @@ mod tests {
             dry_run: false,
             target: None,
             trace: false,
+            target_os: None,
         }
     }
 
@@ -1328,6 +1334,38 @@ mod tests {
 
     fn execute(ssh: FakeSsh) -> Run {
         execute_with(&invocation(), files(), true, false, ssh)
+    }
+
+    #[test]
+    fn a61_a_windows_target_os_stops_before_running_ssh() {
+        let windows = Invocation {
+            target_os: Some(ShellFamily::Windows),
+            ..invocation()
+        };
+        let run = execute_with(&windows, files(), true, false, FakeSsh::new());
+        assert_eq!(run.status, 1);
+        assert!(run.ssh.kinds().is_empty(), "{:?}", run.ssh.kinds());
+        assert_eq!(
+            run.err,
+            "ssh-copy-id: ERROR: Windows destinations are not available in this release\n"
+        );
+    }
+
+    #[test]
+    fn a62_a_unix_target_os_runs_as_without_it() {
+        let unix = Invocation {
+            target_os: Some(ShellFamily::UnixLike),
+            ..invocation()
+        };
+        let run = execute_with(
+            &unix,
+            files(),
+            true,
+            false,
+            FakeSsh::new().probe(0, ACCEPTED),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
     }
 
     #[test]

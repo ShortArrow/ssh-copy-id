@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-x] [-i [identity_file]] [-t target_path] [-p port] [-F ssh_config] [[-o ssh_option] ...] [user@]hostname
+const USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-x] [-i [identity_file]] [-t target_path] [-p port] [-F ssh_config] [[-o ssh_option] ...] [--target-os unix|windows] [user@]hostname
 \t-f: force mode -- copy keys without trying to check if they are already installed
 \t-n: dry run    -- no keys are actually copied
 \t-x: debug      -- enables -x in this shell, for debugging
@@ -16,6 +16,7 @@ const USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-x] [-i [identity_file]] [-
 \t-t: the remote file to add the keys to, relative to the home directory
 \t-p: port of the remote host
 \t-F, -o: passed to ssh unchanged
+\t--target-os: the destination's OS, instead of detecting it
 \t-h|-?: print this help
 This release installs keys on a Unix-like host.
 -s is not available yet.";
@@ -99,6 +100,10 @@ fn preamble(error: &ArgsError) -> String {
             before_blank_line(&format!("option -{flag} is not available in this release"))
         }
         ArgsError::Unknown(option) => before_blank_line(&format!("unknown option {option}")),
+        ArgsError::InvalidTargetOs(value) => before_blank_line(&match value {
+            Some(value) => format!("--target-os must be unix or windows, not '{value}'"),
+            None => "--target-os must be unix or windows".to_string(),
+        }),
     }
 }
 
@@ -153,8 +158,8 @@ mod tests {
     #[test]
     fn m05_unknown_long_option_is_named() {
         assert_eq!(
-            preamble(&ArgsError::Unknown("--target-os".into())),
-            "ssh-copy-id: ERROR: unknown option --target-os\n\n"
+            preamble(&ArgsError::Unknown("--verbose".into())),
+            "ssh-copy-id: ERROR: unknown option --verbose\n\n"
         );
     }
 
@@ -253,6 +258,30 @@ mod tests {
             USAGE.contains(
                 "\n\t-t: the remote file to add the keys to, relative to the home directory\n"
             ),
+            "{USAGE}"
+        );
+    }
+
+    #[test]
+    fn m17_an_invalid_target_os_names_the_accepted_values() {
+        assert_eq!(
+            preamble(&ArgsError::InvalidTargetOs(Some("linux".into()))),
+            "ssh-copy-id: ERROR: --target-os must be unix or windows, not 'linux'\n\n"
+        );
+        assert_eq!(
+            preamble(&ArgsError::InvalidTargetOs(None)),
+            "ssh-copy-id: ERROR: --target-os must be unix or windows\n\n"
+        );
+    }
+
+    #[test]
+    fn m18_the_usage_offers_target_os_after_upstream_s_options() {
+        assert!(
+            USAGE.contains("[[-o ssh_option] ...] [--target-os unix|windows] [user@]hostname\n"),
+            "{USAGE}"
+        );
+        assert!(
+            USAGE.contains("\n\t--target-os: the destination's OS, instead of detecting it\n"),
             "{USAGE}"
         );
     }

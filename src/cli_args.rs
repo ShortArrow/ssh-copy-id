@@ -1,5 +1,6 @@
 //! Command-line parsing for the stage 1.5 subset of the upstream options.
 
+use crate::shell_family::ShellFamily;
 use std::path::PathBuf;
 
 /// An option passed through to `ssh`, in the order the user gave it.
@@ -48,6 +49,8 @@ pub struct Invocation {
     /// `-x`: each client command is printed before it runs, and the
     /// installation script traces itself with `set -x`.
     pub trace: bool,
+    /// `--target-os`: the shell family that replaces detection; the last one counts.
+    pub target_os: Option<ShellFamily>,
 }
 
 /// Whether `-f` was given and whether it preceded the key selection. Upstream
@@ -95,6 +98,8 @@ pub enum ArgsError {
     IllegalOption(char),
     /// A long option, which upstream does not have.
     Unknown(String),
+    /// `--target-os` with a value other than `unix` or `windows`, or with none.
+    InvalidTargetOs(Option<String>),
 }
 
 /// Parses the arguments after the program name.
@@ -116,11 +121,23 @@ pub fn parse(
     let mut dry_run = false;
     let mut target = None;
     let mut trace = false;
+    let mut target_os = None;
     let mut index = 0;
     while let Some(arg) = args.get(index) {
         index += 1;
         if arg == "--" {
             break;
+        }
+        if let Some(attached) = long_value(arg, "--target-os") {
+            let value = match attached {
+                Some(value) => Some(value.to_string()),
+                None => {
+                    index += 1;
+                    args.get(index - 1).cloned()
+                }
+            };
+            target_os = Some(shell_family(value)?);
+            continue;
         }
         if arg.starts_with("--") {
             return Err(ArgsError::Unknown(arg.clone()));
@@ -188,7 +205,27 @@ pub fn parse(
         dry_run,
         target,
         trace,
+        target_os,
     })
+}
+
+/// For the long option `name`: `Some(None)` when `arg` is the option alone, so its value is the
+/// next argument, and `Some(Some(value))` when the value is attached with `=`.
+fn long_value<'a>(arg: &'a str, name: &str) -> Option<Option<&'a str>> {
+    let rest = arg.strip_prefix(name)?;
+    if rest.is_empty() {
+        Some(None)
+    } else {
+        rest.strip_prefix('=').map(Some)
+    }
+}
+
+fn shell_family(value: Option<String>) -> Result<ShellFamily, ArgsError> {
+    match value.as_deref() {
+        Some("unix") => Ok(ShellFamily::UnixLike),
+        Some("windows") => Ok(ShellFamily::Windows),
+        _ => Err(ArgsError::InvalidTargetOs(value)),
+    }
 }
 
 /// The files `-i file` names: the public key file, with `.pub` added when absent, and the private key file without it.
@@ -233,6 +270,7 @@ mod tests {
             dry_run: false,
             target: None,
             trace: false,
+            target_os: None,
         }
     }
 
@@ -449,8 +487,8 @@ mod tests {
     #[test]
     fn p22_unknown_long_option_is_named_whole() {
         assert_eq!(
-            parse_plain(&args(&["--target-os", "unix", "h"])),
-            Err(ArgsError::Unknown("--target-os".into()))
+            parse_plain(&args(&["--verbose", "h"])),
+            Err(ArgsError::Unknown("--verbose".into()))
         );
     }
 
@@ -590,5 +628,66 @@ mod tests {
         assert!(grouped.dry_run);
         assert_eq!(grouped.force, Force::BeforeKeySelection);
         assert_eq!(grouped.target.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn p37_target_os_is_unset_unless_given() {
+        assert_eq!(parse_plain(&args(&["h"])).unwrap().target_os, None);
+    }
+
+    #[test]
+    fn p38_target_os_as_separate_or_attached_argument() {
+        let separate = parse_plain(&args(&["--target-os", "windows", "h"])).unwrap();
+        assert_eq!(separate.target_os, Some(ShellFamily::Windows));
+        assert_eq!(separate.destination, "h");
+        let attached = parse_plain(&args(&["--target-os=unix", "h"])).unwrap();
+        assert_eq!(attached.target_os, Some(ShellFamily::UnixLike));
+    }
+
+    #[test]
+    fn p39_target_os_leaves_the_other_options_unchanged() {
+        let given = parse_plain(&args(&["-n", "--target-os", "unix", "-p", "2222", "h"])).unwrap();
+        assert!(given.dry_run);
+        assert_eq!(given.port.as_deref(), Some("2222"));
+        assert_eq!(given.target_os, Some(ShellFamily::UnixLike));
+    }
+
+    #[test]
+    fn p40_a_later_target_os_replaces_an_earlier_one() {
+        let given =
+            parse_plain(&args(&["--target-os=windows", "--target-os", "unix", "h"])).unwrap();
+        assert_eq!(given.target_os, Some(ShellFamily::UnixLike));
+    }
+
+    #[test]
+    fn p41_target_os_other_than_unix_or_windows_is_rejected() {
+        for value in ["linux", "Windows", ""] {
+            assert_eq!(
+                parse_plain(&args(&[&format!("--target-os={value}"), "h"])),
+                Err(ArgsError::InvalidTargetOs(Some(value.to_string())))
+            );
+        }
+        assert_eq!(
+            parse_plain(&args(&["--target-os", "h"])),
+            Err(ArgsError::InvalidTargetOs(Some("h".to_string())))
+        );
+    }
+
+    #[test]
+    fn p42_target_os_without_a_value_is_rejected() {
+        assert_eq!(
+            parse_plain(&args(&["--target-os"])),
+            Err(ArgsError::InvalidTargetOs(None))
+        );
+    }
+
+    #[test]
+    fn p43_other_long_options_stay_unknown() {
+        for option in ["--target", "--target-os-x=unix", "--help"] {
+            assert_eq!(
+                parse_plain(&args(&[option, "h"])),
+                Err(ArgsError::Unknown(option.to_string()))
+            );
+        }
     }
 }
