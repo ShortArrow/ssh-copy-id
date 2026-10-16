@@ -8,5 +8,6 @@ pub mod key_input;
 pub mod platform;
 pub mod remote_script;
 pub mod result_line;
+pub mod shell_family;
 pub mod ssh_process;
 pub mod trace;
