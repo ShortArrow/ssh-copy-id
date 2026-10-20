@@ -826,9 +826,13 @@ fn i34_d14_trace_prints_the_client_commands_and_the_remote_script() {
             .lines()
             .filter(|line| line.starts_with("+ ssh "))
             .collect();
-        assert_eq!(client.len(), 5, "{stderr}");
+        assert_eq!(client.len(), 6, "{stderr}");
         assert_eq!(client[0], "+ ssh -V", "{stderr}");
-        assert!(client[3].contains(r"exec sh -c '\''set -x; "), "{stderr}");
+        assert!(
+            client[3].ends_with(" 'echo ssh-copy-id-probe:%OS%:$0/$home'"),
+            "{stderr}"
+        );
+        assert!(client[4].contains(r"exec sh -c '\''set -x; "), "{stderr}");
         assert!(stderr.contains("\n+ umask 077\n"), "{stderr}");
     }
 }

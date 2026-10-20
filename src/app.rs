@@ -8,7 +8,7 @@ use crate::installed_check::{
 use crate::key_input::{InputError, PreparedInput, key_lines, prepare, prepare_verbatim};
 use crate::remote_script::{TargetPath, install_command, install_input, sh_quote};
 use crate::result_line::{Outcome, parse_report};
-use crate::shell_family::ShellFamily;
+use crate::shell_family::{self, PROBE_COMMAND, ShellFamily};
 use crate::trace::command_line;
 use std::cell::RefCell;
 use std::io::{self, Write};
@@ -19,6 +19,10 @@ pub const TARGET: &str = ".ssh/authorized_keys";
 
 const NOTHING_WRITTEN: &str = "interrupted; nothing was written";
 const WINDOWS_NOT_AVAILABLE: &str = "Windows destinations are not available in this release";
+const UNDETECTED_FAMILY: &str = "could not tell the destination's shell family, so nothing was written; \
+     name it with --target-os unix|windows";
+const UNCONNECTED_FAMILY: &str =
+    "ssh exited with status 255 before the shell family was detected; nothing was written";
 const MULTI_LINE_TARGET: &str =
     "the -t path contains a line feed, which cannot be sent as one line";
 const CERTIFICATE_REASON: &str =
@@ -409,7 +413,8 @@ fn install(
         report_dry_run(out, &text);
         return Ok(());
     }
-    let Written { added, target } = write_keys(ssh, invocation, &install, &text, remaining.len())?;
+    let Written { added, target } =
+        write_keys(ssh, invocation, env, &install, &text, remaining.len())?;
 
     let to_check = what_to_check(&target, install.target);
     let login = login_command(invocation, selection.hint_identity(invocation.force));
@@ -441,7 +446,8 @@ fn install_unchecked(
     install: &Install,
 ) -> Result<(), Stop> {
     let texts = selection.texts();
-    let Written { added, .. } = write_keys(ssh, invocation, install, &texts.concat(), texts.len())?;
+    let Written { added, .. } =
+        write_keys(ssh, invocation, env, install, &texts.concat(), texts.len())?;
     summary(
         out,
         added,
@@ -476,17 +482,22 @@ struct Install<'a> {
     common: &'a [String],
 }
 
-/// Sends `text`, holding `sent` key lines, to the installation script and
+/// Detects the destination's shell family, then sends `text`, holding `sent`
+/// key lines, to the installation script and
 /// returns its report when every key was written; any other outcome stops the
 /// run with what may have changed. A message names the target the script
 /// reported, or the one asked for when it reported none.
 fn write_keys(
     ssh: &mut dyn Ssh,
     invocation: &Invocation,
+    env: &Environment,
     install: &Install,
     text: &[u8],
     sent: usize,
 ) -> Result<Written, Stop> {
+    if detect_family(ssh, invocation, env, install.common)? == ShellFamily::Windows {
+        return stop(WINDOWS_NOT_AVAILABLE);
+    }
     let mut install_args = vec!["-o".to_string(), "RequestTTY=no".to_string()];
     install_args.extend(install.common.iter().cloned());
     install_args.push(invocation.destination.clone());
@@ -534,6 +545,34 @@ fn write_keys(
         Outcome::Unknown => stop(format!(
             "the connection ended without a result; {target} may or may not have changed"
         )),
+    }
+}
+
+/// The family `--target-os` names, or else the one the reply to
+/// `shell_family::PROBE_COMMAND` shows (D-12). The probe's stderr goes to the
+/// user, as the installation's does; a reply that shows no family, an
+/// interrupt, or a failure to start `ssh` stops the run before any write. A
+/// reply without the line from an `ssh` that exited with status 255, the
+/// status of a failed connection or login, does not suggest `--target-os`.
+fn detect_family(
+    ssh: &mut dyn Ssh,
+    invocation: &Invocation,
+    env: &Environment,
+    common: &[String],
+) -> Result<ShellFamily, Stop> {
+    if let Some(family) = invocation.target_os {
+        return Ok(family);
+    }
+    let mut args = vec!["-o".to_string(), "RequestTTY=no".to_string()];
+    args.extend(common.iter().cloned());
+    args.push(invocation.destination.clone());
+    args.push(PROBE_COMMAND.to_string());
+    let reply = run_ssh(ssh, &args, b"", false)?;
+    stop_if_interrupted(env, NOTHING_WRITTEN)?;
+    match shell_family::classify(&reply.stdout) {
+        Some(family) => Ok(family),
+        None if reply.status == Some(255) => stop(UNCONNECTED_FAMILY),
+        None => stop(UNDETECTED_FAMILY),
     }
 }
 
@@ -986,6 +1025,7 @@ fn warn(err: &mut dyn Write, message: &str) {
 mod tests {
     use super::*;
     use crate::remote_script::{TargetPath, install_command};
+    use crate::shell_family::PROBE_COMMAND;
     use crate::trace::command_line;
     use std::cell::{Cell, RefCell};
     use std::collections::{HashMap, HashSet};
@@ -1012,6 +1052,7 @@ mod tests {
         config: String,
         probes: Vec<Probe>,
         install: Option<SshOutput>,
+        family: Option<SshOutput>,
         config_status: i32,
         logs: Rc<RefCell<HashMap<PathBuf, Vec<u8>>>>,
         scratch_parents: Rc<RefCell<Vec<PathBuf>>>,
@@ -1080,6 +1121,11 @@ mod tests {
             self
         }
 
+        fn replies_to_family_probe(mut self, stdout: &str) -> FakeSsh {
+            self.family = Some(output(0, stdout, ""));
+            self
+        }
+
         fn kinds(&self) -> Vec<&'static str> {
             self.calls.iter().map(|(args, _, _)| kind(args)).collect()
         }
@@ -1109,6 +1155,8 @@ mod tests {
             "config"
         } else if args.last().map(String::as_str) == Some("exit") {
             "probe"
+        } else if args.last().map(String::as_str) == Some(PROBE_COMMAND) {
+            "family"
         } else {
             "install"
         }
@@ -1137,6 +1185,10 @@ mod tests {
                     self.write_log(args, probe.log);
                     probe.output
                 }
+                "family" => self
+                    .family
+                    .clone()
+                    .unwrap_or_else(|| output(0, UNIX_REPLY, "")),
                 _ => self.install.clone().expect("install not scripted"),
             })
         }
@@ -1158,6 +1210,9 @@ mod tests {
         }
     }
 
+    /// What `sh` prints for the shell-family probe.
+    const UNIX_REPLY: &str = "ssh-copy-id-probe:%OS%:sh/
+";
     const SCRATCH_NAME: &str = "ssh-copy-id.test";
     const CERTIFICATE: &str =
         "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQ= me@here";
@@ -1368,6 +1423,118 @@ mod tests {
         assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
     }
 
+    const UNDETECTED: &str = "ssh-copy-id: ERROR: could not tell the destination's shell \
+                              family, so nothing was written; name it with \
+                              --target-os unix|windows\n";
+
+    #[test]
+    fn a63_the_shell_family_is_detected_just_before_writing() {
+        let run = execute(installs_and_verifies());
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(
+            run.ssh.kinds(),
+            ["version", "config", "probe", "family", "install", "probe"]
+        );
+        let (args, stdin, capture_stderr) = run.ssh.call("family");
+        assert_eq!(
+            args,
+            &["-o", "RequestTTY=no", "-a", "-x", "u@h", PROBE_COMMAND]
+        );
+        assert!(stdin.is_empty());
+        assert!(!capture_stderr);
+    }
+
+    #[test]
+    fn a64_a_reply_naming_no_family_stops_before_writing() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .replies_to_family_probe("Welcome\nssh-copy-id-probe:/bin/bash/\n"),
+        );
+        assert_eq!(run.status, 1);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe", "family"]);
+        assert!(run.err.ends_with(UNDETECTED), "{}", run.err);
+        removed_only_the_scratch_directory(&run);
+    }
+
+    #[test]
+    fn a65_a_failed_connection_stops_before_writing_without_suggesting_target_os() {
+        let mut ssh = FakeSsh::new().probe(255, DENIED);
+        ssh.family = Some(output(255, "", ""));
+        let run = execute(ssh);
+        assert_eq!(run.status, 1);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe", "family"]);
+        assert!(
+            run.err.ends_with(
+                "ssh-copy-id: ERROR: ssh exited with status 255 before the shell family \
+                 was detected; nothing was written\n"
+            ),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn a66_a_detected_windows_destination_stops_before_writing() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .replies_to_family_probe("ssh-copy-id-probe:Windows_NT:$0/$home\r\n"),
+        );
+        assert_eq!(run.status, 1);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe", "family"]);
+        assert!(
+            run.err.ends_with(
+                "ssh-copy-id: ERROR: Windows destinations are not available in this release\n"
+            ),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn a67_a_unix_target_os_writes_without_detecting() {
+        let unix = Invocation {
+            target_os: Some(ShellFamily::UnixLike),
+            ..invocation()
+        };
+        let run = execute_with(&unix, files(), true, false, installs_and_verifies());
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(
+            run.ssh.kinds(),
+            ["version", "config", "probe", "install", "probe"]
+        );
+    }
+
+    #[test]
+    fn a68_force_detects_the_shell_family_before_writing() {
+        let run = execute_with(
+            &forced(invocation()),
+            files(),
+            true,
+            false,
+            FakeSsh::new().replies_to_family_probe("nothing\n"),
+        );
+        assert_eq!(run.status, 1);
+        assert_eq!(run.ssh.kinds(), ["family"]);
+        assert!(run.err.ends_with(UNDETECTED), "{}", run.err);
+    }
+
+    #[test]
+    fn a69_an_interrupt_during_detection_stops_before_writing() {
+        let mut ssh = FakeSsh::new().probe(255, DENIED);
+        ssh.interrupt_during = Some(3);
+        let run = execute(ssh);
+        assert_eq!(run.status, 1);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe", "family"]);
+        assert!(
+            run.err
+                .ends_with("ssh-copy-id: ERROR: interrupted; nothing was written\n"),
+            "{}",
+            run.err
+        );
+    }
+
     #[test]
     fn a01_installed_key_is_skipped_without_writing() {
         let run = execute(FakeSsh::new().probe(0, ACCEPTED));
@@ -1387,7 +1554,7 @@ mod tests {
         assert_eq!(run.status, 0, "{}", run.err);
         assert_eq!(
             run.ssh.kinds(),
-            ["version", "config", "probe", "install", "probe"]
+            ["version", "config", "probe", "family", "install", "probe"]
         );
         let (args, stdin, capture_stderr) = run.ssh.call("install");
         assert_eq!(stdin, &format!("{KEY}\n").into_bytes());
@@ -1443,7 +1610,10 @@ mod tests {
                 .probe(0, ACCEPTED),
         );
         assert_eq!(run.status, 1);
-        assert_eq!(run.ssh.kinds(), ["version", "config", "probe", "install"]);
+        assert_eq!(
+            run.ssh.kinds(),
+            ["version", "config", "probe", "family", "install"]
+        );
         assert!(!run.err.contains("installed and verified"), "{}", run.err);
         assert!(
             run.err.ends_with(
@@ -1952,7 +2122,10 @@ mod tests {
             "{}",
             run.err
         );
-        assert_eq!(run.ssh.kinds(), ["version", "config", "probe", "install"]);
+        assert_eq!(
+            run.ssh.kinds(),
+            ["version", "config", "probe", "family", "install"]
+        );
         assert!(!run.out.contains("Number of key(s) added"), "{}", run.out);
     }
 
@@ -2094,10 +2267,13 @@ mod tests {
             .probe(255, DENIED)
             .installs(INSTALLED)
             .probe(0, ACCEPTED);
-        ssh.interrupt_during = Some(3);
+        ssh.interrupt_during = Some(4);
         let run = execute(ssh);
         assert_eq!(run.status, 1);
-        assert_eq!(run.ssh.kinds(), ["version", "config", "probe", "install"]);
+        assert_eq!(
+            run.ssh.kinds(),
+            ["version", "config", "probe", "family", "install"]
+        );
         assert!(run.out.contains("Number of key(s) added: 1"), "{}", run.out);
         assert!(
             run.err.ends_with("ssh-copy-id: ERROR: interrupted\n"),
@@ -2113,7 +2289,7 @@ mod tests {
             .probe(255, DENIED)
             .installs(INSTALLED)
             .probe(0, ACCEPTED);
-        ssh.interrupt_during = Some(4);
+        ssh.interrupt_during = Some(5);
         let run = execute(ssh);
         assert_eq!(run.status, 1);
         assert!(run.out.contains("Number of key(s) added: 1"), "{}", run.out);
@@ -2141,7 +2317,7 @@ mod tests {
             FakeSsh::new().installs(INSTALLED),
         );
         assert_eq!(run.status, 0, "{}", run.err);
-        assert_eq!(run.ssh.kinds(), ["version", "config", "install"]);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "family", "install"]);
         let reason = "the key is a certificate, which authorized_keys does not authenticate";
         assert!(
             run.err.contains(&format!(
@@ -2579,8 +2755,8 @@ mod tests {
         assert_eq!(
             run.ssh.kinds(),
             [
-                "agent", "version", "config", "config", "probe", "probe", "install", "probe",
-                "probe"
+                "agent", "version", "config", "config", "probe", "probe", "family", "install",
+                "probe", "probe"
             ]
         );
         assert!(run.err.starts_with(AGENT_SOURCE), "{}", run.err);
@@ -2912,7 +3088,7 @@ mod tests {
             FakeSsh::new().installs(INSTALLED),
         );
         assert_eq!(run.status, 0, "{}", run.err);
-        assert_eq!(run.ssh.kinds(), ["install"]);
+        assert_eq!(run.ssh.kinds(), ["family", "install"]);
         assert_eq!(run.err, source_line(Path::new("C:/k/id.pub")));
         assert_eq!(run.out, summary_naming("ssh -i C:/k/id 'u@h'", 1));
     }
@@ -2951,7 +3127,7 @@ mod tests {
             FakeSsh::new().installs(INSTALLED),
         );
         assert_eq!(run.status, 0, "{}", run.err);
-        assert_eq!(run.ssh.kinds(), ["install"]);
+        assert_eq!(run.ssh.kinds(), ["family", "install"]);
         let (_, stdin, _) = run.ssh.call("install");
         assert_eq!(stdin, &format!("{KEY}\n").into_bytes());
         assert_eq!(run.err, source_line(Path::new("C:/k/id.pub")));
@@ -2970,7 +3146,7 @@ mod tests {
             FakeSsh::new().installs(INSTALLED),
         );
         assert_eq!(run.status, 0, "{}", run.err);
-        assert_eq!(run.ssh.kinds(), ["install"]);
+        assert_eq!(run.ssh.kinds(), ["family", "install"]);
     }
 
     #[test]
@@ -3054,7 +3230,7 @@ mod tests {
             with_default_key_listing(two_agent_keys(FakeSsh::new().installs(INSTALLED_TWO))),
         );
         assert_eq!(run.status, 0, "{}", run.err);
-        assert_eq!(run.ssh.kinds(), ["agent", "install"]);
+        assert_eq!(run.ssh.kinds(), ["agent", "family", "install"]);
         let (_, stdin, _) = run.ssh.call("install");
         assert_eq!(stdin, &format!("{KEY}\n{KEY2}\n").into_bytes());
         assert_eq!(run.err, AGENT_SOURCE);
@@ -3091,7 +3267,7 @@ mod tests {
             with_default_key_listing(FakeSsh::new().installs(INSTALLED)),
         );
         assert_eq!(run.status, 0, "{}", run.err);
-        assert_eq!(run.ssh.kinds(), ["agent", "install"]);
+        assert_eq!(run.ssh.kinds(), ["agent", "family", "install"]);
         assert_eq!(run.out, summary_naming("ssh 'u@h'", 1));
     }
 
@@ -3110,7 +3286,7 @@ mod tests {
             FakeSsh::new().installs(INSTALLED),
         );
         assert_eq!(run.status, 0, "{}", run.err);
-        assert_eq!(run.ssh.kinds(), ["install"]);
+        assert_eq!(run.ssh.kinds(), ["family", "install"]);
         assert!(!run.err.contains("WARNING"), "{}", run.err);
     }
 
@@ -3136,7 +3312,7 @@ mod tests {
     #[test]
     fn d10_force_reports_an_interrupt_during_the_installation_after_the_summary() {
         let mut ssh = FakeSsh::new().installs(INSTALLED);
-        ssh.interrupt_during = Some(0);
+        ssh.interrupt_during = Some(1);
         let run = execute_with(&forced(invocation()), files(), true, false, ssh);
         assert_eq!(run.status, 1);
         assert!(run.out.contains("Number of key(s) added: 1"), "{}", run.out);
@@ -3399,7 +3575,7 @@ mod tests {
             FakeSsh::new().installs(TARGET_REPORT),
         );
         assert_eq!(run.status, 0, "{}", run.err);
-        assert_eq!(run.ssh.kinds(), ["install"]);
+        assert_eq!(run.ssh.kinds(), ["family", "install"]);
         let (_, stdin, _) = run.ssh.call("install");
         assert_eq!(
             stdin,
@@ -3574,13 +3750,13 @@ mod tests {
         assert_traced_as_plain_plus_one_line_per_call(&plain, &traced);
         assert_eq!(
             trace_lines(&traced.err).len(),
-            5,
-            "version, config, check, install, verify: {}",
+            6,
+            "version, config, check, family, install, verify: {}",
             traced.err
         );
         let lines: Vec<&str> = traced.err.lines().collect();
-        let install = traced_calls(&traced.ssh)[3].clone();
-        let at = lines.iter().position(|line| *line == install).unwrap();
+        let family = traced_calls(&traced.ssh)[3].clone();
+        let at = lines.iter().position(|line| *line == family).unwrap();
         assert!(
             lines[at - 1].contains("key(s) remain to be installed"),
             "{}",
@@ -3686,7 +3862,7 @@ mod tests {
             ssh,
         );
         assert_traced_as_plain_plus_one_line_per_call(&plain, &traced);
-        assert_eq!(trace_lines(&traced.err).len(), 9);
+        assert_eq!(trace_lines(&traced.err).len(), 10);
         assert_eq!(trace_lines(&traced.err)[0], "+ ssh-add -L");
     }
 }

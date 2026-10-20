@@ -724,6 +724,11 @@ inside WSL, served by an sshd running there, is a Unix-like destination. A
 Windows sshd whose default shell starts WSL reads the Windows account's key
 file, and the probe stops the run there: `wsl.exe` does not run the command,
 and `bash.exe` passes the shell's path in `$0` (validation row W10).
+Detection runs once, just before the first write, so `-n` never sends the
+probe and `-f` does. The probe's standard error reaches the user as the
+installation's does. When `ssh` exits with status 255 without the line, as after a failed
+connection or login, its own message appears and the run stops naming that
+status, without suggesting `--target-os`.
 `--target-os unix|windows` overrides detection. `-s` cannot run the probe and
 assumes a Unix-like destination unless `--target-os` says otherwise. Apparent intent of upstream, which sends
 its `sh` script without checking: destinations run a POSIX shell. Reason to

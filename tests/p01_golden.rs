@@ -249,7 +249,7 @@ fn n07_text_without_run_specific_parts_is_unchanged() {
     assert_eq!(normalize(text, &substitutions()), text);
 }
 
-const D19_LINE: &str = "ssh-copy-id: ERROR: ssh exited with status 255 before the installation script reported anything; if authentication failed, nothing was written\n";
+const D12_LINE: &str = "ssh-copy-id: ERROR: ssh exited with status 255 before the shell family was detected; nothing was written\n";
 const D06_LINE: &str = "ssh-copy-id: INFO: the key authenticates: it is installed and verified\n";
 const D13_LINE: &str = "ssh-copy-id: WARNING: OpenSSH_10.3p1, OpenSSL 3.6.3 9 Jun 2026 has not been tested with this release; output it cannot classify makes the installed-key check inconclusive\n";
 
@@ -265,7 +265,7 @@ fn outcome(stdout: &str, stderr: &str) -> Outcome {
 
 #[test]
 fn n08_an_expected_difference_is_removed() {
-    let reconciled = without_expected(&format!("a\n{D19_LINE}"), 7, Field::Stderr, Tool::Cli);
+    let reconciled = without_expected(&format!("a\n{D12_LINE}"), 7, Field::Stderr, Tool::Cli);
     assert_eq!(reconciled.text, "a\n");
     assert!(reconciled.missing.is_empty(), "{:?}", reconciled.missing);
 }
@@ -273,7 +273,7 @@ fn n08_an_expected_difference_is_removed() {
 #[test]
 fn n09_a_required_difference_that_is_absent_is_named_by_its_tag() {
     let reconciled = without_expected("a\n", 7, Field::Stderr, Tool::Cli);
-    assert_eq!(reconciled.missing, ["D-19"]);
+    assert_eq!(reconciled.missing, ["D-12"]);
 }
 
 #[test]
@@ -788,12 +788,12 @@ const EXPECTED: [Expected; 26] = [
         always: true,
     },
     Expected {
-        tag: "D-19",
+        tag: "D-12",
         scenarios: &[7],
         field: Field::Stderr,
         tool: Tool::Cli,
         edit: Edit::Remove(
-            "ssh-copy-id: ERROR: ssh exited with status 255 before the installation script reported anything; if authentication failed, nothing was written\n",
+            "ssh-copy-id: ERROR: ssh exited with status 255 before the shell family was detected; nothing was written\n",
         ),
         always: true,
     },
