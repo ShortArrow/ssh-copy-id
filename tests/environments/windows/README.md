@@ -39,8 +39,10 @@ both account tests passed there too. On 2026-10-15 a copy of the
 `ssh-copy-id-win11-ps` disk ran on a second Linux host with nested KVM, with
 `VMX: "Y"` in a Compose override so that WSL 2 could start in the guest; the
 dockur image turns VMX off for Windows guests by default. WSL and Ubuntu 24.04
-were installed there for validation row W10. Key installation by the product and the
-broader ACL matrix remain pending. See the [validation matrix](../../../docs/validation.md)
+were installed there for validation row W10. On 2026-10-21 copies of all three
+disks ran there for the product's Windows tests, `tests/windows_destination.rs`
+(validation row U03), since the Docker Desktop VM on the first host no longer
+exposed KVM. The broader ACL matrix remains pending. See the [validation matrix](../../../docs/validation.md)
 for scope and findings.
 
 ## Start a Fixture

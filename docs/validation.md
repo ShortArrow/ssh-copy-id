@@ -35,6 +35,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W10 | A Windows sshd whose default shell starts WSL, and an sshd inside WSL | Passed | [Probe outputs and key files](#wsl-default-shell-and-sshd-inside-wsl-w10-2026-10-15): with `wsl.exe` or `bash.exe` as the default shell the probe stops the run, and a key in the WSL home does not authenticate; an sshd inside WSL answers as a Unix-like shell and reads the WSL home. |
 | U01 | Stage 1: CLI installs one key on a Unix-like destination; requirements 1, 2, 3, 7, and 8 | Passed | [Stage 1 run](#stage-1-on-a-unix-like-destination-2026-10-01): 19 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, also run in CI. |
 | U02 | Stage 1.5: `-n`, `-f`, `-t`, `-i` without a file, default key selection, agent keys, and `-x` on a Unix-like destination; requirements 4 and 5 | Passed | [Stage 1.5 run](#fixture-tests-u02): 35 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, except i22 with Windows OpenSSH, whose agent A02 covers; also run in CI. |
+| U03 | Stage 2: CLI installs one key for a standard Windows user; requirements 1, 2, 3, 7, and 8 under `cmd.exe`, Windows PowerShell, and `pwsh` default shells | Passed | [Stage 2 run](#stage-2-on-a-windows-destination-2026-10-21): 7 tests of [windows_destination.rs](../tests/windows_destination.rs) under each default shell, also the administrator stop. |
 | K01 | Line endings and encoding sshd accepts in authorized_keys (line endings, D-07) | Passed | 2026-10-09, checked by logging in with the key: a key line ending in CR authenticates, with or without a comment, on OpenSSH 9.6p1 (L02 image), [OpenSSH 7.6p1, Dropbear 2022.82, 2024.86 and 2025.89, and Windows OpenSSH 9.5p2](#key-line-endings-k01). A line starting with a UTF-8 BOM is rejected on all of them, except that Windows OpenSSH accepts one at the start of the file. |
 | A01 | Password and passphrase prompts with public keys on stdin, cancellation, no terminal, agent confirmation | Passed | [Prompt experiment](../tests/prototypes/ssh-prompt/README.md): prompts and cancellation pass with both tested Windows clients; no-terminal behavior differs by client; the Windows agent refuses keys with confirmation. [Through the CLI](#authentication-prompts-through-the-cli-a01), with `ssh`'s streams on files, prompts and Ctrl-C pass with both clients and a run without a console fails at once. |
 | C01 | Windows client run without a console, from an sshd session | Passed | In the dockur Windows 11 guest's sshd session, Windows OpenSSH 9.5p2 hung on `ssh -G` with stderr on a pipe and on the installation with stdin and stdout on pipes; with every stream on a file, the run appends and verifies the key, and a second run skips it. The same run passes in the desktop session (A02). |
@@ -381,6 +382,43 @@ o2 found the blank line; o5 found `the key was not written to
 image rebuilt with a static BusyBox 1.37.0 from `busybox:1.37.0-musl` copied to
 `/usr/bin/od`, all five passed on Windows. o4 passes without `od` because no
 other writer touched the file. smoke.sh passed on Windows and WSL.
+
+## Stage 2 on a Windows Destination: 2026-10-21
+
+Host: Windows 11 Pro 26300, `OpenSSH_for_Windows_9.5p2` first on `PATH` for the
+CLI. Since 2026-10-16 the Docker Desktop WSL 2 VM on this host has started
+without nested virtualization (`Hyper-V: Nested features: 0x0`, no `/dev/kvm`),
+also after `wsl --shutdown`, so the guests ran on the second Linux host used for
+W10, one at a time: copies of the `ssh-copy-id-win11` (`cmd.exe`),
+`ssh-copy-id-win11-ps` (Windows PowerShell), and `ssh-copy-id-win11-pwsh`
+(`pwsh` 7.6.7) disks under the pinned dockur image with `VMX: "Y"`, ports on
+that host's loopback and reached through an SSH tunnel. Guest: Windows 11
+Enterprise Evaluation `26200.6584`, OpenSSH `9.5.5.1`. The `cmd.exe` copy got a
+new administrator control key through `Install-ControlKey.ps1`. Command from the
+repository root, with the variables naming the guest:
+
+```powershell
+cargo test --test windows_destination -- --ignored --test-threads=1
+```
+
+| Default shell | Result |
+| --- | --- |
+| `cmd.exe` | 7 passed |
+| Windows PowerShell | 7 passed |
+| `pwsh` 7.6.7 | 7 passed |
+
+Each test starts from `fixtureuser`'s profile without `.ssh` and runs the CLI
+with a temporary `USERPROFILE`, its own known-hosts file, no agent, and an
+`IdentityFile`, since Windows OpenSSH takes `~` from the account's profile
+rather than from `USERPROFILE`. v01 logs in with the installed key and sees the
+verification line; v02 an empty file and a file without a final newline; v03 a
+second run that skips the key and a second key that is added; v04 a file whose
+ACL denies `fixtureuser` writing, which stays byte-identical with exit 1; v05 a
+key path with a space, Japanese, and `'`, and a comment with `"`, `%OS%`, and
+`$home`, which logs in; v06 a wrong password and a host key mismatch, which
+leave no file; v07 `fixtureadmin`, whose shared key file stays unchanged with
+exit 1. Afterwards each guest was stopped; the last one is kept on that host
+with its volume.
 
 ## Stage 1.5 on a Unix-like Destination: 2026-10-11
 
