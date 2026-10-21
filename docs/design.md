@@ -749,6 +749,34 @@ Under `cmd.exe` sshd runs `cmd.exe /c "<command>"`, and under Windows PowerShell
 it runs `powershell.exe -c "<command>"`, where `$`, `;`, and quotes in a plain
 command would be interpreted (destination difference O-03).
 
+### Windows Installation Script
+
+The encoded script appends the key lines as the `sh` script does and prints the
+same result lines, so the CLI reads both outcomes alike. It writes to
+`.ssh\authorized_keys` under the profile directory, `$HOME`, and reports it as
+`path=.ssh/authorized_keys`. A missing directory or file is created without
+setting an ACL, so it keeps the one it inherits (O-02).
+
+The script reads its standard input as bytes, through
+`[Console]::OpenStandardInput()`, and never through PowerShell's input
+encoding, which follows the console code page and would alter a comment in
+Japanese. Lines, comment and blank lines, the newline added after a last line
+without one, the groups of lines, and the failed results are as in the `sh`
+script. After a failed write it compares the bytes past the group's starting
+size with the bytes it tried to write and, when they are a prefix of them,
+sets the file's length back; otherwise it reports `uncertain` (D-17).
+The command stays within the 8191 characters that `cmd.exe` accepts. An
+unexpected error ends the script with one `ssh-copy-id: ERROR:` line on its
+standard error and no summary line; left to Windows PowerShell, the error
+would reach a standard error that is not a console as CLIXML.
+
+An account whose token holds the Administrators group, SID `S-1-5-32-544`,
+writes nothing in this release: the script says on its standard error that the
+shared administrator file is not supported yet and reports every key `failed`
+with the path of `administrators_authorized_keys` under `$env:ProgramData\ssh`.
+On a Windows destination, `-t` stops the run before writing, and `-x` traces
+the client's commands but not the script.
+
 ## Windows Permissions and Services
 
 ### Windows Administrator Scope
