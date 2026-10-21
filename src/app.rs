@@ -10,6 +10,7 @@ use crate::remote_script::{TargetPath, install_command, install_input, sh_quote}
 use crate::result_line::{Outcome, parse_report};
 use crate::shell_family::{self, PROBE_COMMAND, ShellFamily};
 use crate::trace::command_line;
+use crate::windows_script::windows_install_command;
 use std::cell::RefCell;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -18,7 +19,8 @@ use std::path::{Path, PathBuf};
 pub const TARGET: &str = ".ssh/authorized_keys";
 
 const NOTHING_WRITTEN: &str = "interrupted; nothing was written";
-const WINDOWS_NOT_AVAILABLE: &str = "Windows destinations are not available in this release";
+const WINDOWS_TARGET: &str =
+    "-t is not available for Windows destinations in this release; nothing was written";
 const UNDETECTED_FAMILY: &str = "could not tell the destination's shell family, so nothing was written; \
      name it with --target-os unix|windows";
 const UNCONNECTED_FAMILY: &str =
@@ -309,9 +311,6 @@ fn install(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), Stop> {
-    if invocation.target_os == Some(ShellFamily::Windows) {
-        return Err(Stop::Error(WINDOWS_NOT_AVAILABLE.to_string()));
-    }
     let target = match &invocation.target {
         Some(path) => Some(TargetPath::new(path).ok_or(MULTI_LINE_TARGET.to_string())?),
         None => None,
@@ -495,14 +494,18 @@ fn write_keys(
     text: &[u8],
     sent: usize,
 ) -> Result<Written, Stop> {
-    if detect_family(ssh, invocation, env, install.common)? == ShellFamily::Windows {
-        return stop(WINDOWS_NOT_AVAILABLE);
-    }
+    let (command, input) = match detect_family(ssh, invocation, env, install.common)? {
+        ShellFamily::UnixLike => (
+            install_command(install.target, invocation.trace),
+            install_input(install.target, text),
+        ),
+        ShellFamily::Windows if install.target.is_some() => return stop(WINDOWS_TARGET),
+        ShellFamily::Windows => (windows_install_command(), text.to_vec()),
+    };
     let mut install_args = vec!["-o".to_string(), "RequestTTY=no".to_string()];
     install_args.extend(install.common.iter().cloned());
     install_args.push(invocation.destination.clone());
-    install_args.push(install_command(install.target, invocation.trace));
-    let input = install_input(install.target, text);
+    install_args.push(command);
     let installed = run_ssh(ssh, &install_args, &input, false)?;
     if installed.status == Some(255) && !has_report_line(&installed.stdout) {
         return stop(
@@ -1391,19 +1394,45 @@ mod tests {
         execute_with(&invocation(), files(), true, false, ssh)
     }
 
-    #[test]
-    fn a61_a_windows_target_os_stops_before_running_ssh() {
-        let windows = Invocation {
+    fn windows(invocation: Invocation) -> Invocation {
+        Invocation {
             target_os: Some(ShellFamily::Windows),
-            ..invocation()
-        };
-        let run = execute_with(&windows, files(), true, false, FakeSsh::new());
-        assert_eq!(run.status, 1);
-        assert!(run.ssh.kinds().is_empty(), "{:?}", run.ssh.kinds());
+            ..invocation
+        }
+    }
+
+    fn assert_installed_with_the_windows_command(run: &Run) {
+        let (args, stdin, capture_stderr) = run.ssh.call("install");
         assert_eq!(
-            run.err,
-            "ssh-copy-id: ERROR: Windows destinations are not available in this release\n"
+            args,
+            &[
+                "-o",
+                "RequestTTY=no",
+                "-a",
+                "-x",
+                "u@h",
+                &windows_install_command()
+            ]
         );
+        assert_eq!(stdin, format!("{KEY}\n").as_bytes());
+        assert!(!capture_stderr);
+    }
+
+    #[test]
+    fn a61_a_windows_target_os_installs_with_the_windows_command() {
+        let run = execute_with(
+            &windows(invocation()),
+            files(),
+            true,
+            false,
+            installs_and_verifies(),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(
+            run.ssh.kinds(),
+            ["version", "config", "probe", "install", "probe"]
+        );
+        assert_installed_with_the_windows_command(&run);
     }
 
     #[test]
@@ -1475,21 +1504,51 @@ mod tests {
     }
 
     #[test]
-    fn a66_a_detected_windows_destination_stops_before_writing() {
+    fn a66_a_detected_windows_destination_gets_the_windows_command() {
         let run = execute(
-            FakeSsh::new()
-                .probe(255, DENIED)
+            installs_and_verifies()
                 .replies_to_family_probe("ssh-copy-id-probe:Windows_NT:$0/$home\r\n"),
         );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_eq!(
+            run.ssh.kinds(),
+            ["version", "config", "probe", "family", "install", "probe"]
+        );
+        assert_installed_with_the_windows_command(&run);
+    }
+
+    #[test]
+    fn a70_a_target_path_on_a_windows_destination_stops_before_writing() {
+        let run = execute_with(
+            &targeting("keys", windows(invocation())),
+            files(),
+            true,
+            false,
+            FakeSsh::new().probe(255, DENIED),
+        );
         assert_eq!(run.status, 1);
-        assert_eq!(run.ssh.kinds(), ["version", "config", "probe", "family"]);
+        assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
         assert!(
             run.err.ends_with(
-                "ssh-copy-id: ERROR: Windows destinations are not available in this release\n"
+                "ssh-copy-id: ERROR: -t is not available for Windows destinations \
+                 in this release; nothing was written\n"
             ),
             "{}",
             run.err
         );
+    }
+
+    #[test]
+    fn a71_trace_leaves_the_windows_command_unchanged() {
+        let run = execute_with(
+            &traced(windows(invocation())),
+            files(),
+            true,
+            false,
+            installs_and_verifies(),
+        );
+        assert_eq!(run.status, 0, "{}", run.err);
+        assert_installed_with_the_windows_command(&run);
     }
 
     #[test]

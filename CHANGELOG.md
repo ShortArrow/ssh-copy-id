@@ -8,6 +8,29 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+### Added
+
+- Keys are installed for a standard Windows user, in `.ssh\authorized_keys`
+  under the profile, through a Windows PowerShell script sent as one
+  `-EncodedCommand` line that `cmd.exe`, Windows PowerShell and `pwsh` default
+  shells pass alike (O-03). New directories and files keep the ACL they inherit
+  (O-02). Comment lines, the added newline, the rollback of a failed write and
+  the reported outcome are as on a Unix-like host (D-17). An account in the
+  Administrators group, whose keys go to the shared
+  `administrators_authorized_keys`, gets nothing written yet, and `-t` on a
+  Windows destination stops before writing.
+- `--target-os unix|windows` names the destination's shell family instead of
+  detecting it (D-12).
+
+### Changed
+
+- Before the first write, one more connection runs a probe that tells a
+  Unix-like shell from a Windows one (D-12). A reply that shows neither stops
+  the run without writing and suggests `--target-os`; a probe that ends with
+  status 255, as after a wrong password, stops naming that status. A
+  destination that asks for a password asks once more. `-n` and a run whose
+  keys are all installed make no such connection.
+
 ## [0.0.2] - 2026-10-12
 
 ### Added
