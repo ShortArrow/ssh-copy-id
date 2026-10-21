@@ -18,7 +18,7 @@ const USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-x] [-i [identity_file]] [-
 \t-F, -o: passed to ssh unchanged
 \t--target-os: the destination's OS, instead of detecting it
 \t-h|-?: print this help
-This release installs keys on a Unix-like host.
+This release installs keys on a Unix-like host or for a standard Windows user.
 -s is not available yet.";
 
 fn main() -> ExitCode {
@@ -257,6 +257,16 @@ mod tests {
         assert!(
             USAGE.contains(
                 "\n\t-t: the remote file to add the keys to, relative to the home directory\n"
+            ),
+            "{USAGE}"
+        );
+    }
+
+    #[test]
+    fn m19_the_usage_names_the_destinations_this_release_writes_to() {
+        assert!(
+            USAGE.contains(
+                "\nThis release installs keys on a Unix-like host or for a standard Windows user.\n"
             ),
             "{USAGE}"
         );

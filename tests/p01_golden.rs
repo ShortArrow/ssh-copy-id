@@ -645,7 +645,7 @@ const CLI_USAGE: &str = "Usage: ssh-copy-id [-h|-?|-f|-n|-x] [-i [identity_file]
 \t-F, -o: passed to ssh unchanged
 \t--target-os: the destination's OS, instead of detecting it
 \t-h|-?: print this help
-This release installs keys on a Unix-like host.
+This release installs keys on a Unix-like host or for a standard Windows user.
 -s is not available yet.
 ";
 
