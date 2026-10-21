@@ -1,0 +1,423 @@
+//! Behavior against a dockur Windows guest: requirements 1, 2, 3, 7, and 8 for a
+//! standard user, and the administrator stop of stage 2. Every run of the CLI
+//! uses a temporary `USERPROFILE`, the Windows OpenSSH client first on `PATH`,
+//! its own known-hosts file, no agent, and an `IdentityFile`, so that `ssh`
+//! reads none of the local account's keys.
+//!
+//! The guest is one of the fixtures in `tests/environments/windows`, with
+//! `fixtureuser` signed in once and an administrator control key installed.
+//! Name it with environment variables and run the tests serially:
+//!
+//! ```text
+//! $env:SSH_COPY_ID_WINDOWS_PORT = '22223'
+//! $env:SSH_COPY_ID_WINDOWS_KNOWN_HOSTS = 'work/windows-fixture-ps/known_hosts'
+//! $env:SSH_COPY_ID_WINDOWS_CONTROL_KEY = 'work/windows-fixture-ps/smoke_key'
+//! cargo test --test windows_destination -- --ignored --test-threads=1
+//! ```
+#![cfg(windows)]
+
+mod common;
+
+use common::{public_entry, text, wait_with_deadline};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+const COPY_ID_TIMEOUT: Duration = Duration::from_secs(120);
+const PASSWORD: &str = "Fixture-Only_47!";
+const USER_KEYS: &str = r"C:\Users\fixtureuser\.ssh\authorized_keys";
+const ADMIN_KEYS: &str = r"C:\ProgramData\ssh\administrators_authorized_keys";
+
+static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+fn openssh(program: &str) -> PathBuf {
+    PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+        .join(r"System32\OpenSSH")
+        .join(program)
+}
+
+/// The guest named by the environment, with a fresh local work directory and
+/// `fixtureuser`'s `.ssh` removed, so that each test starts from a profile
+/// without key files.
+struct Guest {
+    port: String,
+    known_hosts: PathBuf,
+    control_key: PathBuf,
+    work: PathBuf,
+}
+
+impl Guest {
+    fn start() -> Guest {
+        let variable = |name: &str| {
+            std::env::var(name).unwrap_or_else(|_| panic!("{name} names the Windows fixture"))
+        };
+        let work = std::env::temp_dir().join(format!(
+            "ssh-copy-id-windows-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        fs::create_dir_all(work.join("home").join(".ssh")).unwrap();
+        let guest = Guest {
+            port: variable("SSH_COPY_ID_WINDOWS_PORT"),
+            known_hosts: std::path::absolute(variable("SSH_COPY_ID_WINDOWS_KNOWN_HOSTS")).unwrap(),
+            control_key: std::path::absolute(variable("SSH_COPY_ID_WINDOWS_CONTROL_KEY")).unwrap(),
+            work,
+        };
+        guest.admin(
+            "if(Test-Path C:\\Users\\fixtureuser\\.ssh){icacls C:\\Users\\fixtureuser\\.ssh /reset /t /q|Out-Null;\
+             Remove-Item -Recurse -Force C:\\Users\\fixtureuser\\.ssh};'ok'",
+        );
+        guest
+    }
+
+    /// Runs a Windows PowerShell script as `fixtureadmin` through the control
+    /// key, whatever the default shell, and returns its stdout.
+    fn admin(&self, script: &str) -> String {
+        let output = Command::new(openssh("ssh.exe"))
+            .args(["-F", "none", "-i"])
+            .arg(&self.control_key)
+            .args(self.connection_options())
+            .args(["-o", "BatchMode=yes", "fixtureadmin@127.0.0.1"])
+            .arg(format!(
+                "powershell.exe -NoProfile -NonInteractive -EncodedCommand {}",
+                encoded(&format!("$ErrorActionPreference='Stop';{script}"))
+            ))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "the control connection failed: {}",
+            text(&output.stderr)
+        );
+        text(&output.stdout)
+    }
+
+    fn connection_options(&self) -> Vec<String> {
+        self.connection_options_trusting(&self.known_hosts)
+    }
+
+    fn connection_options_trusting(&self, known_hosts: &Path) -> Vec<String> {
+        vec![
+            "-p".into(),
+            self.port.clone(),
+            "-o".into(),
+            format!("UserKnownHostsFile={}", known_hosts.display()),
+            "-o".into(),
+            "StrictHostKeyChecking=yes".into(),
+            "-o".into(),
+            "IdentityAgent=none".into(),
+            "-o".into(),
+            "IdentitiesOnly=yes".into(),
+            "-o".into(),
+            "ConnectTimeout=10".into(),
+        ]
+    }
+
+    /// The bytes of a guest file, or `None` when it does not exist.
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        let reply = self.admin(&format!(
+            "if(Test-Path -LiteralPath '{path}'){{[Convert]::ToBase64String([IO.File]::ReadAllBytes('{path}'))}}else{{'-'}}"
+        ));
+        match reply.trim() {
+            "-" => None,
+            encoded => Some(decoded(encoded)),
+        }
+    }
+
+    fn user_keys(&self) -> Option<String> {
+        self.read(USER_KEYS)
+            .map(|bytes| String::from_utf8(bytes).unwrap())
+    }
+
+    /// Creates `fixtureuser`'s key file with `contents`, owned by that account.
+    fn write_user_keys(&self, contents: &str) {
+        self.admin(&format!(
+            "$null=New-Item -ItemType Directory -Force C:\\Users\\fixtureuser\\.ssh;\
+             [IO.File]::WriteAllBytes('{USER_KEYS}',[Convert]::FromBase64String('{}'));\
+             icacls C:\\Users\\fixtureuser\\.ssh /setowner fixtureuser /t /q|Out-Null;'ok'",
+            base64(contents.as_bytes())
+        ));
+    }
+
+    fn key(&self, name: &str, comment: &str) -> PathBuf {
+        let path = self.work.join(name);
+        let made = Command::new(openssh("ssh-keygen.exe"))
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", comment, "-f"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "ssh-keygen: {}", text(&made.stderr));
+        path
+    }
+
+    fn askpass(&self, password: &str) -> PathBuf {
+        let path = self.work.join(format!(
+            "askpass-{}.cmd",
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        fs::write(&path, format!("@echo {password}\r\n")).unwrap();
+        path
+    }
+
+    fn copy_id(&self, key: &Path, user: &str) -> Output {
+        self.copy_id_answering(PASSWORD, key, user, &self.known_hosts)
+    }
+
+    /// Runs the CLI for `user` with an askpass program answering `password`,
+    /// trusting the host keys in `known_hosts`.
+    fn copy_id_answering(
+        &self,
+        password: &str,
+        key: &Path,
+        user: &str,
+        known_hosts: &Path,
+    ) -> Output {
+        let mut path =
+            std::env::split_paths(&std::env::var_os("PATH").unwrap()).collect::<Vec<_>>();
+        path.insert(0, openssh(""));
+        let child = Command::new(env!("CARGO_BIN_EXE_ssh-copy-id"))
+            .arg("-i")
+            .arg(key)
+            .args(["-F", "none"])
+            .args(self.connection_options_trusting(known_hosts))
+            .arg("-o")
+            .arg(format!("IdentityFile=\"{}\"", key.display()))
+            .arg(format!("{user}@127.0.0.1"))
+            .env("USERPROFILE", self.work.join("home"))
+            .env("PATH", std::env::join_paths(path).unwrap())
+            .env("SSH_ASKPASS", self.askpass(password))
+            .env("SSH_ASKPASS_REQUIRE", "force")
+            .env_remove("SSH_AUTH_SOCK")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = wait_with_deadline(child, COPY_ID_TIMEOUT);
+        let left: Vec<_> = fs::read_dir(self.work.join("home"))
+            .unwrap()
+            .flatten()
+            .flat_map(|entry| fs::read_dir(entry.path()).into_iter().flatten().flatten())
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(left.is_empty(), "scratch entries left: {left:?}");
+        output
+    }
+
+    fn logs_in_with(&self, key: &Path, user: &str) -> bool {
+        Command::new(openssh("ssh.exe"))
+            .args(["-F", "none", "-i"])
+            .arg(key)
+            .args(self.connection_options())
+            .args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "PreferredAuthentications=publickey",
+            ])
+            .arg(format!("{user}@127.0.0.1"))
+            .arg("exit")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
+}
+
+impl Drop for Guest {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.work);
+    }
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let bits = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, &b)| acc | (u32::from(b) << (16 - 8 * i)));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() {
+                char::from(DIGITS[(bits >> (18 - 6 * i)) as usize & 63])
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
+fn decoded(text: &str) -> Vec<u8> {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => c - b'A',
+        b'a'..=b'z' => c - b'a' + 26,
+        b'0'..=b'9' => c - b'0' + 52,
+        b'+' => 62,
+        _ => 63,
+    };
+    let mut bytes = Vec::new();
+    for chunk in text.as_bytes().chunks(4) {
+        let digits: Vec<u8> = chunk
+            .iter()
+            .filter(|&&c| c != b'=')
+            .map(|&c| value(c))
+            .collect();
+        let bits = digits
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, &d)| acc | (u32::from(d) << (18 - 6 * i)));
+        bytes.extend((0..digits.len() * 6 / 8).map(|i| (bits >> (16 - 8 * i)) as u8));
+    }
+    bytes
+}
+
+fn encoded(script: &str) -> String {
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64(&bytes)
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v01_requirement_2_installs_into_a_missing_file_and_the_key_logs_in() {
+    let guest = Guest::start();
+    let key = guest.key("new", "new@test");
+    let run = guest.copy_id(&key, "fixtureuser");
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert!(text(&run.stdout).contains("Number of key(s) added: 1"));
+    assert!(
+        text(&run.stderr).contains("the key authenticates: it is installed and verified"),
+        "{}",
+        text(&run.stderr)
+    );
+    assert_eq!(guest.user_keys().unwrap(), public_entry(&key));
+    assert!(guest.logs_in_with(&key, "fixtureuser"));
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v02_requirement_2_an_empty_file_and_a_file_without_a_final_newline() {
+    let guest = Guest::start();
+    guest.write_user_keys("");
+    let first = guest.key("first", "first@test");
+    let run = guest.copy_id(&first, "fixtureuser");
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert_eq!(guest.user_keys().unwrap(), public_entry(&first));
+
+    guest.write_user_keys("# existing");
+    let second = guest.key("second", "second@test");
+    let run = guest.copy_id(&second, "fixtureuser");
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert_eq!(
+        guest.user_keys().unwrap(),
+        format!("# existing\n{}", public_entry(&second))
+    );
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v03_requirement_1_a_second_run_adds_nothing_and_another_key_is_not_taken_as_it() {
+    let guest = Guest::start();
+    let first = guest.key("first", "first@test");
+    assert_eq!(guest.copy_id(&first, "fixtureuser").status.code(), Some(0));
+    let again = guest.copy_id(&first, "fixtureuser");
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    assert!(
+        text(&again.stderr).contains("All keys were skipped"),
+        "{}",
+        text(&again.stderr)
+    );
+    assert_eq!(guest.user_keys().unwrap(), public_entry(&first));
+
+    let second = guest.key("second", "second@test");
+    let run = guest.copy_id(&second, "fixtureuser");
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert_eq!(
+        guest.user_keys().unwrap(),
+        format!("{}{}", public_entry(&first), public_entry(&second))
+    );
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v04_requirement_3_an_unwritable_file_is_kept_and_reported() {
+    let guest = Guest::start();
+    guest.write_user_keys("# existing\n");
+    guest.admin(&format!(
+        "icacls '{USER_KEYS}' /deny 'fixtureuser:(W)' /q|Out-Null;'ok'"
+    ));
+    let key = guest.key("new", "new@test");
+    let run = guest.copy_id(&key, "fixtureuser");
+    assert_eq!(run.status.code(), Some(1), "{}", text(&run.stderr));
+    assert!(
+        text(&run.stderr).contains("the key was not written to .ssh/authorized_keys"),
+        "{}",
+        text(&run.stderr)
+    );
+    assert!(!text(&run.stdout).contains("Number of key(s) added"));
+    assert_eq!(guest.user_keys().unwrap(), "# existing\n");
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v05_requirement_7_comments_and_key_paths_with_spaces_japanese_and_quotes_are_data() {
+    let guest = Guest::start();
+    fs::create_dir_all(guest.work.join("鍵 'dir")).unwrap();
+    let key = guest.key("鍵 'dir\\new key", "it's \"鍵\" %OS% $home");
+    let run = guest.copy_id(&key, "fixtureuser");
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert_eq!(guest.user_keys().unwrap(), public_entry(&key));
+    assert!(guest.logs_in_with(&key, "fixtureuser"));
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v06_requirement_8_a_wrong_password_and_a_host_key_mismatch_write_nothing() {
+    let guest = Guest::start();
+    let key = guest.key("new", "new@test");
+    let wrong = guest.copy_id_answering("wrong-password", &key, "fixtureuser", &guest.known_hosts);
+    assert_eq!(wrong.status.code(), Some(1), "{}", text(&wrong.stderr));
+    assert!(!text(&wrong.stdout).contains("Number of key(s) added"));
+    assert_eq!(guest.user_keys(), None);
+
+    let other = guest.key("fake_host", "fake");
+    let mismatched = guest.work.join("known_hosts");
+    fs::write(
+        &mismatched,
+        format!(
+            "[127.0.0.1]:{} {}",
+            guest.port,
+            fs::read_to_string(other.with_extension("pub")).unwrap()
+        ),
+    )
+    .unwrap();
+    let run = guest.copy_id_answering(PASSWORD, &key, "fixtureuser", &mismatched);
+    assert_eq!(run.status.code(), Some(1), "{}", text(&run.stderr));
+    assert!(
+        text(&run.stderr).contains("Host key verification failed"),
+        "{}",
+        text(&run.stderr)
+    );
+    assert_eq!(guest.user_keys(), None);
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v07_an_administrator_gets_nothing_written_in_this_release() {
+    let guest = Guest::start();
+    let before = guest.read(ADMIN_KEYS);
+    let key = guest.key("new", "new@test");
+    let run = guest.copy_id(&key, "fixtureadmin");
+    assert_eq!(run.status.code(), Some(1), "{}", text(&run.stderr));
+    assert!(
+        text(&run.stderr).contains("administrators_authorized_keys is not supported"),
+        "{}",
+        text(&run.stderr)
+    );
+    assert_eq!(guest.read(ADMIN_KEYS), before);
+}
