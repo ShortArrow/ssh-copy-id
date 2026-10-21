@@ -11,3 +11,4 @@ pub mod result_line;
 pub mod shell_family;
 pub mod ssh_process;
 pub mod trace;
+pub mod windows_script;
