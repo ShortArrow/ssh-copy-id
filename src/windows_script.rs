@@ -99,20 +99,8 @@ fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::result_line::{KeyResult, KeyStatus, Outcome, Report, parse_report};
 
-    const KEY_A: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== a@here";
-    const KEY_B: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB== b@here";
-    const DEFAULT_PATH: &[u8] = b".ssh/authorized_keys";
     const PREFIX: &str = "powershell.exe -NoProfile -NonInteractive -EncodedCommand ";
-
-    fn key(index: usize, status: KeyStatus, path: &[u8]) -> KeyResult {
-        KeyResult {
-            index,
-            status,
-            path: path.to_vec(),
-        }
-    }
 
     fn decoded(text: &str) -> Vec<u8> {
         let value = |c: u8| match c {
@@ -203,12 +191,25 @@ mod tests {
     #[cfg(windows)]
     mod run {
         use super::*;
+        use crate::result_line::{KeyResult, KeyStatus, Outcome, Report, parse_report};
         use std::fs;
         use std::path::PathBuf;
         use std::process::{Command, Stdio};
         use std::sync::atomic::{AtomicUsize, Ordering};
 
+        const KEY_A: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA== a@here";
+        const KEY_B: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB== b@here";
+        const DEFAULT_PATH: &[u8] = b".ssh/authorized_keys";
+
         static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+        fn key(index: usize, status: KeyStatus, path: &[u8]) -> KeyResult {
+            KeyResult {
+                index,
+                status,
+                path: path.to_vec(),
+            }
+        }
 
         /// A temporary profile directory, removed when dropped.
         struct Profile(PathBuf);
