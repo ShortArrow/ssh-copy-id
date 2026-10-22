@@ -402,6 +402,21 @@ fn v05_requirement_7_comments_and_key_paths_with_spaces_japanese_and_quotes_are_
 
 #[test]
 #[ignore = "needs the dockur Windows fixture"]
+fn v10_a_key_line_past_the_size_where_sshd_withholds_the_end_of_input_installs() {
+    let guest = Guest::start();
+    let key = guest.key("long", &format!("long@{}", "c".repeat(5000)));
+    let run = guest.copy_id(&key, "fixtureuser");
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert!(
+        text(&run.stderr).contains("the key authenticates: it is installed and verified"),
+        "{}",
+        text(&run.stderr)
+    );
+    assert_eq!(guest.user_keys().unwrap(), public_entry(&key));
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
 fn v06_requirement_8_a_wrong_password_and_a_host_key_mismatch_write_nothing() {
     let guest = Guest::start();
     let key = guest.key("new", "new@test");
