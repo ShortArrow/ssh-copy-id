@@ -35,7 +35,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W10 | A Windows sshd whose default shell starts WSL, and an sshd inside WSL | Passed | [Probe outputs and key files](#wsl-default-shell-and-sshd-inside-wsl-w10-2026-10-15): with `wsl.exe` or `bash.exe` as the default shell the probe stops the run, and a key in the WSL home does not authenticate; an sshd inside WSL answers as a Unix-like shell and reads the WSL home. |
 | U01 | Stage 1: CLI installs one key on a Unix-like destination; requirements 1, 2, 3, 7, and 8 | Passed | [Stage 1 run](#stage-1-on-a-unix-like-destination-2026-10-01): 19 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, also run in CI. |
 | U02 | Stage 1.5: `-n`, `-f`, `-t`, `-i` without a file, default key selection, agent keys, and `-x` on a Unix-like destination; requirements 4 and 5 | Passed | [Stage 1.5 run](#fixture-tests-u02): 35 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, except i22 with Windows OpenSSH, whose agent A02 covers; also run in CI. |
-| U03 | Stage 2: CLI installs one key for a standard Windows user; requirements 1, 2, 3, 7, and 8 under `cmd.exe`, Windows PowerShell, and `pwsh` default shells | Passed | [Stage 2 run](#stage-2-on-a-windows-destination-2026-10-21): 7 tests of [windows_destination.rs](../tests/windows_destination.rs) under each default shell, also the administrator stop. |
+| U03 | Stage 2: CLI installs one key for a standard Windows user; requirements 1, 2, 3, 7, and 8 under `cmd.exe`, Windows PowerShell, and `pwsh` default shells | Passed | [Stage 2 run](#stage-2-on-a-windows-destination-2026-10-21): 7 tests of [windows_destination.rs](../tests/windows_destination.rs) under each default shell, also the administrator stop; [rechecked](#recheck-after-the-release-review-2026-10-22) under `cmd.exe` and Windows PowerShell after the release review. |
 | K01 | Line endings and encoding sshd accepts in authorized_keys (line endings, D-07) | Passed | 2026-10-09, checked by logging in with the key: a key line ending in CR authenticates, with or without a comment, on OpenSSH 9.6p1 (L02 image), [OpenSSH 7.6p1, Dropbear 2022.82, 2024.86 and 2025.89, and Windows OpenSSH 9.5p2](#key-line-endings-k01). A line starting with a UTF-8 BOM is rejected on all of them, except that Windows OpenSSH accepts one at the start of the file. |
 | A01 | Password and passphrase prompts with public keys on stdin, cancellation, no terminal, agent confirmation | Passed | [Prompt experiment](../tests/prototypes/ssh-prompt/README.md): prompts and cancellation pass with both tested Windows clients; no-terminal behavior differs by client; the Windows agent refuses keys with confirmation. [Through the CLI](#authentication-prompts-through-the-cli-a01), with `ssh`'s streams on files, prompts and Ctrl-C pass with both clients and a run without a console fails at once. |
 | C01 | Windows client run without a console, from an sshd session | Passed | In the dockur Windows 11 guest's sshd session, Windows OpenSSH 9.5p2 hung on `ssh -G` with stderr on a pipe and on the installation with stdin and stdout on pipes; with every stream on a file, the run appends and verifies the key, and a second run skips it. The same run passes in the desktop session (A02). |
@@ -419,6 +419,30 @@ key path with a space, Japanese, and `'`, and a comment with `"`, `%OS%`, and
 leave no file; v07 `fixtureadmin`, whose shared key file stays unchanged with
 exit 1. Afterwards each guest was stopped; the last one is kept on that host
 with its volume.
+
+## Recheck After the Release Review: 2026-10-22
+
+After the release review, the shell-family probe became
+`echo ssh-copy-id-probe:%OS%:$home` and only its Windows forms are recognized
+(D-12), and the Windows script turns off progress records. Host, client, and
+guest are as in the [stage 2 run](#stage-2-on-a-windows-destination-2026-10-21);
+only the `cmd.exe` copy ran, on the second Linux host, and its default shell was
+switched to Windows PowerShell with `Set-DefaultShell.ps1` for the second run and
+back to `cmd.exe` afterwards.
+
+| Tests | Destination and client | Result |
+| --- | --- | --- |
+| `windows_destination` | `cmd.exe` default shell | 7 passed |
+| `windows_destination` | Windows PowerShell default shell | 7 passed |
+| `unix_destination` | L02, `OpenSSH_for_Windows_9.5p2` | 34 passed; i20 and i22 not run, since without `-i` they reach the account's own agent |
+| `unix_destination` | L02, Linux client in the `linux-fixture` job of the v0.1.0-pre release run | 36 passed |
+
+v01 now also checks that standard error holds no CLIXML; on the guest it failed
+with the script from before the change. i8b installs for a fish login shell,
+whose probe reply has no marker line; it failed with the code from before the
+change. The `pwsh` default shell was not rerun: its probe reply has the Windows
+PowerShell form, `%OS%:` and a Windows home path (W09), and the command sent
+after detection is the one both runs above passed.
 
 ## Stage 1.5 on a Unix-like Destination: 2026-10-11
 
