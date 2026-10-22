@@ -8,6 +8,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-23
+
 ### Added
 
 - Keys are installed for an account in a Windows host's Administrators group,
