@@ -10,7 +10,7 @@ use crate::remote_script::{TargetPath, install_command, install_input, sh_quote}
 use crate::result_line::{Outcome, parse_report};
 use crate::shell_family::{self, PROBE_COMMAND, ShellFamily};
 use crate::trace::command_line;
-use crate::windows_script::windows_install_command;
+use crate::windows_script::{windows_install_command, windows_install_input};
 use std::cell::RefCell;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -498,7 +498,7 @@ fn write_keys(
             install_input(install.target, text),
         ),
         ShellFamily::Windows if install.target.is_some() => return stop(WINDOWS_TARGET),
-        ShellFamily::Windows => (windows_install_command(), text.to_vec()),
+        ShellFamily::Windows => (windows_install_command(), windows_install_input(text)),
     };
     let mut install_args = vec!["-o".to_string(), "RequestTTY=no".to_string()];
     install_args.extend(install.common.iter().cloned());
@@ -1412,7 +1412,10 @@ mod tests {
                 &windows_install_command()
             ]
         );
-        assert_eq!(stdin, format!("{KEY}\n").as_bytes());
+        assert_eq!(
+            stdin,
+            windows_install_input(format!("{KEY}\n").as_bytes()).as_slice()
+        );
         assert!(!capture_stderr);
     }
 

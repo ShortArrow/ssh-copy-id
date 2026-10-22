@@ -7,8 +7,8 @@ This is `ssh-copy-id` for Windows.
 > [!WARNING]
 > This project is experimental until it reaches `v1.0.0`,
 > and is subject to breaking changes in any release before then.
-> It installs keys on Unix-like hosts and for standard Windows users; Windows
-> administrators, `-t` on Windows hosts, and `-s` are not supported yet.
+> It installs keys on Unix-like hosts and for Windows users, administrators
+> included; `-t` on Windows hosts and `-s` are not supported yet.
 > Do not rely on it for access to machines you cannot reach another way.
 
 ## Summary
@@ -46,11 +46,15 @@ that runtime.
 ## Usage
 
 Install the keys of the running `ssh-agent`, or else the newest `~/.ssh/id*.pub`
-with its private key, on a Unix-like host or for a standard Windows user:
+with its private key, on a Unix-like host or for a Windows user:
 
 ```powershell
 ssh-copy-id user@host
 ```
+
+For a member of a Windows host's Administrators group, the keys go to the
+shared `administrators_authorized_keys` under `%ProgramData%\ssh`, which every
+administrator account of that host accepts; the command says so before writing.
 
 Install one key file, or list what would be installed without writing anything:
 

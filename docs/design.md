@@ -4,8 +4,9 @@ English | [日本語](design.jp.md)
 
 [Differences from upstream](compatibility.md) | [Behavior defined where the standards are silent](definitions.md)
 
-Status: stages 1, 1.5, and 2 are implemented. The command installs keys on a
-Unix-like destination and for a standard Windows user. The [delivery plan](#delivery-plan) orders
+Status: stages 1, 1.5, and 2 are implemented, and of stage 3 the shared
+administrator file. The command installs keys on a Unix-like destination and
+for a Windows user, administrators included. The [delivery plan](#delivery-plan) orders
 the remaining work, and [open questions](open-questions.md) lists what is not
 decided. This document states the current design and the reasons that still
 hold; the history of a change is in its commit message.
@@ -781,7 +782,7 @@ sets the file's length back; otherwise it reports `uncertain` (D-17). An
 unexpected error ends the script with one `ssh-copy-id: ERROR:` line on its
 standard error and no summary line; left to Windows PowerShell, the error
 would reach a standard error that is not a console as CLIXML. For the same
-reason the script turns off progress records, which PowerShell writes there as
+reason the loader turns off progress records, which PowerShell writes there as
 CLIXML when it first loads a module, so a successful run writes nothing to
 standard error. PowerShell in ConstrainedLanguage mode refuses the .NET calls
 the script makes, its error line included, so the run ends without a result

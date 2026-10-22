@@ -8,6 +8,20 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+### Added
+
+- Keys are installed for an account in a Windows host's Administrators group,
+  in the shared `administrators_authorized_keys` under `%ProgramData%\ssh`. The
+  run says before writing that every administrator account shares the file. A
+  missing file is created with full control for Administrators and SYSTEM only
+  and no inherited entries; an existing file keeps its ACL.
+
+### Changed
+
+- The Windows installation script travels on stdin ahead of the keys, read by a
+  short fixed `-EncodedCommand` loader, so the command line no longer grows with
+  the script (O-03).
+
 ## [0.1.0] - 2026-10-22
 
 ### Added

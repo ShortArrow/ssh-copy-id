@@ -1,16 +1,26 @@
 //! The installation command sent to Windows destinations.
 
 /// Builds `powershell.exe -NoProfile -NonInteractive -EncodedCommand <base64>`,
-/// whose script appends the key lines read from stdin to `.ssh\authorized_keys`
-/// under the profile directory and prints the result lines that
-/// `result_line::parse_report` reads, as `remote_script::install_command`'s
-/// does.
+/// whose loader runs the installation script that [`windows_install_input`]
+/// puts on stdin.
 ///
 /// The command holds only letters, digits and base64, so `cmd.exe /c`,
 /// `powershell.exe -c` and `pwsh -c` pass it unchanged, and it fits in the
-/// 8191 characters `cmd.exe` accepts.
+/// 8191 characters `cmd.exe` accepts whatever the script holds.
+pub fn windows_install_command() -> String {
+    format!(
+        "powershell.exe -NoProfile -NonInteractive -EncodedCommand {}",
+        encoded(LOADER)
+    )
+}
+
+/// The stdin of [`windows_install_command`]: the installation script, a NUL
+/// byte, then `text`, the key lines, which hold no NUL.
 ///
-/// The script reads stdin as bytes and appends every line byte for byte, a CR
+/// The script appends the key lines to `.ssh\authorized_keys` under the
+/// profile directory and prints the result lines that
+/// `result_line::parse_report` reads, as `remote_script::install_command`'s
+/// does. It takes the lines as bytes and appends every line byte for byte, a CR
 /// at its end and comment and blank lines included, each followed by LF; only
 /// the other lines are keys. Comment and blank lines, the newline added after
 /// a last line without one, the groups of lines, the rollback of a failed
@@ -21,21 +31,32 @@
 /// inherits.
 ///
 /// An account whose token holds the Administrators group, SID `S-1-5-32-544`,
-/// even for deny only, gets nothing written: the script says so on stderr and
-/// reports every key failed with the path of `administrators_authorized_keys`
-/// under `$env:ProgramData\ssh`. So does a target that is a directory, and a
-/// non-empty target that cannot be read, with the default path. A `$HOME` that
-/// is not a directory also gets nothing written, so that nothing goes to the
-/// working directory; PowerShell creates a missing profile directory before the
-/// script runs.
-pub fn windows_install_command() -> String {
-    format!(
-        "powershell.exe -NoProfile -NonInteractive -EncodedCommand {}",
-        encoded(&format!(
-            "{ADMIN_CHECK}\n{INSTALL_FUNCTIONS}\n{INSTALL_MAIN}"
-        ))
-    )
+/// even for deny only, writes to `administrators_authorized_keys` under
+/// `$env:ProgramData\ssh` instead and gets that full path in the result lines.
+/// Before writing, the script names the file on stderr as shared by every
+/// administrator account. A missing file is created empty with only
+/// Administrators and SYSTEM allowed full control and no inherited entries,
+/// before any key goes in, and removed again when its first group fails; an
+/// existing file keeps its ACL. A missing `$env:ProgramData\ssh` is not
+/// created and gets nothing written.
+///
+/// A target that is a directory, and a non-empty target that cannot be read,
+/// get nothing written and every key reported failed. A `$HOME` that is not a
+/// directory also gets nothing written, so that nothing goes to the working
+/// directory; PowerShell creates a missing profile directory before the script
+/// runs.
+pub fn windows_install_input(text: &[u8]) -> Vec<u8> {
+    let mut input = format!("{ADMIN_CHECK}\n{INSTALL_FUNCTIONS}\n{INSTALL_MAIN}").into_bytes();
+    input.push(0);
+    input.extend_from_slice(text);
+    input
 }
+
+/// Reads stdin to its end, runs the ASCII text before the first NUL as the
+/// script, dot-sourced, and leaves the bytes after it in `$i`. Stdin is read
+/// as bytes, not through PowerShell's input encoding, which follows the
+/// console code page.
+const LOADER: &str = "$ProgressPreference='SilentlyContinue';$m=New-Object IO.MemoryStream;[Console]::OpenStandardInput().CopyTo($m);$i=$m.ToArray();$e=[Array]::IndexOf($i,[byte]0);$s=[Text.Encoding]::ASCII.GetString($i,0,$e);$k=New-Object byte[] ($i.Length-$e-1);[Array]::Copy($i,$e+1,$k,0,$k.Length);$i=$k;. ([ScriptBlock]::Create($s))";
 
 /// Sets `$a` when the account's token holds the Administrators group.
 const ADMIN_CHECK: &str = "$a=[bool]([Security.Principal.WindowsIdentity]::GetCurrent().Claims|?{$_.Value -eq 'S-1-5-32-544'})";
@@ -45,7 +66,6 @@ const ADMIN_CHECK: &str = "$a=[bool]([Security.Principal.WindowsIdentity]::GetCu
 /// group back. Functions start with `_` because an alias, such as `r` for
 /// `Invoke-History`, takes precedence over a function of the same name.
 const INSTALL_FUNCTIONS: &str = r#"$ErrorActionPreference='Stop'
-$ProgressPreference='SilentlyContinue'
 trap{[Console]::Error.WriteLine("ssh-copy-id: ERROR: the installation script stopped: $_");exit 1}
 function _o($s){[Console]::Out.Write("ssh-copy-id: $s`n")}
 function _e($s){-join([Text.Encoding]::UTF8.GetBytes($s)|%{if($_ -ge 33 -and $_ -le 126 -and $_ -ne 37 -and $_ -ne 61){[string][char]$_}else{'%{0:X2}' -f $_}})}
@@ -53,17 +73,19 @@ function _s{if([IO.File]::Exists($f)){(New-Object IO.FileInfo $f).Length}}
 function _w([byte[]]$b){try{$s=[IO.File]::Open($f,'Append','Write','ReadWrite');try{$s.Write($b,0,$b.Length);$s.Flush()}finally{$s.Dispose()};1}catch{0}}
 function _l{$s=New-Object IO.FileStream($f,'Open','Read','ReadWrite',1);try{$null=$s.Seek(-1,'End');$s.ReadByte()}finally{$s.Dispose()}}
 function _a([byte[]]$l){try{if(!$w -and (_s) -gt 0 -and (_l) -ne 10){$t.Add(10);if(!(_w @(10))){return 0}};$t.AddRange($l);$t.Add(10);_w ([byte[]]($l+[byte[]]@(10)))}catch{0}}
+function _c{[IO.File]::Open($f,'CreateNew','Write','ReadWrite').Dispose();try{$s=New-Object Security.AccessControl.FileSecurity;$s.SetAccessRuleProtection($true,$false);'S-1-5-32-544','S-1-5-18'|%{$s.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier $_),'FullControl','Allow')))};[IO.File]::SetAccessControl($f,$s)}catch{[IO.File]::Delete($f);throw}}
 function _r{try{$n=_s;if($n -eq $null){return $z -eq $null};$b=[long]$z;$k=New-Object byte[] ($n-$b);$s=New-Object IO.FileStream($f,'Open','Read','ReadWrite',1);try{$null=$s.Seek($b,'Begin');$q=0;while($q -lt $k.Length){$c=$s.Read($k,$q,$k.Length-$q);if(!$c){break};$q+=$c}}finally{$s.Dispose()};for($j=0;$j -lt $k.Length;$j++){if($k[$j] -ne $t[$j]){return $false}};if($z -eq $null){[IO.File]::Delete($f)}else{$s=[IO.File]::Open($f,'Open','Write','ReadWrite');try{$s.SetLength($z)}finally{$s.Dispose()}};(_s) -eq $z}catch{$false}}"#;
 
-/// Appends stdin's lines and reports them, writing nothing when `$a` is set.
+/// Appends the lines in `$i` to the profile's key file, or to the shared
+/// administrator file when `$a` is set, and reports them.
 /// `$x` is set once nothing more may be written, `$z` holds the target's size
 /// before the current group (`$null` when it did not exist) and `$t` the bytes
 /// tried in the group.
-const INSTALL_MAIN: &str = r#"$f=[IO.Path]::Combine($HOME,'.ssh','authorized_keys');$p='.ssh/authorized_keys';$x=0
-if($a){$x=1;$p=_e([IO.Path]::Combine($env:ProgramData,'ssh','administrators_authorized_keys'));[Console]::Error.WriteLine('ssh-copy-id: ERROR: administrators_authorized_keys is not supported in this release; nothing was written')}
-$m=New-Object IO.MemoryStream;[Console]::OpenStandardInput().CopyTo($m);$i=$m.ToArray()
-if(!$x){try{if(![IO.Directory]::Exists($HOME)){throw 1};$null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($f));if((_s) -gt 0){[IO.File]::Open($f,'Open','Read','ReadWrite').Dispose()}}catch{$x=1}}
-$n=0;$g=0;$w=0;$u=0;$h='failed';$t=New-Object Collections.Generic.List[byte];$z=$null;if(!$x){$z=_s}
+const INSTALL_MAIN: &str = r#"$f=[IO.Path]::Combine($HOME,'.ssh','authorized_keys');$p='.ssh/authorized_keys';$x=0;$d=0
+if($a){$f=[IO.Path]::Combine($env:ProgramData,'ssh','administrators_authorized_keys');$p=_e $f}
+try{if($a){if(![IO.Directory]::Exists([IO.Path]::GetDirectoryName($f))){throw 1}}else{if(![IO.Directory]::Exists($HOME)){throw 1};$null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($f))};if((_s) -gt 0){[IO.File]::Open($f,'Open','Read','ReadWrite').Dispose()}}catch{$x=1}
+if(!$x -and $a){[Console]::Error.WriteLine("ssh-copy-id: INFO: writing to $f, which every administrator account on this host shares");try{if($null -eq (_s)){_c;$d=1}}catch{$x=1}}
+$n=0;$g=0;$w=0;$u=0;$h='failed';$t=New-Object Collections.Generic.List[byte];$z=$null;if(!$x -and !$d){$z=_s}
 $o=0;for($e=0;$e -le $i.Length;$e++){if($e -lt $i.Length -and $i[$e] -ne 10){continue};if($e -eq $o -and $e -eq $i.Length){break}
 $l=[byte[]]@();if($e -gt $o){$l=[byte[]]$i[$o..($e-1)]};$o=$e+1
 $v=$l.Length;if($v -and $l[$v-1] -eq 13){$v--};$c=0;while($c -lt $v -and ($l[$c] -eq 32 -or $l[$c] -eq 9)){$c++};$k=$c -lt $v -and $l[$c] -ne 35;if($k){$n++}
@@ -151,17 +173,23 @@ mod tests {
     }
 
     #[test]
-    fn w03_the_payload_is_the_utf16le_script() {
+    fn w03_the_payload_is_the_utf16le_loader() {
         let command = windows_install_command();
         let bytes = decoded(command.strip_prefix(PREFIX).unwrap());
         let units: Vec<u16> = bytes
             .chunks(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
-        assert_eq!(
-            String::from_utf16(&units).unwrap(),
-            script_with(ADMIN_CHECK, "")
-        );
+        assert_eq!(String::from_utf16(&units).unwrap(), LOADER);
+        assert!(!LOADER.is_empty());
+    }
+
+    #[test]
+    fn w30_the_input_is_the_script_a_nul_and_the_key_lines() {
+        let mut expected = script_with(ADMIN_CHECK, "").into_bytes();
+        expected.push(0);
+        expected.extend_from_slice(b"k1\n# c\r\n");
+        assert_eq!(windows_install_input(b"k1\n# c\r\n"), expected);
         assert!(
             !INSTALL_MAIN.is_empty() && !INSTALL_FUNCTIONS.is_empty() && !ADMIN_CHECK.is_empty()
         );
@@ -186,7 +214,13 @@ mod tests {
 
     #[test]
     fn w05_the_script_is_ascii() {
-        assert!(INSTALL_MAIN.is_ascii() && INSTALL_FUNCTIONS.is_ascii() && ADMIN_CHECK.is_ascii());
+        assert!(
+            INSTALL_MAIN.is_ascii()
+                && INSTALL_FUNCTIONS.is_ascii()
+                && ADMIN_CHECK.is_ascii()
+                && LOADER.is_ascii()
+        );
+        assert!(!script_with(ADMIN_CHECK, "").contains('\0'));
     }
 
     #[cfg(windows)]
@@ -237,8 +271,34 @@ mod tests {
             /// Runs the installation script with `$a` set to `admin` and the
             /// profile as `$HOME`, and returns its report, stdout and stderr.
             fn run_as(&self, admin: bool, stdin: &[u8]) -> (Report, String, String) {
+                self.run_as_with(admin, "", stdin)
+            }
+
+            /// Runs the script as `run_as` does, with the definitions in
+            /// `between` in place of the script's own.
+            fn run_as_with(
+                &self,
+                admin: bool,
+                between: &str,
+                stdin: &[u8],
+            ) -> (Report, String, String) {
                 let flag = if admin { "$true" } else { "$false" };
-                run_script(&script_with(&format!("$a={flag}"), ""), &self.0, stdin)
+                run_script(&script_with(&format!("$a={flag}"), between), &self.0, stdin)
+            }
+
+            /// `ssh` under the profile's stand-in for `$env:ProgramData`.
+            fn shared_dir(&self) -> PathBuf {
+                self.file("ProgramData\\ssh")
+            }
+
+            fn shared(&self) -> PathBuf {
+                self.shared_dir().join("administrators_authorized_keys")
+            }
+
+            /// The shared file's path as the result lines carry it.
+            fn shared_path(&self) -> Vec<u8> {
+                crate::result_line::encode_path(self.shared().to_string_lossy().as_bytes())
+                    .into_bytes()
             }
 
             /// Runs the script as a standard user with `writer` in place of
@@ -269,14 +329,18 @@ mod tests {
             use std::io::Write;
             let mut child = Command::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
-                .arg(encoded(script))
+                .arg(encoded(LOADER))
                 .env("USERPROFILE", profile)
+                .env("ProgramData", profile.join("ProgramData"))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
                 .expect("powershell.exe must be on PATH for these tests");
-            child.stdin.take().unwrap().write_all(stdin).unwrap();
+            let mut input = script.as_bytes().to_vec();
+            input.push(0);
+            input.extend_from_slice(stdin);
+            child.stdin.take().unwrap().write_all(&input).unwrap();
             let output = child.wait_with_output().unwrap();
             (
                 parse_report(&output.stdout),
@@ -371,29 +435,109 @@ mod tests {
         }
 
         #[test]
-        fn w10_an_administrator_gets_nothing_written() {
+        fn w10_an_administrator_s_keys_go_to_the_shared_file_after_its_creation() {
             let profile = Profile::new();
-            let (report, _, stderr) =
-                profile.run_as(true, format!("{KEY_A}\n{KEY_B}\n").as_bytes());
-            let shared = crate::result_line::encode_path(
-                format!(
-                    "{}\\ssh\\administrators_authorized_keys",
-                    std::env::var("ProgramData").unwrap()
-                )
-                .as_bytes(),
+            fs::create_dir_all(profile.shared_dir()).unwrap();
+            let (report, stdout, stderr) = profile.run_as_with(
+                true,
+                "function _c{[IO.File]::WriteAllText($f,\"# created`n\")}",
+                format!("{KEY_A}\n{KEY_B}\n").as_bytes(),
             );
             assert_eq!(
                 report,
-                unchanged(vec![
-                    key(1, KeyStatus::Failed, shared.as_bytes()),
-                    key(2, KeyStatus::Failed, shared.as_bytes()),
-                ])
+                installed(vec![
+                    key(1, KeyStatus::Added, &profile.shared_path()),
+                    key(2, KeyStatus::Added, &profile.shared_path()),
+                ]),
+                "{stdout}"
             );
-            assert!(
-                stderr.contains("administrators_authorized_keys is not supported"),
-                "{stderr}"
+            assert_eq!(
+                fs::read_to_string(profile.shared()).unwrap(),
+                format!("# created\n{KEY_A}\n{KEY_B}\n")
+            );
+            assert_eq!(
+                stderr,
+                format!(
+                    "ssh-copy-id: INFO: writing to {}, which every administrator account \
+                     on this host shares\r\n",
+                    profile.shared().display()
+                )
             );
             assert!(!profile.file(".ssh").exists());
+        }
+
+        #[test]
+        fn w26_an_existing_shared_file_is_appended_to_without_creating_it() {
+            let profile = Profile::new();
+            fs::create_dir_all(profile.shared_dir()).unwrap();
+            fs::write(profile.shared(), "e\n").unwrap();
+            let (report, stdout, _) = profile.run_as_with(
+                true,
+                "function _c{throw 'created'}",
+                format!("{KEY_A}\n").as_bytes(),
+            );
+            assert_eq!(
+                report,
+                installed(vec![key(1, KeyStatus::Added, &profile.shared_path())]),
+                "{stdout}"
+            );
+            assert_eq!(
+                fs::read_to_string(profile.shared()).unwrap(),
+                format!("e\n{KEY_A}\n")
+            );
+        }
+
+        #[test]
+        fn w27_a_missing_programdata_ssh_gets_nothing_written_or_announced() {
+            let profile = Profile::new();
+            let (report, _, stderr) = profile.run_as(true, format!("{KEY_A}\n").as_bytes());
+            assert_eq!(
+                report,
+                unchanged(vec![key(1, KeyStatus::Failed, &profile.shared_path())])
+            );
+            assert_eq!(stderr, "");
+            assert!(!profile.shared_dir().exists());
+            assert!(!profile.file(".ssh").exists());
+        }
+
+        #[test]
+        fn w28_a_created_shared_file_is_empty_and_allows_only_administrators_and_system() {
+            let profile = Profile::new();
+            fs::create_dir_all(profile.shared_dir()).unwrap();
+            let path = profile.shared().display().to_string();
+            let output = Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+                .arg(encoded(&format!(
+                    "{INSTALL_FUNCTIONS}\n$f='{path}';_c\n\
+                     [Console]::Out.Write([IO.File]::GetAccessControl($f).GetSecurityDescriptorSddlForm('Access'))"
+                )))
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "D:PAI(A;;FA;;;SY)(A;;FA;;;BA)",
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fs::metadata(profile.shared()).unwrap().len(), 0);
+        }
+
+        #[test]
+        fn w29_a_shared_file_created_for_a_failed_group_is_removed() {
+            let profile = Profile::new();
+            fs::create_dir_all(profile.shared_dir()).unwrap();
+            let (report, stdout, _) = profile.run_as_with(
+                true,
+                "function _c{[IO.File]::Open($f,'CreateNew','Write','ReadWrite').Dispose()}\n\
+                 function _w([byte[]]$b){0}",
+                format!("{KEY_A}\n").as_bytes(),
+            );
+            assert_eq!(
+                report,
+                unchanged(vec![key(1, KeyStatus::Failed, &profile.shared_path())]),
+                "{stdout}"
+            );
+            assert!(!profile.shared().exists());
         }
 
         #[test]
