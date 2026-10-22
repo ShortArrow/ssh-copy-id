@@ -146,7 +146,7 @@ lead to implementing cryptography or SSH from scratch.
 - Avoid additional language runtimes, large frameworks, and bundled native libraries unless required by a documented need. Keep platform-specific dependencies scoped to their target platforms.
 - Keep test and development tools separate from dependencies needed to build and run the distributed program.
 - Support builds without network access once declared sources and dependencies have been supplied. Do not download tools or code implicitly during build scripts or installation.
-- Document local runtime requirements separately from requirements on the remote host, such as a shell or `icacls.exe`.
+- Document local runtime requirements separately from requirements on the remote host, such as a shell or `powershell.exe`.
 
 ### Coexistence with OpenSSH Packages
 
@@ -746,9 +746,16 @@ authentication asks once for it and once more for the installation; with
 The command sent to a Windows destination is exactly
 `powershell.exe -NoProfile -NonInteractive -EncodedCommand <base64>`. It contains
 only letters, digits, and base64, so `cmd.exe /c`, `powershell.exe -c`, and
-`pwsh -c` interpret it identically. Every parameter, including the target path,
-is inside the encoded script; public keys arrive on stdin. `powershell.exe` and,
-when ACLs are set, `icacls.exe` are remote runtime requirements to document. A
+`pwsh -c` interpret it identically. The encoded part is a fixed loader: it
+reads its standard input to the end, runs the ASCII text before the first NUL
+byte as the installation script, and hands the script the bytes after that NUL
+as the key lines. Key lines never hold NUL, since such input is rejected before
+transmission (D-10). Every parameter, including the target path, is inside the
+installation script, so the command's length does not grow with the script and
+stays far within the 8191 characters that `cmd.exe` accepts. The script is
+plain text, not compressed or otherwise obscured, so the antimalware scan that
+PowerShell applies to it reads it as written. `powershell.exe` is the remote
+runtime requirement to document. A
 destination without Windows PowerShell, such as one with only `pwsh`, is not
 supported: the fixed command is what makes every default shell read it alike.
 Under `cmd.exe` sshd runs `cmd.exe /c "<command>"`, and under Windows PowerShell
@@ -757,21 +764,20 @@ command would be interpreted (destination difference O-03).
 
 ### Windows Installation Script
 
-The encoded script appends the key lines as the `sh` script does and prints the
+The installation script appends the key lines as the `sh` script does and prints the
 same result lines, so the CLI reads both outcomes alike. It writes to
 `.ssh\authorized_keys` under the profile directory, `$HOME`, and reports it as
 `path=.ssh/authorized_keys`. A missing directory or file is created without
 setting an ACL, so it keeps the one it inherits (O-02).
 
-The script reads its standard input as bytes, through
+The loader reads standard input as bytes, through
 `[Console]::OpenStandardInput()`, and never through PowerShell's input
 encoding, which follows the console code page and would alter a comment in
 Japanese. Lines, comment and blank lines, the newline added after a last line
 without one, the groups of lines, and the failed results are as in the `sh`
 script. After a failed write it compares the bytes past the group's starting
 size with the bytes it tried to write and, when they are a prefix of them,
-sets the file's length back; otherwise it reports `uncertain` (D-17).
-The command stays within the 8191 characters that `cmd.exe` accepts. An
+sets the file's length back; otherwise it reports `uncertain` (D-17). An
 unexpected error ends the script with one `ssh-copy-id: ERROR:` line on its
 standard error and no summary line; left to Windows PowerShell, the error
 would reach a standard error that is not a console as CLIXML. For the same
@@ -781,10 +787,11 @@ standard error. PowerShell in ConstrainedLanguage mode refuses the .NET calls
 the script makes, its error line included, so the run ends without a result
 line and nothing is written; this mode is not supported.
 
-An account whose token holds the Administrators group, SID `S-1-5-32-544`,
-writes nothing in this release: the script says on its standard error that the
-shared administrator file is not supported yet and reports every key `failed`
-with the path of `administrators_authorized_keys` under `$env:ProgramData\ssh`.
+An account whose token holds the Administrators group, SID `S-1-5-32-544`, even
+for deny only, writes to `administrators_authorized_keys` under
+`$env:ProgramData\ssh` as [Windows Administrator
+Scope](#windows-administrator-scope) describes, and the result lines carry that
+file's full path.
 On a Windows destination, `-t` stops the run before writing, and `-x` traces
 the client's commands but not the script.
 
