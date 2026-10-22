@@ -8,6 +8,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-22
+
 ### Added
 
 - Keys are installed for a standard Windows user, in `.ssh\authorized_keys`
