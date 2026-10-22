@@ -282,6 +282,16 @@ fn i8_a_tcsh_login_shell_runs_the_installation_command() {
 
 #[test]
 #[ignore = "needs the L02 fixture image"]
+fn i8b_a_fish_login_shell_is_taken_as_unix_like() {
+    let fixture = Fixture::start();
+    let key = keygen(&fixture.work, "new", "new@test");
+    let run = fixture.copy_id(&key, "fishuser", &[]);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert_eq!(fixture.authorized_keys("fishuser"), public_entry(&key));
+}
+
+#[test]
+#[ignore = "needs the L02 fixture image"]
 fn i9_requirement_2_an_empty_file_gets_no_leading_newline() {
     let fixture = Fixture::start();
     let setup = fixture.exec(
@@ -829,7 +839,7 @@ fn i34_d14_trace_prints_the_client_commands_and_the_remote_script() {
         assert_eq!(client.len(), 6, "{stderr}");
         assert_eq!(client[0], "+ ssh -V", "{stderr}");
         assert!(
-            client[3].ends_with(" 'echo ssh-copy-id-probe:%OS%:$0/$home'"),
+            client[3].ends_with(" 'echo ssh-copy-id-probe:%OS%:$home'"),
             "{stderr}"
         );
         assert!(client[4].contains(r"exec sh -c '\''set -x; "), "{stderr}");

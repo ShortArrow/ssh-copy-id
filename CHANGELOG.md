@@ -25,9 +25,9 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 ### Changed
 
 - Before the first write, one more connection runs a probe that tells a
-  Unix-like shell from a Windows one (D-12). A reply that shows neither stops
-  the run without writing and suggests `--target-os`; a probe that ends with
-  status 255, as after a wrong password, stops naming that status. A
+  Windows shell from any other (D-12). A reply that is not a Windows one is
+  taken as Unix-like, as upstream takes every destination; a probe that ends
+  with status 255, as after a wrong password, stops naming that status. A
   destination that asks for a password asks once more. `-n` and a run whose
   keys are all installed make no such connection.
 

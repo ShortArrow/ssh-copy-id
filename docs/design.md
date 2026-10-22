@@ -441,9 +441,8 @@ Upstream connects once without authentication, with `ssh -v -o
 PreferredAuthentications=, -o ControlPath=none`, to read the server's software
 version, and handles versions starting with `NetScreen` apart, also under `-n`
 and `-f`. This tool makes no such connection and treats a NetScreen destination
-as any other: in normal mode, shell-family detection finds no match and stops
-before writing (D-12); where detection does not run, the script reports nothing
-and the run exits with status 1 (D-19).
+as any other: shell-family detection takes it as Unix-like (D-12), the script
+reports nothing, and the run exits with status 1 (D-19).
 
 Upstream means to install DSA keys there with `set ssh pka-dsa key` and to skip
 the others, as its warning "NetScreen only supports DSA keys" says. It looks for
@@ -512,7 +511,7 @@ applies.
 1. Parse arguments and select keys and connection settings.
 2. Unless `-f` is set, check authentication for each key and exclude installed keys.
 3. Exit successfully if all keys are installed. For `-n`, display the planned keys and exit.
-4. In normal mode, detect the destination shell family unless `--target-os` is given; stop before writing when it is unknown.
+4. In normal mode, detect the destination shell family unless `--target-os` is given; stop before writing when the probe connection fails.
 5. Determine the destination and required permission handling.
 6. Preserve existing contents, add a trailing newline if necessary, and append the public keys.
 7. Read the result lines and report the outcome.
@@ -708,27 +707,31 @@ shell that executes the installation script. For example:
 - Do not infer the OS from the shell name; `pwsh`, for example, also runs on Linux.
 
 In normal mode, detect the destination shell family before writing with one
-command, `echo ssh-copy-id-probe:%OS%:$0/$home`, and read the first line of its
+command, `echo ssh-copy-id-probe:%OS%:$home`, and read the first line of its
 standard output that starts with `ssh-copy-id-probe:`, without a trailing CR;
 lines that a startup file prints come before it. The destination is Windows
-when the rest of that line is `Windows_NT:$0/$home` (`cmd.exe` expands only
-`%OS%`), or `%OS%:/` followed by a drive letter, a colon, and a backslash
-(Windows PowerShell or `pwsh` expands only `$home`, here a Windows path). It is
-Unix-like when the rest is `%OS%:`, a nonempty shell name without `/`, `/`, and
-whatever `$home` expands to (`sh`, `dash`, `bash`, and `tcsh` name themselves in
-`$0`; only `tcsh` expands `$home`, to its home path). Any other line, or none, stops the run with an error before any write
-that suggests `--target-os`; so does `pwsh` as a Linux login shell, whose
-`$home` is a Unix path. PowerShell prints `%OS%:` on Windows and Linux alike,
-so the home path is what makes it Windows (validation row W09). An account
+when the rest of that line is `Windows_NT:$home` (`cmd.exe` expands only
+`%OS%`), or `%OS%:` followed by a drive letter, a colon, and a backslash
+(Windows PowerShell or `pwsh` expands only `$home`, here a Windows path). Any
+other reply, a missing line included, is Unix-like, as upstream takes every
+destination to be: POSIX shells leave `%OS%:` alone, `tcsh` and `csh` add their
+home path, and `fish` prints an empty line, since a variable it does not define
+removes the word. Recognizing only the Windows forms keeps every shell that
+upstream's `exec sh -c` script runs under, whatever it prints for the probe.
+PowerShell prints `%OS%:` on Windows and Linux alike, so the home path is what
+makes it Windows (validation row W09); `pwsh` as a Linux login shell is taken as
+Unix-like and cannot run the `sh` script, so nothing is written. An account
 inside WSL, served by an sshd running there, is a Unix-like destination. A
 Windows sshd whose default shell starts WSL reads the Windows account's key
-file, and the probe stops the run there: `wsl.exe` does not run the command,
-and `bash.exe` passes the shell's path in `$0` (validation row W10).
+file but is taken as Unix-like too: `wsl.exe` does not run the command, so
+nothing is written, and `bash.exe` runs the `sh` script on the WSL home, where
+the server does not read the key, so the verification reports it rejected
+(validation row W10).
 Detection runs once, just before the first write, so `-n` never sends the
 probe and `-f` does. The probe's standard error reaches the user as the
 installation's does. When `ssh` exits with status 255 without the line, as after a failed
 connection or login, its own message appears and the run stops naming that
-status, without suggesting `--target-os`.
+status.
 `--target-os unix|windows` overrides detection. `-s` cannot run the probe and
 assumes a Unix-like destination unless `--target-os` says otherwise. Apparent intent of upstream, which sends
 its `sh` script without checking: destinations run a POSIX shell. Reason to

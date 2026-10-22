@@ -2,9 +2,8 @@
 
 /// The SSH command sent to detect the destination's shell family.
 ///
-/// Each family expands a different part: `cmd.exe` only `%OS%`, PowerShell only
-/// `$home`, and POSIX shells and `tcsh` `$0` (`tcsh` also `$home`).
-pub const PROBE_COMMAND: &str = "echo ssh-copy-id-probe:%OS%:$0/$home";
+/// `cmd.exe` expands only `%OS%`, and PowerShell only `$home`, to a Windows path.
+pub const PROBE_COMMAND: &str = "echo ssh-copy-id-probe:%OS%:$home";
 
 /// Shell family of a destination, which decides the installation script it receives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,8 +14,9 @@ pub enum ShellFamily {
 
 /// Reads the probe's standard output.
 ///
-/// Returns `None` when no line starts with the marker, or when the first such
-/// line has neither the Windows form nor the Unix-like form.
+/// Returns `None` when no line starts with the marker. The first such line is
+/// Windows in the form `cmd.exe` or PowerShell on Windows prints, and Unix-like
+/// otherwise, as upstream takes every destination to be.
 pub fn classify(stdout: &[u8]) -> Option<ShellFamily> {
     let line = stdout
         .split(|&b| b == b'\n')
@@ -26,32 +26,21 @@ pub fn classify(stdout: &[u8]) -> Option<ShellFamily> {
         .unwrap_or(&line[MARKER.len()..]);
     if rest == CMD_FORM || is_powershell_form(rest) {
         Some(ShellFamily::Windows)
-    } else if is_unix_form(rest) {
-        Some(ShellFamily::UnixLike)
     } else {
-        None
+        Some(ShellFamily::UnixLike)
     }
 }
 
 const MARKER: &[u8] = b"ssh-copy-id-probe:";
 /// `cmd.exe` expands `%OS%` and leaves the rest.
-const CMD_FORM: &[u8] = b"Windows_NT:$0/$home";
-/// PowerShell, `sh`, and `tcsh` leave `%OS%` as it is.
-const UNEXPANDED_OS: &[u8] = b"%OS%:";
+const CMD_FORM: &[u8] = b"Windows_NT:$home";
 
-/// PowerShell expands only `$home`, which on Windows starts with a drive letter, a colon, and a backslash.
+/// PowerShell leaves `%OS%` and expands `$home`, which on Windows starts with a drive letter, a colon, and a backslash.
 fn is_powershell_form(rest: &[u8]) -> bool {
     matches!(
-        rest.strip_prefix(UNEXPANDED_OS),
-        Some([b'/', drive, b':', b'\\', ..]) if drive.is_ascii_alphabetic()
+        rest.strip_prefix(b"%OS%:"),
+        Some([drive, b':', b'\\', ..]) if drive.is_ascii_alphabetic()
     )
-}
-
-/// A POSIX shell or `tcsh` puts its bare name in `$0`, then `/` and whatever `$home` expands to.
-fn is_unix_form(rest: &[u8]) -> bool {
-    rest.strip_prefix(UNEXPANDED_OS)
-        .and_then(|name_and_home| name_and_home.iter().position(|&b| b == b'/'))
-        .is_some_and(|slash| slash > 0)
 }
 
 #[cfg(test)]
@@ -59,9 +48,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn o00_the_probe_names_os_and_home() {
+        assert_eq!(PROBE_COMMAND, "echo ssh-copy-id-probe:%OS%:$home");
+    }
+
+    #[test]
     fn o01_cmd_expands_only_os() {
         assert_eq!(
-            classify(b"ssh-copy-id-probe:Windows_NT:$0/$home\r\n"),
+            classify(b"ssh-copy-id-probe:Windows_NT:$home\r\n"),
             Some(ShellFamily::Windows)
         );
     }
@@ -69,43 +63,48 @@ mod tests {
     #[test]
     fn o02_powershell_home_is_a_windows_path() {
         assert_eq!(
-            classify(b"ssh-copy-id-probe:%OS%:/C:\\Users\\fixtureadmin\r\n"),
+            classify(b"ssh-copy-id-probe:%OS%:C:\\Users\\fixtureadmin\r\n"),
             Some(ShellFamily::Windows)
         );
     }
 
     #[test]
-    fn o03_posix_shells_name_themselves() {
+    fn o03_posix_shells_expand_nothing() {
+        assert_eq!(
+            classify(b"ssh-copy-id-probe:%OS%:\n"),
+            Some(ShellFamily::UnixLike)
+        );
+    }
+
+    #[test]
+    fn o04_csh_tcsh_and_linux_pwsh_expand_a_unix_home() {
+        assert_eq!(
+            classify(b"ssh-copy-id-probe:%OS%:/home/keyuser\n"),
+            Some(ShellFamily::UnixLike)
+        );
+    }
+
+    #[test]
+    fn o05_any_other_marker_line_is_unix_like() {
         for stdout in [
-            &b"ssh-copy-id-probe:%OS%:sh/\n"[..],
-            b"ssh-copy-id-probe:%OS%:dash/\n",
-            b"ssh-copy-id-probe:%OS%:bash/\n",
+            &b"ssh-copy-id-probe:%OS%:C:/Users/x\r\n"[..],
+            b"ssh-copy-id-probe:%OS%:C\r\n",
+            b"ssh-copy-id-probe:Windows_NT:bash\r\n",
+            b"ssh-copy-id-probe:%OS%:/bin/sh/\n",
+            b"ssh-copy-id-probe:\n",
         ] {
             assert_eq!(classify(stdout), Some(ShellFamily::UnixLike));
         }
     }
 
     #[test]
-    fn o04_tcsh_also_expands_home() {
-        assert_eq!(
-            classify(b"ssh-copy-id-probe:%OS%:tcsh//home/keyuser\n"),
-            Some(ShellFamily::UnixLike)
-        );
-    }
-
-    #[test]
-    fn o05_pwsh_as_a_linux_login_shell_is_unknown() {
-        assert_eq!(classify(b"ssh-copy-id-probe:%OS%://home/keyuser\n"), None);
-    }
-
-    #[test]
     fn o06_lines_printed_by_startup_files_come_first() {
         assert_eq!(
-            classify(b"startup-line\nssh-copy-id-probe:%OS%:bash/\n"),
-            Some(ShellFamily::UnixLike)
+            classify(b"startup-line\nssh-copy-id-probe:%OS%:C:\\Users\\x\r\n"),
+            Some(ShellFamily::Windows)
         );
         assert_eq!(
-            classify(b"startup-line\r\nssh-copy-id-probe:Windows_NT:$0/$home\r\n"),
+            classify(b"startup-line\r\nssh-copy-id-probe:Windows_NT:$home\r\n"),
             Some(ShellFamily::Windows)
         );
     }
@@ -113,16 +112,17 @@ mod tests {
     #[test]
     fn o07_only_the_first_marker_line_counts() {
         assert_eq!(
-            classify(b"ssh-copy-id-probe:%OS%://home/keyuser\nssh-copy-id-probe:%OS%:bash/\n"),
-            None
+            classify(b"ssh-copy-id-probe:%OS%:/home/k\nssh-copy-id-probe:%OS%:C:\\Users\\x\r\n"),
+            Some(ShellFamily::UnixLike)
         );
     }
 
     #[test]
-    fn o08_output_without_a_marker_line_is_unknown() {
+    fn o08_output_without_a_marker_line_is_none() {
         assert_eq!(classify(b""), None);
+        assert_eq!(classify(b"\n"), None);
         assert_eq!(classify(b"startup-line\n"), None);
-        assert_eq!(classify(b"x ssh-copy-id-probe:%OS%:bash/\n"), None);
+        assert_eq!(classify(b"x ssh-copy-id-probe:Windows_NT:$home\r\n"), None);
     }
 
     #[test]
@@ -135,28 +135,10 @@ mod tests {
     }
 
     #[test]
-    fn o10_bash_exe_passes_the_shell_path_in_argv0() {
-        assert_eq!(classify(b"ssh-copy-id-probe:%OS%:/bin/bash/\n"), None);
-    }
-
-    #[test]
-    fn o11_line_without_the_trailing_slash_is_unknown() {
-        assert_eq!(classify(b"ssh-copy-id-probe:%OS%:bash\n"), None);
-        assert_eq!(classify(b"ssh-copy-id-probe:%OS%:/\n"), None);
-    }
-
-    #[test]
-    fn o12_windows_form_needs_drive_colon_and_backslash() {
-        assert_eq!(classify(b"ssh-copy-id-probe:%OS%:/C:/Users/x\r\n"), None);
-        assert_eq!(classify(b"ssh-copy-id-probe:%OS%:/C\r\n"), None);
-        assert_eq!(classify(b"ssh-copy-id-probe:Windows_NT:bash/\r\n"), None);
-    }
-
-    #[test]
-    fn o13_last_line_without_a_newline_is_read() {
+    fn o10_last_line_without_a_newline_is_read() {
         assert_eq!(
-            classify(b"ssh-copy-id-probe:%OS%:sh/"),
-            Some(ShellFamily::UnixLike)
+            classify(b"ssh-copy-id-probe:Windows_NT:$home"),
+            Some(ShellFamily::Windows)
         );
     }
 }
