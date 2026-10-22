@@ -7,7 +7,8 @@ This is `ssh-copy-id` for Windows.
 > [!WARNING]
 > This project is experimental until it reaches `v1.0.0`,
 > and is subject to breaking changes in any release before then.
-> It installs keys on Unix-like hosts only; Windows hosts and `-s` are not supported yet.
+> It installs keys on Unix-like hosts and for standard Windows users; Windows
+> administrators, `-t` on Windows hosts, and `-s` are not supported yet.
 > Do not rely on it for access to machines you cannot reach another way.
 
 ## Summary
@@ -45,7 +46,7 @@ that runtime.
 ## Usage
 
 Install the keys of the running `ssh-agent`, or else the newest `~/.ssh/id*.pub`
-with its private key, on a Unix-like host:
+with its private key, on a Unix-like host or for a standard Windows user:
 
 ```powershell
 ssh-copy-id user@host
@@ -58,6 +59,8 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub user@host
 ssh-copy-id -n user@host
 ```
 
+Before writing, one more connection tells a Windows host from any other;
+`--target-os unix` or `--target-os windows` names it instead.
 `ssh-copy-id -h` lists the options.
 
 The remaining features follow the [delivery plan](docs/design.md#delivery-plan).

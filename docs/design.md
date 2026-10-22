@@ -4,8 +4,8 @@ English | [日本語](design.jp.md)
 
 [Differences from upstream](compatibility.md) | [Behavior defined where the standards are silent](definitions.md)
 
-Status: v0.0.1 is released. The command installs one explicitly selected key on
-a Unix-like destination (stage 1). The [delivery plan](#delivery-plan) orders
+Status: stages 1, 1.5, and 2 are implemented. The command installs keys on a
+Unix-like destination and for a standard Windows user. The [delivery plan](#delivery-plan) orders
 the remaining work, and [open questions](open-questions.md) lists what is not
 decided. This document states the current design and the reasons that still
 hold; the history of a change is in its commit message.
