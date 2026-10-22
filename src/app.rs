@@ -21,8 +21,6 @@ pub const TARGET: &str = ".ssh/authorized_keys";
 const NOTHING_WRITTEN: &str = "interrupted; nothing was written";
 const WINDOWS_TARGET: &str =
     "-t is not available for Windows destinations in this release; nothing was written";
-const UNDETECTED_FAMILY: &str = "could not tell the destination's shell family, so nothing was written; \
-     name it with --target-os unix|windows";
 const UNCONNECTED_FAMILY: &str =
     "ssh exited with status 255 before the shell family was detected; nothing was written";
 const MULTI_LINE_TARGET: &str =
@@ -553,10 +551,10 @@ fn write_keys(
 
 /// The family `--target-os` names, or else the one the reply to
 /// `shell_family::PROBE_COMMAND` shows (D-12). The probe's stderr goes to the
-/// user, as the installation's does; a reply that shows no family, an
-/// interrupt, or a failure to start `ssh` stops the run before any write. A
-/// reply without the line from an `ssh` that exited with status 255, the
-/// status of a failed connection or login, does not suggest `--target-os`.
+/// user, as the installation's does. A reply without the line is Unix-like
+/// unless `ssh` exited with status 255, the status of a failed connection or
+/// login; that, an interrupt, or a failure to start `ssh` stops the run before
+/// any write.
 fn detect_family(
     ssh: &mut dyn Ssh,
     invocation: &Invocation,
@@ -575,7 +573,7 @@ fn detect_family(
     match shell_family::classify(&reply.stdout) {
         Some(family) => Ok(family),
         None if reply.status == Some(255) => stop(UNCONNECTED_FAMILY),
-        None => stop(UNDETECTED_FAMILY),
+        None => Ok(ShellFamily::UnixLike),
     }
 }
 
@@ -1214,7 +1212,7 @@ mod tests {
     }
 
     /// What `sh` prints for the shell-family probe.
-    const UNIX_REPLY: &str = "ssh-copy-id-probe:%OS%:sh/
+    const UNIX_REPLY: &str = "ssh-copy-id-probe:%OS%:
 ";
     const SCRATCH_NAME: &str = "ssh-copy-id.test";
     const CERTIFICATE: &str =
@@ -1452,10 +1450,6 @@ mod tests {
         assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
     }
 
-    const UNDETECTED: &str = "ssh-copy-id: ERROR: could not tell the destination's shell \
-                              family, so nothing was written; name it with \
-                              --target-os unix|windows\n";
-
     #[test]
     fn a63_the_shell_family_is_detected_just_before_writing() {
         let run = execute(installs_and_verifies());
@@ -1474,16 +1468,17 @@ mod tests {
     }
 
     #[test]
-    fn a64_a_reply_naming_no_family_stops_before_writing() {
-        let run = execute(
-            FakeSsh::new()
-                .probe(255, DENIED)
-                .replies_to_family_probe("Welcome\nssh-copy-id-probe:/bin/bash/\n"),
-        );
-        assert_eq!(run.status, 1);
-        assert_eq!(run.ssh.kinds(), ["version", "config", "probe", "family"]);
-        assert!(run.err.ends_with(UNDETECTED), "{}", run.err);
-        removed_only_the_scratch_directory(&run);
+    fn a64_a_reply_without_a_windows_form_gets_the_unix_command() {
+        for reply in ["Welcome\nssh-copy-id-probe:%OS%:/home/u\n", "\n", ""] {
+            let run = execute(installs_and_verifies().replies_to_family_probe(reply));
+            assert_eq!(run.status, 0, "{reply:?}: {}", run.err);
+            let (args, _, _) = run.ssh.call("install");
+            assert_eq!(
+                args.last(),
+                Some(&install_command(None, false)),
+                "{reply:?}"
+            );
+        }
     }
 
     #[test]
@@ -1507,7 +1502,7 @@ mod tests {
     fn a66_a_detected_windows_destination_gets_the_windows_command() {
         let run = execute(
             installs_and_verifies()
-                .replies_to_family_probe("ssh-copy-id-probe:Windows_NT:$0/$home\r\n"),
+                .replies_to_family_probe("ssh-copy-id-probe:Windows_NT:$home\r\n"),
         );
         assert_eq!(run.status, 0, "{}", run.err);
         assert_eq!(
@@ -1572,11 +1567,12 @@ mod tests {
             files(),
             true,
             false,
-            FakeSsh::new().replies_to_family_probe("nothing\n"),
+            installs_and_verifies()
+                .replies_to_family_probe("ssh-copy-id-probe:Windows_NT:$home\r\n"),
         );
-        assert_eq!(run.status, 1);
-        assert_eq!(run.ssh.kinds(), ["family"]);
-        assert!(run.err.ends_with(UNDETECTED), "{}", run.err);
+        assert_eq!(run.ssh.kinds(), ["family", "install"]);
+        let (args, _, _) = run.ssh.call("install");
+        assert_eq!(args.last(), Some(&windows_install_command()));
     }
 
     #[test]

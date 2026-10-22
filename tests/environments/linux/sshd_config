@@ -1,5 +1,5 @@
-# keyuser authenticates with public keys only; pwuser and cshuser may also use a
-# password; mfauser needs a public key and then a password; emptyuser has an
+# keyuser authenticates with public keys only; pwuser, cshuser, and fishuser may
+# also use a password; mfauser needs a public key and then a password; emptyuser has an
 # empty password and is let in without one, after a banner that mentions
 # publickey and carries a forged copy of the line ssh logs on authentication,
 # while authenticating with none.
@@ -9,7 +9,7 @@ PubkeyAuthentication yes
 PermitRootLogin no
 UsePAM yes
 LogLevel VERBOSE
-Match User pwuser,cshuser
+Match User pwuser,cshuser,fishuser
     PasswordAuthentication yes
 Match User mfauser
     PasswordAuthentication yes
