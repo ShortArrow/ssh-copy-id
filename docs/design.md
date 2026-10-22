@@ -736,7 +736,10 @@ status.
 assumes a Unix-like destination unless `--target-os` says otherwise. Apparent intent of upstream, which sends
 its `sh` script without checking: destinations run a POSIX shell. Reason to
 differ: Windows destinations cannot run that script. This is difference D-12:
-normal mode makes one more connection, and `--target-os` is a new option.
+normal mode makes one more connection, and `--target-os` is a new option. The
+probe is a login of its own, so password or keyboard-interactive
+authentication asks once for it and once more for the installation; with
+`--target-os` it asks once, as upstream does.
 
 ### Windows Remote Command
 
@@ -801,6 +804,14 @@ the account is in the Administrators group (by SID `S-1-5-32-544`) and selects
 the shared file when it is; it never reads `sshd_config`, as upstream never does.
 A custom `AuthorizedKeysFile` is honored only through `-t`, and a mismatch is
 reported by the post-installation verification (D-06).
+
+The shared file is written with the token the SSH session already holds. The
+tool never elevates on the destination: it runs neither `sudo.exe` nor
+`Start-Process -Verb RunAs`, nor anything else that asks for consent, since a
+UAC prompt belongs to an interactive desktop on the destination, not to the
+person running the tool. When that token cannot write the file, the run reports
+a permission failure (see [Permissions and Service
+Boundaries](#permissions-and-service-boundaries)).
 
 Validate that shared-file installations display the path and shared scope before
 mutation, leave server configuration unchanged, and are distinguished from
