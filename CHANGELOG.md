@@ -22,6 +22,16 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   short fixed `-EncodedCommand` loader, so the command line no longer grows with
   the script (O-03).
 
+### Fixed
+
+- An installation on a Windows host no longer hangs when the key lines exceed
+  about 4 KB, as a large RSA key or many agent keys do: the input now ends with
+  a NUL byte, so the script no longer waits for an end of input that sshd may
+  not deliver.
+- Installations on a Windows host that run at the same time no longer overwrite
+  each other's lines; each line is appended through a handle that can only
+  append.
+
 ## [0.1.0] - 2026-10-22
 
 ### Added

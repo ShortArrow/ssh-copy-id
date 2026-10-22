@@ -28,7 +28,8 @@ pub fn windows_install_command() -> String {
 /// The rollback compares the bytes past the group's starting size with the
 /// bytes the run tried to write; anything else is left and reported
 /// `uncertain`. A missing directory or file is created with the ACL it
-/// inherits.
+/// inherits. Each write goes through a handle that may only append, so runs
+/// at the same time do not overwrite each other.
 ///
 /// An account whose token holds the Administrators group, SID `S-1-5-32-544`,
 /// even for deny only, writes to `administrators_authorized_keys` under
@@ -46,17 +47,28 @@ pub fn windows_install_command() -> String {
 /// directory; PowerShell creates a missing profile directory before the script
 /// runs.
 pub fn windows_install_input(text: &[u8]) -> Vec<u8> {
-    let mut input = format!("{ADMIN_CHECK}\n{INSTALL_FUNCTIONS}\n{INSTALL_MAIN}").into_bytes();
+    framed(
+        &format!("{ADMIN_CHECK}\n{INSTALL_FUNCTIONS}\n{INSTALL_MAIN}"),
+        text,
+    )
+}
+
+/// `script` and `text`, each followed by a NUL byte, as [`LOADER`] reads them.
+fn framed(script: &str, text: &[u8]) -> Vec<u8> {
+    let mut input = script.as_bytes().to_vec();
     input.push(0);
     input.extend_from_slice(text);
+    input.push(0);
     input
 }
 
-/// Reads stdin to its end, runs the ASCII text before the first NUL as the
-/// script, dot-sourced, and leaves the bytes after it in `$i`. Stdin is read
-/// as bytes, not through PowerShell's input encoding, which follows the
-/// console code page.
-const LOADER: &str = "$ProgressPreference='SilentlyContinue';$m=New-Object IO.MemoryStream;[Console]::OpenStandardInput().CopyTo($m);$i=$m.ToArray();$e=[Array]::IndexOf($i,[byte]0);$s=[Text.Encoding]::ASCII.GetString($i,0,$e);$k=New-Object byte[] ($i.Length-$e-1);[Array]::Copy($i,$e+1,$k,0,$k.Length);$i=$k;. ([ScriptBlock]::Create($s))";
+/// Reads stdin up to its second NUL, runs the ASCII text before the first NUL
+/// as the script, dot-sourced, and leaves the bytes between the two in `$i`.
+/// It never waits for the end of stdin, which sshd on Windows may not deliver
+/// once the input passes about 4 KB, and runs nothing when stdin ends before
+/// the second NUL. Stdin is read as bytes, not through PowerShell's input
+/// encoding, which follows the console code page.
+const LOADER: &str = "$ProgressPreference='SilentlyContinue';$q=[Console]::OpenStandardInput();$b=New-Object byte[] 65536;$m=New-Object IO.MemoryStream;$e=-1;$n=-1;while($n -lt 0){$c=$q.Read($b,0,$b.Length);if($c -le 0){exit 1};$m.Write($b,0,$c);$i=$m.ToArray();$e=[Array]::IndexOf($i,[byte]0);if($e -ge 0){$n=[Array]::IndexOf($i,[byte]0,$e+1)}};$s=[Text.Encoding]::ASCII.GetString($i,0,$e);$k=New-Object byte[] ($n-$e-1);[Array]::Copy($i,$e+1,$k,0,$k.Length);$i=$k;. ([ScriptBlock]::Create($s))";
 
 /// Sets `$a` when the account's token holds the Administrators group.
 const ADMIN_CHECK: &str = "$a=[bool]([Security.Principal.WindowsIdentity]::GetCurrent().Claims|?{$_.Value -eq 'S-1-5-32-544'})";
@@ -70,7 +82,7 @@ trap{[Console]::Error.WriteLine("ssh-copy-id: ERROR: the installation script sto
 function _o($s){[Console]::Out.Write("ssh-copy-id: $s`n")}
 function _e($s){-join([Text.Encoding]::UTF8.GetBytes($s)|%{if($_ -ge 33 -and $_ -le 126 -and $_ -ne 37 -and $_ -ne 61){[string][char]$_}else{'%{0:X2}' -f $_}})}
 function _s{if([IO.File]::Exists($f)){(New-Object IO.FileInfo $f).Length}}
-function _w([byte[]]$b){try{$s=[IO.File]::Open($f,'Append','Write','ReadWrite');try{$s.Write($b,0,$b.Length);$s.Flush()}finally{$s.Dispose()};1}catch{0}}
+function _w([byte[]]$b){try{$s=New-Object IO.FileStream($f,'Append',[Security.AccessControl.FileSystemRights]::AppendData,'ReadWrite',4096,'None');try{$s.Write($b,0,$b.Length);$s.Flush()}finally{$s.Dispose()};1}catch{0}}
 function _l{$s=New-Object IO.FileStream($f,'Open','Read','ReadWrite',1);try{$null=$s.Seek(-1,'End');$s.ReadByte()}finally{$s.Dispose()}}
 function _a([byte[]]$l){try{if(!$w -and (_s) -gt 0 -and (_l) -ne 10){$t.Add(10);if(!(_w @(10))){return 0}};$t.AddRange($l);$t.Add(10);_w ([byte[]]($l+[byte[]]@(10)))}catch{0}}
 function _c{[IO.File]::Open($f,'CreateNew','Write','ReadWrite').Dispose();try{$s=New-Object Security.AccessControl.FileSecurity;$s.SetAccessRuleProtection($true,$false);'S-1-5-32-544','S-1-5-18'|%{$s.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier $_),'FullControl','Allow')))};[IO.File]::SetAccessControl($f,$s)}catch{[IO.File]::Delete($f);throw}}
@@ -83,7 +95,7 @@ function _r{try{$n=_s;if($n -eq $null){return $z -eq $null};$b=[long]$z;$k=New-O
 /// tried in the group.
 const INSTALL_MAIN: &str = r#"$f=[IO.Path]::Combine($HOME,'.ssh','authorized_keys');$p='.ssh/authorized_keys';$x=0;$d=0
 if($a){$f=[IO.Path]::Combine($env:ProgramData,'ssh','administrators_authorized_keys');$p=_e $f}
-try{if($a){if(![IO.Directory]::Exists([IO.Path]::GetDirectoryName($f))){throw 1}}else{if(![IO.Directory]::Exists($HOME)){throw 1};$null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($f))};if((_s) -gt 0){[IO.File]::Open($f,'Open','Read','ReadWrite').Dispose()}}catch{$x=1}
+try{if($a){if(![IO.Path]::IsPathRooted($env:ProgramData) -or ![IO.Directory]::Exists([IO.Path]::GetDirectoryName($f))){throw 1}}else{if(![IO.Directory]::Exists($HOME)){throw 1};$null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($f))};if((_s) -gt 0){[IO.File]::Open($f,'Open','Read','ReadWrite').Dispose()}}catch{$x=1}
 if(!$x -and $a){[Console]::Error.WriteLine("ssh-copy-id: INFO: writing to $f, which every administrator account on this host shares");try{if($null -eq (_s)){_c;$d=1}}catch{$x=1}}
 $n=0;$g=0;$w=0;$u=0;$h='failed';$t=New-Object Collections.Generic.List[byte];$z=$null;if(!$x -and !$d){$z=_s}
 $o=0;for($e=0;$e -le $i.Length;$e++){if($e -lt $i.Length -and $i[$e] -ne 10){continue};if($e -eq $o -and $e -eq $i.Length){break}
@@ -185,10 +197,11 @@ mod tests {
     }
 
     #[test]
-    fn w30_the_input_is_the_script_a_nul_and_the_key_lines() {
+    fn w30_the_input_is_the_script_and_the_key_lines_each_ended_by_nul() {
         let mut expected = script_with(ADMIN_CHECK, "").into_bytes();
         expected.push(0);
         expected.extend_from_slice(b"k1\n# c\r\n");
+        expected.push(0);
         assert_eq!(windows_install_input(b"k1\n# c\r\n"), expected);
         assert!(
             !INSTALL_MAIN.is_empty() && !INSTALL_FUNCTIONS.is_empty() && !ADMIN_CHECK.is_empty()
@@ -321,6 +334,8 @@ mod tests {
             }
         }
 
+        /// Runs `script` through the loader with `stdin` as the key lines,
+        /// keeping stdin open until the run ends, as sshd on Windows may.
         fn run_script(
             script: &str,
             profile: &std::path::Path,
@@ -332,16 +347,16 @@ mod tests {
                 .arg(encoded(LOADER))
                 .env("USERPROFILE", profile)
                 .env("ProgramData", profile.join("ProgramData"))
+                .current_dir(profile)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
                 .expect("powershell.exe must be on PATH for these tests");
-            let mut input = script.as_bytes().to_vec();
-            input.push(0);
-            input.extend_from_slice(stdin);
-            child.stdin.take().unwrap().write_all(&input).unwrap();
+            let mut open_stdin = child.stdin.take().unwrap();
+            open_stdin.write_all(&framed(script, stdin)).unwrap();
             let output = child.wait_with_output().unwrap();
+            drop(open_stdin);
             (
                 parse_report(&output.stdout),
                 String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -361,6 +376,60 @@ mod tests {
                 outcome: Outcome::Unchanged,
                 keys,
             }
+        }
+
+        #[test]
+        fn w32_runs_appending_at_the_same_time_keep_every_line() {
+            let profile = Profile::new();
+            with_keys_file(&profile, "");
+            let lines: Vec<String> = (0..8).map(|n| format!("{KEY_A} run{n}\n")).collect();
+            std::thread::scope(|scope| {
+                for line in &lines {
+                    let profile = &profile;
+                    scope.spawn(move || {
+                        let (report, stdout) = profile.run(line.as_bytes());
+                        assert_eq!(report.outcome, Outcome::Installed, "{stdout}");
+                    });
+                }
+            });
+            let written = fs::read_to_string(profile.keys()).unwrap();
+            for line in &lines {
+                assert!(
+                    written.contains(line.as_str()),
+                    "{line} missing from:\n{written}"
+                );
+            }
+            assert_eq!(written.len(), lines.iter().map(String::len).sum::<usize>());
+        }
+
+        #[test]
+        fn w33_a_relative_programdata_gets_nothing_written() {
+            let profile = Profile::new();
+            fs::create_dir_all(profile.shared_dir()).unwrap();
+            let (report, _, stderr) = profile.run_as_with(
+                true,
+                "$env:ProgramData='ProgramData'",
+                format!("{KEY_A}\n").as_bytes(),
+            );
+            assert_eq!(report.outcome, Outcome::Unchanged);
+            assert_eq!(report.keys.len(), 1);
+            assert_eq!(report.keys[0].status, KeyStatus::Failed);
+            assert_eq!(stderr, "");
+            assert!(!profile.shared().exists());
+        }
+
+        #[test]
+        fn w31_key_lines_far_past_the_pipe_buffer_are_all_read() {
+            let profile = Profile::new();
+            let comment = format!("# {}\n", "c".repeat(1000));
+            let input = format!("{}{KEY_A}\n", comment.repeat(200));
+            let (report, stdout) = profile.run(input.as_bytes());
+            assert_eq!(
+                report,
+                installed(vec![key(1, KeyStatus::Added, DEFAULT_PATH)]),
+                "{stdout}"
+            );
+            assert_eq!(fs::read(profile.keys()).unwrap(), input.as_bytes());
         }
 
         #[test]

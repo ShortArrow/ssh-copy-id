@@ -29,10 +29,11 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W04 | Standard-user SFTP binary upload, download, byte comparison, deletion | Passed | Same script; not an append or atomic-replacement test. |
 | W05 | Windows PowerShell as the sshd default shell | Passed | [Cloned fixture](#windows-powershell-default-shell-2026-09-23), both account tests; a native child command's nonzero exit code reaches the client as 1. |
 | W06 | pwsh as the sshd default shell | Passed | [Cloned fixture with PowerShell 7.6.7](#pwsh-default-shell-w06-2026-10-14), both account tests; exit statuses as under Windows PowerShell (W05). |
-| W07 | Default administrator shared key-file scope and invalid ACL rejection | Shared file passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. [The shared file](#shared-administrator-file-w07-2026-10-22) is appended to with its ACL kept, or created with Administrators and SYSTEM only, and the keys log in. Pending: an existing shared file with an extra writable entry, an extra read-only ACE, and a second administrator. |
+| W07 | Default administrator shared key-file scope and invalid ACL rejection | Shared file passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. [The shared file](#shared-administrator-file-w07-2026-10-22) is appended to with its ACL kept, or created with Administrators and SYSTEM only, and the keys log in. [A second administrator](#release-review-for-020-w07-w11-2026-10-22) appends to a file the first one created, and both keys log in. Pending: an existing shared file with an extra writable entry, and an extra read-only ACE. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Passed | [Probe outputs](#shell-family-probe-w09-2026-10-14) under each, also `tcsh`, `pwsh` as a Linux login shell, and startup steps that print a line. |
 | W10 | A Windows sshd whose default shell starts WSL, and an sshd inside WSL | Passed | [Probe outputs and key files](#wsl-default-shell-and-sshd-inside-wsl-w10-2026-10-15): with `wsl.exe` or `bash.exe` as the default shell the probe stops the run, and a key in the WSL home does not authenticate; an sshd inside WSL answers as a Unix-like shell and reads the WSL home. |
+| W11 | Windows key input past about 4 KB on stdin | Passed | [The end of input does not arrive; the loader stops at its terminator](#release-review-for-020-w07-w11-2026-10-22). |
 | U01 | Stage 1: CLI installs one key on a Unix-like destination; requirements 1, 2, 3, 7, and 8 | Passed | [Stage 1 run](#stage-1-on-a-unix-like-destination-2026-10-01): 19 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, also run in CI. |
 | U02 | Stage 1.5: `-n`, `-f`, `-t`, `-i` without a file, default key selection, agent keys, and `-x` on a Unix-like destination; requirements 4 and 5 | Passed | [Stage 1.5 run](#fixture-tests-u02): 35 tests of [unix_destination.rs](../tests/unix_destination.rs) against L02 with both tested Windows clients, except i22 with Windows OpenSSH, whose agent A02 covers; also run in CI. |
 | U03 | Stage 2: CLI installs one key for a standard Windows user; requirements 1, 2, 3, 7, and 8 under `cmd.exe`, Windows PowerShell, and `pwsh` default shells | Passed | [Stage 2 run](#stage-2-on-a-windows-destination-2026-10-21): 7 tests of [windows_destination.rs](../tests/windows_destination.rs) under each default shell, also the administrator stop; [rechecked](#recheck-after-the-release-review-2026-10-22) under `cmd.exe` and Windows PowerShell after the release review. |
@@ -419,6 +420,34 @@ key path with a space, Japanese, and `'`, and a comment with `"`, `%OS%`, and
 leave no file; v07 `fixtureadmin`, whose shared key file stays unchanged with
 exit 1. Afterwards each guest was stopped; the last one is kept on that host
 with its volume.
+
+## Release Review for 0.2.0 (W07, W11): 2026-10-22
+
+Three refuting reviewers examined commit 3ca3c07, one of them on the `cmd.exe`
+copy described [below](#shared-administrator-file-w07-2026-10-22); each finding
+here was reproduced again before the fix.
+
+- Input past about 4 KB never ended (W11). With the script ahead of the keys, a
+  key file of 1106 bytes, a 5000-character comment cut by `ssh-keygen`, left
+  the run waiting after "1 key(s) remain to be installed" until it was stopped
+  at 120 s. Probes sent from the client straight to `powershell.exe` showed the
+  cause: every byte arrives, but past about 4 KB the end of input does not;
+  `CopyTo` and a plain read loop waited for it in each round, while a loop that
+  stopped at its own terminator read 3 KB to 200 KB in 24 of 24 rounds. The
+  loader now stops at a second NUL. v10 installs such a key under both default
+  shells, and an RSA-8192 key file of 1415 bytes is written.
+- Runs started at the same instant lost a line while each reported `added`.
+  Unit test w32 reproduced it locally with eight runs before the fix and passed
+  five times in a row after it.
+- A second administrator: after `fixtureadmin` created the shared file, owned
+  by Administrators (`O:BA`), the account `fixtureadmin2` appended its key, and
+  both keys logged in. The account was removed; its profile was in use and is
+  left until the guest restarts.
+
+| Tests | Default shell | Result |
+| --- | --- | --- |
+| `windows_destination` v01–v10 | `cmd.exe` | 10 passed |
+| `windows_destination` v01–v10 | Windows PowerShell | 10 passed |
 
 ## Shared Administrator File (W07): 2026-10-22
 
