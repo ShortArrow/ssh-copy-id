@@ -26,8 +26,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 - An installation on a Windows host no longer hangs when the key lines exceed
   about 4 KB, as many agent keys or a key file with long comment lines can: the
-  input now ends with a NUL byte, so the script no longer waits for an end of input that sshd may
-  not deliver.
+  input now ends with a NUL byte, so the script no longer waits for an end of
+  input that sshd may not deliver.
 - Installations on a Windows host that run at the same time no longer overwrite
   each other's lines; each line is appended through a handle that can only
   append.
