@@ -295,6 +295,11 @@ fn v01_requirement_2_installs_into_a_missing_file_and_the_key_logs_in() {
         "{}",
         text(&run.stderr)
     );
+    assert!(
+        !text(&run.stderr).contains("CLIXML"),
+        "{}",
+        text(&run.stderr)
+    );
     assert_eq!(guest.user_keys().unwrap(), public_entry(&key));
     assert!(guest.logs_in_with(&key, "fixtureuser"));
 }

@@ -18,7 +18,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   the reported outcome are as on a Unix-like host (D-17). An account in the
   Administrators group, whose keys go to the shared
   `administrators_authorized_keys`, gets nothing written yet, and `-t` on a
-  Windows destination stops before writing.
+  Windows destination stops before writing. PowerShell in ConstrainedLanguage
+  mode is not supported: the run ends without a result and writes nothing.
 - `--target-os unix|windows` names the destination's shell family instead of
   detecting it (D-12).
 

@@ -771,7 +771,12 @@ sets the file's length back; otherwise it reports `uncertain` (D-17).
 The command stays within the 8191 characters that `cmd.exe` accepts. An
 unexpected error ends the script with one `ssh-copy-id: ERROR:` line on its
 standard error and no summary line; left to Windows PowerShell, the error
-would reach a standard error that is not a console as CLIXML.
+would reach a standard error that is not a console as CLIXML. For the same
+reason the script turns off progress records, which PowerShell writes there as
+CLIXML when it first loads a module, so a successful run writes nothing to
+standard error. PowerShell in ConstrainedLanguage mode refuses the .NET calls
+the script makes, its error line included, so the run ends without a result
+line and nothing is written; this mode is not supported.
 
 An account whose token holds the Administrators group, SID `S-1-5-32-544`,
 writes nothing in this release: the script says on its standard error that the
