@@ -792,10 +792,21 @@ the client's commands but not the script.
 
 ### Windows Administrator Scope
 
-Follow Windows OpenSSH's key-file configuration. When installing into the shared
-`administrators_authorized_keys` file, display the destination path and explain
-that it is shared among administrator accounts before writing. Do not describe
+Follow Windows OpenSSH's key-file configuration. Before its first write to the
+shared `administrators_authorized_keys` file, the script prints one
+`ssh-copy-id: INFO:` line on its standard error naming the file's full path and
+saying that every administrator account of the destination shares it. It asks
+for no confirmation, as upstream asks for none before writing. Do not describe
 the installation as granting access exclusively to the named account.
+
+A shared file that does not exist is created empty and given the ACL that
+Microsoft's [key management guide](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement) sets with `icacls`: inheritance removed and
+full control for Administrators and SYSTEM only. The entries name the SIDs
+`S-1-5-32-544` and `S-1-5-18`, so a localized group name does not matter. The
+keys are appended after the ACL is set, so no key is in the file while it holds
+the inherited one. An existing shared file keeps its ACL, as a key file under a
+profile does. The script does not create `%ProgramData%\ssh`: sshd creates it
+when it first starts, so a missing directory reports every key `failed`.
 
 Do not modify server configuration to separate administrator accounts' key files.
 This is a Windows destination specification, not a behavioral difference from
@@ -815,7 +826,9 @@ Boundaries](#permissions-and-service-boundaries)).
 
 Validate that shared-file installations display the path and shared scope before
 mutation, leave server configuration unchanged, and are distinguished from
-installations into a standard user's key file.
+installations into a standard user's key file; that a created file gets exactly
+the two entries and sshd accepts the key in it; that an existing file keeps its
+ACL; and which token an administrator's SSH session holds.
 
 ### Permissions and Service Boundaries
 
@@ -828,8 +841,9 @@ OpenSSH accepts it (validation row W07, first check). Existing directories and
 files keep their ACLs, including extra entries. A key that the server then
 rejects, such as one whose file inherited a writable entry for another account,
 is reported by the post-installation verification (D-06) with the file's
-entries listed, and the user decides what to remove. The ACL of the shared
-administrator file is settled with the rest of row W07. Explain permission
+entries listed, and the user decides what to remove. The shared administrator
+file is the one file whose ACL the tool sets, and only when it creates the file
+(see [Windows Administrator Scope](#windows-administrator-scope)). Explain permission
 failures without automatically elevating privileges or managing services.
 
 `ssh-agent` is a helper service for private keys. Installing public keys on the
