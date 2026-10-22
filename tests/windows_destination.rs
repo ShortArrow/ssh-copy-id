@@ -1,5 +1,5 @@
 //! Behavior against a dockur Windows guest: requirements 1, 2, 3, 7, and 8 for a
-//! standard user, and the administrator stop of stage 2. Every run of the CLI
+//! standard user, and the shared administrator file. Every run of the CLI
 //! uses a temporary `USERPROFILE`, the Windows OpenSSH client first on `PATH`,
 //! its own known-hosts file, no agent, and an `IdentityFile`, so that `ssh`
 //! reads none of the local account's keys.
@@ -75,11 +75,31 @@ impl Guest {
     /// Runs a Windows PowerShell script as `fixtureadmin` through the control
     /// key, whatever the default shell, and returns its stdout.
     fn admin(&self, script: &str) -> String {
-        let output = Command::new(openssh("ssh.exe"))
-            .args(["-F", "none", "-i"])
+        let mut ssh = Command::new(openssh("ssh.exe"));
+        ssh.args(["-F", "none", "-i"])
             .arg(&self.control_key)
+            .args(["-o", "BatchMode=yes"]);
+        self.admin_through(ssh, script)
+    }
+
+    /// Runs a script as [`Guest::admin`] does, logging in with the password,
+    /// so that it works whatever the shared administrator file holds.
+    fn admin_by_password(&self, script: &str) -> String {
+        let mut ssh = Command::new(openssh("ssh.exe"));
+        ssh.args(["-F", "none"])
+            .args([
+                "-o",
+                "PreferredAuthentications=password,keyboard-interactive",
+            ])
+            .env("SSH_ASKPASS", self.askpass(PASSWORD))
+            .env("SSH_ASKPASS_REQUIRE", "force");
+        self.admin_through(ssh, script)
+    }
+
+    fn admin_through(&self, mut ssh: Command, script: &str) -> String {
+        let output = ssh
             .args(self.connection_options())
-            .args(["-o", "BatchMode=yes", "fixtureadmin@127.0.0.1"])
+            .arg("fixtureadmin@127.0.0.1")
             .arg(format!(
                 "powershell.exe -NoProfile -NonInteractive -EncodedCommand {}",
                 encoded(&format!("$ErrorActionPreference='Stop';{script}"))
@@ -411,18 +431,106 @@ fn v06_requirement_8_a_wrong_password_and_a_host_key_mismatch_write_nothing() {
     assert_eq!(guest.user_keys(), None);
 }
 
+/// The shared administrator file's bytes and ACL, put back on drop through a
+/// password login, since a test may remove the control key with the file.
+struct SharedFile<'a> {
+    guest: &'a Guest,
+    bytes: Vec<u8>,
+    sddl: String,
+}
+
+impl<'a> SharedFile<'a> {
+    fn save(guest: &'a Guest) -> SharedFile<'a> {
+        SharedFile {
+            guest,
+            bytes: guest
+                .read(ADMIN_KEYS)
+                .expect("the control key's shared file"),
+            sddl: guest.shared_acl(),
+        }
+    }
+}
+
+impl Drop for SharedFile<'_> {
+    fn drop(&mut self) {
+        self.guest.admin_by_password(&format!(
+            "[IO.File]::WriteAllBytes('{ADMIN_KEYS}',[Convert]::FromBase64String('{}'));\
+             $s=New-Object Security.AccessControl.FileSecurity;\
+             $s.SetSecurityDescriptorSddlForm('{}');\
+             [IO.File]::SetAccessControl('{ADMIN_KEYS}',$s);'ok'",
+            base64(&self.bytes),
+            self.sddl
+        ));
+    }
+}
+
+impl Guest {
+    /// The DACL of the shared administrator file, read through a password
+    /// login.
+    fn shared_acl(&self) -> String {
+        self.admin_by_password(&format!(
+            "[IO.File]::GetAccessControl('{ADMIN_KEYS}').GetSecurityDescriptorSddlForm('Access')"
+        ))
+        .trim()
+        .to_string()
+    }
+}
+
+const SHARED_NOTICE: &str = "ssh-copy-id: INFO: writing to \
+     C:\\ProgramData\\ssh\\administrators_authorized_keys, which every administrator \
+     account on this host shares";
+
 #[test]
 #[ignore = "needs the dockur Windows fixture"]
-fn v07_an_administrator_gets_nothing_written_in_this_release() {
+fn v07_an_administrator_s_key_is_appended_to_the_shared_file_whose_acl_is_kept() {
     let guest = Guest::start();
-    let before = guest.read(ADMIN_KEYS);
+    let saved = SharedFile::save(&guest);
     let key = guest.key("new", "new@test");
     let run = guest.copy_id(&key, "fixtureadmin");
-    assert_eq!(run.status.code(), Some(1), "{}", text(&run.stderr));
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    let stderr = text(&run.stderr);
+    assert!(stderr.contains(SHARED_NOTICE), "{stderr}");
     assert!(
-        text(&run.stderr).contains("administrators_authorized_keys is not supported"),
+        stderr.contains("the key authenticates: it is installed and verified"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("CLIXML"), "{stderr}");
+    let mut expected = saved.bytes.clone();
+    expected.extend_from_slice(public_entry(&key).as_bytes());
+    assert_eq!(guest.read(ADMIN_KEYS).unwrap(), expected);
+    assert_eq!(guest.shared_acl(), saved.sddl);
+    assert!(guest.logs_in_with(&key, "fixtureadmin"));
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v08_a_missing_shared_file_is_created_for_administrators_and_system_only() {
+    let guest = Guest::start();
+    let _saved = SharedFile::save(&guest);
+    guest.admin_by_password(&format!("Remove-Item -LiteralPath '{ADMIN_KEYS}';'ok'"));
+    let key = guest.key("new", "new@test");
+    let run = guest.copy_id(&key, "fixtureadmin");
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert!(
+        text(&run.stderr).contains(SHARED_NOTICE),
         "{}",
         text(&run.stderr)
     );
-    assert_eq!(guest.read(ADMIN_KEYS), before);
+    assert_eq!(
+        guest
+            .admin_by_password(&format!("[IO.File]::ReadAllText('{ADMIN_KEYS}')"))
+            .trim_end(),
+        public_entry(&key).trim_end()
+    );
+    assert_eq!(guest.shared_acl(), "D:PAI(A;;FA;;;SY)(A;;FA;;;BA)");
+    assert!(guest.logs_in_with(&key, "fixtureadmin"));
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v09_an_administrator_s_ssh_session_holds_a_high_integrity_token() {
+    let guest = Guest::start();
+    let groups = guest.admin("whoami.exe /groups");
+    assert!(groups.contains("S-1-16-12288"), "{groups}");
+    assert!(!groups.contains("S-1-16-8192"), "{groups}");
 }

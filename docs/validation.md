@@ -29,7 +29,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W04 | Standard-user SFTP binary upload, download, byte comparison, deletion | Passed | Same script; not an append or atomic-replacement test. |
 | W05 | Windows PowerShell as the sshd default shell | Passed | [Cloned fixture](#windows-powershell-default-shell-2026-09-23), both account tests; a native child command's nonzero exit code reaches the client as 1. |
 | W06 | pwsh as the sshd default shell | Passed | [Cloned fixture with PowerShell 7.6.7](#pwsh-default-shell-w06-2026-10-14), both account tests; exit statuses as under Windows PowerShell (W05). |
-| W07 | Default administrator shared key-file scope and invalid ACL rejection | First check passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. Pending: positive/negative ACL cases for the shared administrator file, an extra read-only ACE, and a second administrator. |
+| W07 | Default administrator shared key-file scope and invalid ACL rejection | Shared file passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. [The shared file](#shared-administrator-file-w07-2026-10-22) is appended to with its ACL kept, or created with Administrators and SYSTEM only, and the keys log in. Pending: an existing shared file with an extra writable entry, an extra read-only ACE, and a second administrator. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Passed | [Probe outputs](#shell-family-probe-w09-2026-10-14) under each, also `tcsh`, `pwsh` as a Linux login shell, and startup steps that print a line. |
 | W10 | A Windows sshd whose default shell starts WSL, and an sshd inside WSL | Passed | [Probe outputs and key files](#wsl-default-shell-and-sshd-inside-wsl-w10-2026-10-15): with `wsl.exe` or `bash.exe` as the default shell the probe stops the run, and a key in the WSL home does not authenticate; an sshd inside WSL answers as a Unix-like shell and reads the WSL home. |
@@ -419,6 +419,38 @@ key path with a space, Japanese, and `'`, and a comment with `"`, `%OS%`, and
 leave no file; v07 `fixtureadmin`, whose shared key file stays unchanged with
 exit 1. Afterwards each guest was stopped; the last one is kept on that host
 with its volume.
+
+## Shared Administrator File (W07): 2026-10-22
+
+The Windows installation script now travels on stdin behind a fixed
+`-EncodedCommand` loader, and an administrator's keys go to
+`administrators_authorized_keys`. Host, client, and guest are as in the
+[recheck below](#recheck-after-the-release-review-2026-10-22): the `cmd.exe`
+copy on the second Linux host, Windows build 26200, `OpenSSH_9.5p2 for Windows`,
+its default shell switched to Windows PowerShell for the second run and back
+afterwards.
+
+| Tests | Default shell | Result |
+| --- | --- | --- |
+| `windows_destination` v01–v09 | `cmd.exe` | 9 passed |
+| `windows_destination` v01–v09 | Windows PowerShell | 9 passed |
+
+- v07: a key appended to the existing shared file, which held the control key,
+  logs in; the file's DACL is unchanged, and standard error names the file as
+  shared before writing.
+- v08: after the shared file was removed, the run creates it with the DACL
+  `D:PAI(A;;FA;;;SY)(A;;FA;;;BA)`, and its key logs in. Both tests put the file's
+  bytes and DACL back through a password login.
+- v09: `fixtureadmin`'s SSH session holds `S-1-16-12288` (High) and not
+  `S-1-16-8192` (Medium), with `LocalAccountTokenFilterPolicy` unset, so the
+  write needs no elevation on this guest.
+- Microsoft Defender had real-time protection and AMSI on, signature
+  1.461.143.0, and `Get-MpThreatDetection` listed nothing after both runs, the
+  loader's `ScriptBlock::Create` included.
+
+The `pwsh` default shell was not run: this guest has no PowerShell 7, and the
+command is the same fixed line under every default shell (O-03). The unit tests
+w10 and w26–w29 cover the script's branches with a stand-in `ProgramData`.
 
 ## Recheck After the Release Review: 2026-10-22
 
