@@ -45,6 +45,7 @@ const ADMIN_CHECK: &str = "$a=[bool]([Security.Principal.WindowsIdentity]::GetCu
 /// group back. Functions start with `_` because an alias, such as `r` for
 /// `Invoke-History`, takes precedence over a function of the same name.
 const INSTALL_FUNCTIONS: &str = r#"$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
 trap{[Console]::Error.WriteLine("ssh-copy-id: ERROR: the installation script stopped: $_");exit 1}
 function _o($s){[Console]::Out.Write("ssh-copy-id: $s`n")}
 function _e($s){-join([Text.Encoding]::UTF8.GetBytes($s)|%{if($_ -ge 33 -and $_ -le 126 -and $_ -ne 37 -and $_ -ne 61){[string][char]$_}else{'%{0:X2}' -f $_}})}
@@ -296,6 +297,17 @@ mod tests {
                 outcome: Outcome::Unchanged,
                 keys,
             }
+        }
+
+        #[test]
+        fn w25_a_successful_installation_writes_nothing_to_stderr() {
+            let profile = Profile::new();
+            let (report, _, stderr) = profile.run_as(false, format!("{KEY_A}\n").as_bytes());
+            assert_eq!(
+                report,
+                installed(vec![key(1, KeyStatus::Added, DEFAULT_PATH)])
+            );
+            assert_eq!(stderr, "");
         }
 
         #[test]
