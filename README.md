@@ -53,8 +53,9 @@ ssh-copy-id user@host
 ```
 
 For a member of a Windows host's Administrators group, the keys go to the
-shared `administrators_authorized_keys` under `%ProgramData%\ssh`, which every
-administrator account of that host accepts; the command says so before writing.
+shared `administrators_authorized_keys` under `%ProgramData%\ssh`, which sshd reads
+for every administrator account of that host under its default configuration;
+the command says so before writing.
 
 Install one key file, or list what would be installed without writing anything:
 

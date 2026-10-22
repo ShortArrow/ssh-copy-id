@@ -747,12 +747,14 @@ authentication asks once for it and once more for the installation; with
 The command sent to a Windows destination is exactly
 `powershell.exe -NoProfile -NonInteractive -EncodedCommand <base64>`. It contains
 only letters, digits, and base64, so `cmd.exe /c`, `powershell.exe -c`, and
-`pwsh -c` interpret it identically. The encoded part is a fixed loader: it
-reads its standard input to the end, runs the ASCII text before the first NUL
-byte as the installation script, and hands the script the bytes after that NUL
-as the key lines. Key lines never hold NUL, since such input is rejected before
-transmission (D-10). Every parameter, including the target path, is inside the
-installation script, so the command's length does not grow with the script and
+`pwsh -c` interpret it identically. The encoded part is a fixed loader. Its
+standard input is the ASCII installation script, a NUL byte, the key lines, and
+a second NUL byte; the loader reads up to that second NUL, runs the script, and
+hands it the bytes between the two as the key lines. It stops there rather than
+at the end of input, which sshd on Windows may never deliver to the command
+once its input passes about 4 KB (validation row W11). Key lines never hold NUL,
+since such input is rejected before transmission (D-10). Every parameter is
+inside the installation script, so the command's length does not grow with it and
 stays far within the 8191 characters that `cmd.exe` accepts. The script is
 plain text, not compressed or otherwise obscured, so the antimalware scan that
 PowerShell applies to it reads it as written. `powershell.exe` is the remote
@@ -769,7 +771,10 @@ The installation script appends the key lines as the `sh` script does and prints
 same result lines, so the CLI reads both outcomes alike. It writes to
 `.ssh\authorized_keys` under the profile directory, `$HOME`, and reports it as
 `path=.ssh/authorized_keys`. A missing directory or file is created without
-setting an ACL, so it keeps the one it inherits (O-02).
+setting an ACL, so it keeps the one it inherits (O-02). It appends through a
+handle that may only append, so Windows writes each line at the end of the file
+as it stands, and runs that write at the same time do not overwrite each
+other's lines.
 
 The loader reads standard input as bytes, through
 `[Console]::OpenStandardInput()`, and never through PowerShell's input
@@ -814,7 +819,9 @@ full control for Administrators and SYSTEM only. The entries name the SIDs
 keys are appended after the ACL is set, so no key is in the file while it holds
 the inherited one. An existing shared file keeps its ACL, as a key file under a
 profile does. The script does not create `%ProgramData%\ssh`: sshd creates it
-when it first starts, so a missing directory reports every key `failed`.
+when it first starts, so a missing directory reports every key `failed`. So
+does a `$env:ProgramData` that is not an absolute path, which would otherwise
+place the file under the session's working directory.
 
 Do not modify server configuration to separate administrator accounts' key files.
 This is a Windows destination specification, not a behavioral difference from
@@ -828,8 +835,9 @@ The shared file is written with the token the SSH session already holds. The
 tool never elevates on the destination: it runs neither `sudo.exe` nor
 `Start-Process -Verb RunAs`, nor anything else that asks for consent, since a
 UAC prompt belongs to an interactive desktop on the destination, not to the
-person running the tool. When that token cannot write the file, the run reports
-a permission failure (see [Permissions and Service
+person running the tool. When that token cannot write the file, every key is
+reported `failed` with the file's path, as for any target that cannot be
+written (see [Permissions and Service
 Boundaries](#permissions-and-service-boundaries)).
 
 Validate that shared-file installations display the path and shared scope before
