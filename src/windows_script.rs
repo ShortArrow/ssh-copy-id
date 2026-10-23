@@ -53,6 +53,10 @@ pub fn windows_install_input(text: &[u8]) -> Vec<u8> {
     )
 }
 
+/// File name of the key file every administrator account shares, under
+/// `$env:ProgramData\ssh`, which the script reports for an administrator.
+pub const ADMIN_KEY_FILE: &str = "administrators_authorized_keys";
+
 /// `script` and `text`, each followed by a NUL byte, as [`LOADER`] reads them.
 fn framed(script: &str, text: &[u8]) -> Vec<u8> {
     let mut input = script.as_bytes().to_vec();
@@ -234,6 +238,11 @@ mod tests {
                 && LOADER.is_ascii()
         );
         assert!(!script_with(ADMIN_CHECK, "").contains('\0'));
+    }
+
+    #[test]
+    fn w34_the_script_names_the_shared_file_admin_key_file_names() {
+        assert!(INSTALL_MAIN.contains(&format!("'ssh','{ADMIN_KEY_FILE}'")));
     }
 
     #[cfg(windows)]
