@@ -359,7 +359,9 @@ appending, as upstream's `cat >>` does, and no lock is added. None of these is a
 difference.
 
 The `-t` path reaches the Unix script as the first line of its standard input,
-before the keys, and the Windows script as a PowerShell single-quoted literal, so
+before the keys, and inside the Windows script as a single-quoted base64
+literal (see [Custom Target on Windows
+Destinations](#custom-target-on-windows-destinations)), so
 quotes, `!`, and CR in the path are data whatever the login shell; csh and tcsh
 would expand `!` even inside single quotes. The second line is the path in the
 `%XX` form of the result lines, for `path=`. A path containing LF cannot be one
@@ -803,6 +805,41 @@ Scope](#windows-administrator-scope) describes, and the result lines carry that
 file's full path.
 On a Windows destination, `-t` stops the run before writing, and `-x` traces
 the client's commands but not the script.
+
+### Custom Target on Windows Destinations
+
+This section designs `-t` on Windows destinations (validation row W08). Until
+it is implemented, `-t` stops the run as the previous section says.
+
+The path is read by the same rule as on a Unix-like destination. A fully
+qualified path, a drive letter followed by `\` or `/`, or a UNC path starting
+with `\\`, is used as given; any other path is relative to the profile
+directory. No variable is expanded, as on a Unix-like destination, so
+`%USERPROFILE%\.ssh\authorized_keys` names a directory called `%USERPROFILE%`
+under the profile, and `.ssh\authorized_keys` names the profile's own file
+whether or not the account is an administrator. A path rooted without a drive,
+such as `\keys`, or a drive without a root, such as `C:keys`, means a different
+file depending on the session's current drive and directory, so it gets nothing
+written and every key reported `failed`, as a `$env:ProgramData` that is not
+absolute does.
+
+With `-t`, membership in the Administrators group does not choose the file, and
+the shared-file `INFO` line is not printed: the named file is the target for
+every account. The path travels inside the script as a single-quoted literal of
+its UTF-8 bytes in base64, so the script stays ASCII and every character of the
+path is data. The result lines report the path as given, in the `%XX` form.
+
+Missing parent directories are created, as on a Unix-like destination, and get
+no ACL set, so each keeps the one it inherits, as a folder created in File
+Explorer does. A key file the script creates is given an ACL with inheritance
+removed and full control for the account, SYSTEM, and Administrators only,
+named by SID, before any key goes in; its owner is left as Windows sets it. This
+plays the part of `umask 077`: sshd checks the key file's own ACL, and a file
+inheriting from a directory outside the profile, such as one under `C:\` where
+Authenticated Users may modify, would be refused, while under a default profile
+the three entries are the ones it would inherit anyway. Existing directories and
+files keep their ACLs. That sshd checks the file and not its directories comes
+from the Win32 source as U-11 reads it and is confirmed by row W08.
 
 ## Windows Permissions and Services
 
