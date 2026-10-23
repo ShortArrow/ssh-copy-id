@@ -14,6 +14,11 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   `sshd_config` has administrators use their own profile's `authorized_keys`
   cannot be served yet: the key goes to the shared file, which that server does
   not read, and the run reports it rejected.
+- When the server still rejects a key written to the shared
+  `administrators_authorized_keys`, the warning asks to check that the
+  server's `AuthorizedKeysFile` setting reads that file for administrators, as
+  the default `Match Group administrators` block does, as well as its
+  permissions (D-06).
 
 ## [0.1.1] - 2026-10-23
 

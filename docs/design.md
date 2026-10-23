@@ -568,9 +568,12 @@ After the keys are written, in both normal and `-s` modes, repeat the
 installed-key check for each written key unless `-f` was given. Report each key
 as installed and verified, or as installed but not verified with the reason. A
 rejected verification does not change the exit status: the file was written, and
-the message names what to check next, such as the shared administrator file or
-the file's ACL; with `-t` it also asks whether the server's `AuthorizedKeysFile`
-setting reads the target, since sshd reads no other file. The verification uses the three results of the selected-identity
+the message names what to check next: the permissions of the file and its
+directory, and, with `-t` or when the script chose the shared administrator
+file, whether the server's `AuthorizedKeysFile` setting reads it, since sshd
+reads no other file. For the shared file the message adds that the default
+`Match Group administrators` block is what reads it, as a server that drops the
+block reads each administrator's profile file instead. The verification uses the three results of the selected-identity
 check; an inconclusive result is reported as not verified.
 
 The reviewed upstream script does not verify after writing; it prints a suggested

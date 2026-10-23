@@ -10,7 +10,7 @@ use crate::remote_script::{TargetPath, install_command, install_input, sh_quote}
 use crate::result_line::{Outcome, parse_report};
 use crate::shell_family::{self, PROBE_COMMAND, ShellFamily};
 use crate::trace::command_line;
-use crate::windows_script::{windows_install_command, windows_install_input};
+use crate::windows_script::{ADMIN_KEY_FILE, windows_install_command, windows_install_input};
 use std::cell::RefCell;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -724,16 +724,28 @@ fn other_candidates(
 }
 
 /// What a rejected verification asks the user to check about `target`, the
-/// file the script reported: with `-t`, also whether the server reads that
-/// file at all, since sshd reads only its `AuthorizedKeysFile`.
+/// file the script reported: with `-t`, or for the shared administrator file
+/// the script chose, also whether the server reads that file at all, since
+/// sshd reads only its `AuthorizedKeysFile`.
 fn what_to_check(target: &str, named: Option<&TargetPath>) -> String {
+    let permissions = format!("the permissions of {target} and its directory");
     match named {
         Some(_) => format!(
-            "that the server's AuthorizedKeysFile setting reads {target}, \
-             and the permissions of {target} and its directory"
+            "that the server's AuthorizedKeysFile setting reads {target}, and {permissions}"
         ),
-        None => format!("the permissions of {target} and its directory"),
+        None if is_shared_admin_file(target) => format!(
+            "that the server's AuthorizedKeysFile setting reads {target} for \
+             administrators, as the default Match Group administrators block does, \
+             and {permissions}"
+        ),
+        None => permissions,
     }
+}
+
+/// Whether `target`, reported without `-t`, is the shared administrator file:
+/// the script reports a file of that name for no other account.
+fn is_shared_admin_file(target: &str) -> bool {
+    target.ends_with(&format!("\\{ADMIN_KEY_FILE}"))
 }
 
 /// Prints the result of a written key's post-installation check (D-06), after
@@ -3745,6 +3757,32 @@ mod tests {
             run.err.contains(
                 "ssh-copy-id: WARNING: the key was installed but could not be verified: \
                  the server still rejects it; check the permissions of .ssh/authorized_keys \
+                 and its directory\n"
+            ),
+            "{}",
+            run.err
+        );
+    }
+
+    #[test]
+    fn t11_a_rejected_verification_of_the_shared_administrator_file_names_the_server_setting() {
+        let run = execute(
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs(
+                    "ssh-copy-id: key=1 result=added \
+                     path=C:\\ProgramData\\ssh\\administrators_authorized_keys\n\
+                     ssh-copy-id: result=installed added=1\n",
+                )
+                .probe(255, DENIED),
+        );
+        assert!(
+            run.err.contains(
+                "ssh-copy-id: WARNING: the key was installed but could not be verified: \
+                 the server still rejects it; check that the server's AuthorizedKeysFile \
+                 setting reads C:\\ProgramData\\ssh\\administrators_authorized_keys for \
+                 administrators, as the default Match Group administrators block does, and \
+                 the permissions of C:\\ProgramData\\ssh\\administrators_authorized_keys \
                  and its directory\n"
             ),
             "{}",
