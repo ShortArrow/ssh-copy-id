@@ -8,7 +8,7 @@ This is `ssh-copy-id` for Windows.
 > This project is experimental until it reaches `v1.0.0`,
 > and is subject to breaking changes in any release before then.
 > It installs keys on Unix-like hosts and for Windows users, administrators
-> included; `-t` on Windows hosts and `-s` are not supported yet.
+> included; `-s` is not supported yet.
 > Do not rely on it for access to machines you cannot reach another way.
 
 ## Summary
