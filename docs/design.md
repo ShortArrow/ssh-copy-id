@@ -5,8 +5,8 @@ English | [日本語](design.jp.md)
 [Differences from upstream](compatibility.md) | [Behavior defined where the standards are silent](definitions.md)
 
 Status: stages 1, 1.5, and 2 are implemented, and of stage 3 the shared
-administrator file. The command installs keys on a Unix-like destination and
-for a Windows user, administrators included. The [delivery plan](#delivery-plan) orders
+administrator file and `-t` on Windows destinations. The command installs keys
+on a Unix-like destination and for a Windows user, administrators included. The [delivery plan](#delivery-plan) orders
 the remaining work, and [open questions](open-questions.md) lists what is not
 decided. This document states the current design and the reasons that still
 hold; the history of a change is in its commit message.
@@ -803,13 +803,10 @@ for deny only, writes to `administrators_authorized_keys` under
 `$env:ProgramData\ssh` as [Windows Administrator
 Scope](#windows-administrator-scope) describes, and the result lines carry that
 file's full path.
-On a Windows destination, `-t` stops the run before writing, and `-x` traces
-the client's commands but not the script.
+On a Windows destination, `-x` traces the client's commands but not the
+script.
 
 ### Custom Target on Windows Destinations
-
-This section designs `-t` on Windows destinations (validation row W08). Until
-it is implemented, `-t` stops the run as the previous section says.
 
 The path is read by the same rule as on a Unix-like destination. A fully
 qualified path, a drive letter followed by `\` or `/`, or a UNC path starting
@@ -839,7 +836,7 @@ inheriting from a directory outside the profile, such as one under `C:\` where
 Authenticated Users may modify, would be refused, while under a default profile
 the three entries are the ones it would inherit anyway. Existing directories and
 files keep their ACLs. That sshd checks the file and not its directories comes
-from the Win32 source as U-11 reads it and is confirmed by row W08.
+from the Win32 source as U-11 reads it, and row W08 shows it on a guest.
 
 ## Windows Permissions and Services
 
@@ -875,9 +872,9 @@ A server whose administrators each use their own profile's
 `authorized_keys`, because its `sshd_config` drops or changes the
 `Match Group administrators` block, is such a case: the shared file is
 written, sshd does not read it, and the verification reports the key
-rejected. `-t` naming the profile's file is the way to install there; until
-`-t` works on Windows destinations (W08), such an administrator account cannot
-be served. Reading `sshd_config` to choose the file is not done: upstream reads
+rejected. `-t .ssh\authorized_keys` names the profile's file and is the way to
+install there (see [Custom Target on Windows
+Destinations](#custom-target-on-windows-destinations)). Reading `sshd_config` to choose the file is not done: upstream reads
 no server configuration, and choosing correctly would mean evaluating `Match`
 criteria and `Include` files as sshd does, with the result still unconfirmed
 until the verification. A dedicated option to skip the shared file is not

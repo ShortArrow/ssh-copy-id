@@ -1,5 +1,7 @@
 //! The installation command sent to Windows destinations.
 
+use crate::remote_script::TargetPath;
+
 /// Builds `powershell.exe -NoProfile -NonInteractive -EncodedCommand <base64>`,
 /// whose loader runs the installation script that [`windows_install_input`]
 /// puts on stdin.
@@ -41,16 +43,42 @@ pub fn windows_install_command() -> String {
 /// existing file keeps its ACL. A missing `$env:ProgramData\ssh` is not
 /// created and gets nothing written.
 ///
+/// `target`, the `-t` path, replaces both files for every account and prints
+/// no shared-file notice. A fully qualified path, a drive letter followed by
+/// `\` or `/` or a path starting with `\\`, is used as given, and any other
+/// path is relative to the profile; nothing in it is expanded. A path rooted
+/// without a drive, or a drive without a root, gets nothing written. Missing
+/// parent directories are created with the ACL they inherit, and a missing file
+/// is created with only the account, SYSTEM and Administrators allowed full
+/// control and no inherited entries; an existing file keeps its ACL. The
+/// result lines carry the path as given.
+///
 /// A target that is a directory, and a non-empty target that cannot be read,
 /// get nothing written and every key reported failed. A `$HOME` that is not a
 /// directory also gets nothing written, so that nothing goes to the working
 /// directory; PowerShell creates a missing profile directory before the script
 /// runs.
-pub fn windows_install_input(text: &[u8]) -> Vec<u8> {
+pub fn windows_install_input(target: Option<&TargetPath>, text: &[u8]) -> Vec<u8> {
     framed(
-        &format!("{ADMIN_CHECK}\n{INSTALL_FUNCTIONS}\n{INSTALL_MAIN}"),
+        &format!(
+            "{ADMIN_CHECK}\n{}\n{INSTALL_FUNCTIONS}\n{INSTALL_MAIN}",
+            target_line(target)
+        ),
         text,
     )
+}
+
+/// Sets `$T` to the `-t` path, or to `$null` without one. The path is a
+/// base64 literal of its UTF-8 bytes, so the script stays ASCII and every
+/// character of the path is data.
+fn target_line(target: Option<&TargetPath>) -> String {
+    match target {
+        Some(path) => format!(
+            "$T=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{}'))",
+            base64(path.as_str().as_bytes())
+        ),
+        None => "$T=$null".to_string(),
+    }
 }
 
 /// File name of the key file every administrator account shares, under
@@ -89,18 +117,22 @@ function _s{if([IO.File]::Exists($f)){(New-Object IO.FileInfo $f).Length}}
 function _w([byte[]]$b){try{$s=New-Object IO.FileStream($f,'Append',[Security.AccessControl.FileSystemRights]::AppendData,'ReadWrite',4096,'None');try{$s.Write($b,0,$b.Length);$s.Flush()}finally{$s.Dispose()};1}catch{0}}
 function _l{$s=New-Object IO.FileStream($f,'Open','Read','ReadWrite',1);try{$null=$s.Seek(-1,'End');$s.ReadByte()}finally{$s.Dispose()}}
 function _a([byte[]]$l){try{if(!$w -and (_s) -gt 0 -and (_l) -ne 10){$t.Add(10);if(!(_w @(10))){return 0}};$t.AddRange($l);$t.Add(10);_w ([byte[]]($l+[byte[]]@(10)))}catch{0}}
-function _c{[IO.File]::Open($f,'CreateNew','Write','ReadWrite').Dispose();try{$s=New-Object Security.AccessControl.FileSecurity;$s.SetAccessRuleProtection($true,$false);'S-1-5-32-544','S-1-5-18'|%{$s.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier $_),'FullControl','Allow')))};[IO.File]::SetAccessControl($f,$s)}catch{[IO.File]::Delete($f);throw}}
+function _c($m){[IO.File]::Open($f,'CreateNew','Write','ReadWrite').Dispose();try{$s=New-Object Security.AccessControl.FileSecurity;$s.SetAccessRuleProtection($true,$false);$m|%{$s.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier $_),'FullControl','Allow')))};[IO.File]::SetAccessControl($f,$s)}catch{[IO.File]::Delete($f);throw}}
 function _r{try{$n=_s;if($n -eq $null){return $z -eq $null};$b=[long]$z;$k=New-Object byte[] ($n-$b);$s=New-Object IO.FileStream($f,'Open','Read','ReadWrite',1);try{$null=$s.Seek($b,'Begin');$q=0;while($q -lt $k.Length){$c=$s.Read($k,$q,$k.Length-$q);if(!$c){break};$q+=$c}}finally{$s.Dispose()};for($j=0;$j -lt $k.Length;$j++){if($k[$j] -ne $t[$j]){return $false}};if($z -eq $null){[IO.File]::Delete($f)}else{$s=[IO.File]::Open($f,'Open','Write','ReadWrite');try{$s.SetLength($z)}finally{$s.Dispose()}};(_s) -eq $z}catch{$false}}"#;
 
-/// Appends the lines in `$i` to the profile's key file, or to the shared
-/// administrator file when `$a` is set, and reports them.
+/// Appends the lines in `$i` to the `-t` path in `$T`, or else to the profile's
+/// key file, or to the shared administrator file when `$a` is set, and reports
+/// them. `$m` holds the SIDs a created file allows, `$null` where a created
+/// file keeps the ACL it inherits.
 /// `$x` is set once nothing more may be written, `$z` holds the target's size
 /// before the current group (`$null` when it did not exist) and `$t` the bytes
 /// tried in the group.
-const INSTALL_MAIN: &str = r#"$f=[IO.Path]::Combine($HOME,'.ssh','authorized_keys');$p='.ssh/authorized_keys';$x=0;$d=0
-if($a){$f=[IO.Path]::Combine($env:ProgramData,'ssh','administrators_authorized_keys');$p=_e $f}
-try{if($a){if(![IO.Path]::IsPathRooted($env:ProgramData) -or ![IO.Directory]::Exists([IO.Path]::GetDirectoryName($f))){throw 1}}else{if(![IO.Directory]::Exists($HOME)){throw 1};$null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($f))};if((_s) -gt 0){[IO.File]::Open($f,'Open','Read','ReadWrite').Dispose()}}catch{$x=1}
-if(!$x -and $a){[Console]::Error.WriteLine("ssh-copy-id: INFO: writing to $f, which every administrator account on this host shares");try{if($null -eq (_s)){_c;$d=1}}catch{$x=1}}
+const INSTALL_MAIN: &str = r#"$f=[IO.Path]::Combine($HOME,'.ssh','authorized_keys');$p='.ssh/authorized_keys';$x=0;$d=0;$m=$null
+if($T -ne $null){$a=$false;$p=_e $T;$m=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544';if($T -match '^([A-Za-z]:[\\/]|\\\\)'){$f=$T}elseif([IO.Path]::IsPathRooted($T)){$x=1}else{$f=[IO.Path]::Combine($HOME,$T)}}
+elseif($a){$f=[IO.Path]::Combine($env:ProgramData,'ssh','administrators_authorized_keys');$p=_e $f;$m='S-1-5-32-544','S-1-5-18'}
+if(!$x){try{if($a){if(![IO.Path]::IsPathRooted($env:ProgramData) -or ![IO.Directory]::Exists([IO.Path]::GetDirectoryName($f))){throw 1}}else{if(![IO.Directory]::Exists($HOME)){throw 1};$null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($f))};if((_s) -gt 0){[IO.File]::Open($f,'Open','Read','ReadWrite').Dispose()}}catch{$x=1}}
+if(!$x -and $a){[Console]::Error.WriteLine("ssh-copy-id: INFO: writing to $f, which every administrator account on this host shares")}
+if(!$x -and $m){try{if($null -eq (_s)){_c $m;$d=1}}catch{$x=1}}
 $n=0;$g=0;$w=0;$u=0;$h='failed';$t=New-Object Collections.Generic.List[byte];$z=$null;if(!$x -and !$d){$z=_s}
 $o=0;for($e=0;$e -le $i.Length;$e++){if($e -lt $i.Length -and $i[$e] -ne 10){continue};if($e -eq $o -and $e -eq $i.Length){break}
 $l=[byte[]]@();if($e -gt $o){$l=[byte[]]$i[$o..($e-1)]};$o=$e+1
@@ -202,11 +234,11 @@ mod tests {
 
     #[test]
     fn w30_the_input_is_the_script_and_the_key_lines_each_ended_by_nul() {
-        let mut expected = script_with(ADMIN_CHECK, "").into_bytes();
+        let mut expected = script_with(&format!("{ADMIN_CHECK}\n$T=$null"), "").into_bytes();
         expected.push(0);
         expected.extend_from_slice(b"k1\n# c\r\n");
         expected.push(0);
-        assert_eq!(windows_install_input(b"k1\n# c\r\n"), expected);
+        assert_eq!(windows_install_input(None, b"k1\n# c\r\n"), expected);
         assert!(
             !INSTALL_MAIN.is_empty() && !INSTALL_FUNCTIONS.is_empty() && !ADMIN_CHECK.is_empty()
         );
@@ -238,6 +270,21 @@ mod tests {
                 && LOADER.is_ascii()
         );
         assert!(!script_with(ADMIN_CHECK, "").contains('\0'));
+    }
+
+    #[test]
+    fn w35_a_target_is_a_base64_literal_of_its_utf8_bytes() {
+        let target = TargetPath::new("鍵\\it's").unwrap();
+        let input = windows_install_input(Some(&target), b"k1\n");
+        let script = String::from_utf8(input[..input.len() - 5].to_vec()).unwrap();
+        assert!(script.is_ascii());
+        assert!(
+            script.contains(&format!(
+                "\n$T=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{}'))\n",
+                base64("鍵\\it's".as_bytes())
+            )),
+            "{script}"
+        );
     }
 
     #[test]
@@ -335,6 +382,191 @@ mod tests {
                 let (report, stdout, _) = self.run_as(false, stdin);
                 (report, stdout)
             }
+
+            /// Runs the script as `run_as_with` does, with `target` as the
+            /// `-t` path.
+            fn run_target(
+                &self,
+                admin: bool,
+                target: &str,
+                between: &str,
+                stdin: &[u8],
+            ) -> (Report, String, String) {
+                let flag = if admin { "$true" } else { "$false" };
+                let line = target_line(Some(&TargetPath::new(target).unwrap()));
+                run_script(
+                    &script_with(&format!("$a={flag}\n{line}"), between),
+                    &self.0,
+                    stdin,
+                )
+            }
+        }
+
+        /// The DACL of `path` in SDDL.
+        fn sddl(path: &std::path::Path) -> String {
+            powershell(&format!(
+                "[Console]::Out.Write((Get-Item -LiteralPath '{}').GetAccessControl('Access').GetSecurityDescriptorSddlForm('Access'))",
+                path.display()
+            ))
+        }
+
+        /// The access rules of `path`, each as its SID, rights and type,
+        /// sorted; SDDL would print a well-known account by its alias.
+        fn access_rules(path: &std::path::Path) -> Vec<String> {
+            let mut rules: Vec<String> = powershell(&format!(
+                "(Get-Item -LiteralPath '{}').GetAccessControl('Access').GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|%{{[Console]::Out.Write(\"$($_.IdentityReference) $($_.FileSystemRights) $($_.AccessControlType)`n\")}}",
+                path.display()
+            ))
+            .lines()
+            .map(str::to_string)
+            .collect();
+            rules.sort();
+            rules
+        }
+
+        /// The SID of the account running the tests.
+        fn user_sid() -> String {
+            powershell(
+                "[Console]::Out.Write([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)",
+            )
+        }
+
+        fn powershell(script: &str) -> String {
+            let output = Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+                .arg(encoded(script))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        }
+
+        #[test]
+        fn w36_a_relative_target_is_created_under_the_profile_with_its_parents() {
+            let profile = Profile::new();
+            let target = "keys\\it's 鍵";
+            let (report, stdout, stderr) =
+                profile.run_target(false, target, "", format!("{KEY_A}\n").as_bytes());
+            assert_eq!(
+                report,
+                installed(vec![key(1, KeyStatus::Added, target.as_bytes())]),
+                "{stdout}"
+            );
+            assert_eq!(
+                fs::read_to_string(profile.file(target)).unwrap(),
+                format!("{KEY_A}\n")
+            );
+            assert_eq!(stderr, "");
+        }
+
+        #[test]
+        fn w37_a_created_key_file_allows_only_the_account_system_and_administrators() {
+            let profile = Profile::new();
+            let target = profile.file("outside\\deep\\keys");
+            let (report, stdout, _) = profile.run_target(
+                false,
+                &target.display().to_string(),
+                "",
+                format!("{KEY_A}\n").as_bytes(),
+            );
+            assert_eq!(report.outcome, Outcome::Installed, "{stdout}");
+            let file = sddl(&target);
+            assert!(file.starts_with("D:PAI"), "{file}");
+            let mut expected = vec![
+                format!("{} FullControl Allow", user_sid()),
+                "S-1-5-18 FullControl Allow".to_string(),
+                "S-1-5-32-544 FullControl Allow".to_string(),
+            ];
+            expected.sort();
+            assert_eq!(access_rules(&target), expected, "{file}");
+            let directory = sddl(&profile.file("outside\\deep"));
+            assert!(!directory.starts_with("D:P"), "{directory}");
+        }
+
+        #[test]
+        fn w38_an_administrator_s_target_is_the_named_file_without_the_shared_notice() {
+            let profile = Profile::new();
+            fs::create_dir_all(profile.shared_dir()).unwrap();
+            let (report, stdout, stderr) = profile.run_target(
+                true,
+                ".ssh\\authorized_keys",
+                "",
+                format!("{KEY_A}\n").as_bytes(),
+            );
+            assert_eq!(report.outcome, Outcome::Installed, "{stdout}");
+            assert_eq!(
+                fs::read_to_string(profile.keys()).unwrap(),
+                format!("{KEY_A}\n")
+            );
+            assert!(!profile.shared().exists());
+            assert_eq!(stderr, "");
+        }
+
+        #[test]
+        fn w39_a_path_that_depends_on_the_current_drive_gets_nothing_written() {
+            let profile = Profile::new();
+            let name = format!("ssh-copy-id-w39-{}", std::process::id());
+            for target in [format!("\\{name}"), format!("C:{name}")] {
+                let (report, stdout, _) =
+                    profile.run_target(false, &target, "", format!("{KEY_A}\n").as_bytes());
+                assert_eq!(
+                    report,
+                    unchanged(vec![key(1, KeyStatus::Failed, target.as_bytes())]),
+                    "{target}: {stdout}"
+                );
+                assert!(!PathBuf::from(format!("C:\\{name}")).exists());
+                assert!(!profile.file(&name).exists());
+                assert!(!profile.file(".ssh").exists());
+            }
+        }
+
+        #[test]
+        fn w40_an_existing_target_keeps_its_acl() {
+            let profile = Profile::new();
+            fs::write(profile.file("keys"), "e\n").unwrap();
+            let before = sddl(&profile.file("keys"));
+            let (report, stdout, _) = profile.run_target(
+                false,
+                "keys",
+                "function _c{throw 'created'}",
+                format!("{KEY_A}\n").as_bytes(),
+            );
+            assert_eq!(report.outcome, Outcome::Installed, "{stdout}");
+            assert_eq!(sddl(&profile.file("keys")), before);
+            assert_eq!(
+                fs::read_to_string(profile.file("keys")).unwrap(),
+                format!("e\n{KEY_A}\n")
+            );
+        }
+
+        #[test]
+        fn w42_a_path_starting_with_two_backslashes_is_used_as_given() {
+            let profile = Profile::new();
+            let target = format!("\\\\?\\{}", profile.file("unc\\keys").display());
+            let (report, stdout, _) =
+                profile.run_target(false, &target, "", format!("{KEY_A}\n").as_bytes());
+            assert_eq!(report.outcome, Outcome::Installed, "{stdout}");
+            assert_eq!(
+                fs::read_to_string(profile.file("unc\\keys")).unwrap(),
+                format!("{KEY_A}\n")
+            );
+        }
+
+        #[test]
+        fn w41_a_variable_in_the_target_is_not_expanded() {
+            let profile = Profile::new();
+            let (report, stdout, _) = profile.run_target(
+                false,
+                "%USERPROFILE%\\$HOME",
+                "",
+                format!("{KEY_A}\n").as_bytes(),
+            );
+            assert_eq!(report.outcome, Outcome::Installed, "{stdout}");
+            assert!(profile.file("%USERPROFILE%\\$HOME").is_file());
         }
 
         impl Drop for Profile {
@@ -586,7 +818,7 @@ mod tests {
             let output = Command::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
                 .arg(encoded(&format!(
-                    "{INSTALL_FUNCTIONS}\n$f='{path}';_c\n\
+                    "{INSTALL_FUNCTIONS}\n$f='{path}';_c 'S-1-5-32-544','S-1-5-18'\n\
                      [Console]::Out.Write([IO.File]::GetAccessControl($f).GetSecurityDescriptorSddlForm('Access'))"
                 )))
                 .output()

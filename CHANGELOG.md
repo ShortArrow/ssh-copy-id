@@ -8,12 +8,20 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+### Added
+
+- `-t target_path` works on a Windows destination. A path that is not fully
+  qualified is relative to the profile, and no variable in it is expanded; a
+  path whose meaning depends on the current drive, such as `\keys` or
+  `C:keys`, gets nothing written. Missing parent directories are created and
+  keep the ACL they inherit; a key file the run creates gets full control for
+  the account, SYSTEM, and Administrators only, with no inherited entries, and
+  an existing one keeps its ACL. With `-t`, an administrator's keys go to the
+  named file, so `-t .ssh\authorized_keys` serves a host whose `sshd_config`
+  has administrators use their own profile's `authorized_keys`.
+
 ### Changed
 
-- The documentation says that an administrator on a Windows host whose
-  `sshd_config` has administrators use their own profile's `authorized_keys`
-  cannot be served yet: the key goes to the shared file, which that server does
-  not read, and the run reports it rejected.
 - When the server still rejects a key written to the shared
   `administrators_authorized_keys`, the warning asks to check that the
   server's `AuthorizedKeysFile` setting reads that file for administrators, as

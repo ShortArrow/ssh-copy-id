@@ -19,8 +19,6 @@ use std::path::{Path, PathBuf};
 pub const TARGET: &str = ".ssh/authorized_keys";
 
 const NOTHING_WRITTEN: &str = "interrupted; nothing was written";
-const WINDOWS_TARGET: &str =
-    "-t is not available for Windows destinations in this release; nothing was written";
 const UNCONNECTED_FAMILY: &str =
     "ssh exited with status 255 before the shell family was detected; nothing was written";
 const MULTI_LINE_TARGET: &str =
@@ -497,8 +495,10 @@ fn write_keys(
             install_command(install.target, invocation.trace),
             install_input(install.target, text),
         ),
-        ShellFamily::Windows if install.target.is_some() => return stop(WINDOWS_TARGET),
-        ShellFamily::Windows => (windows_install_command(), windows_install_input(text)),
+        ShellFamily::Windows => (
+            windows_install_command(),
+            windows_install_input(install.target, text),
+        ),
     };
     let mut install_args = vec!["-o".to_string(), "RequestTTY=no".to_string()];
     install_args.extend(install.common.iter().cloned());
@@ -1426,7 +1426,7 @@ mod tests {
         );
         assert_eq!(
             stdin,
-            windows_install_input(format!("{KEY}\n").as_bytes()).as_slice()
+            windows_install_input(None, format!("{KEY}\n").as_bytes()).as_slice()
         );
         assert!(!capture_stderr);
     }
@@ -1528,23 +1528,27 @@ mod tests {
     }
 
     #[test]
-    fn a70_a_target_path_on_a_windows_destination_stops_before_writing() {
+    fn a70_a_target_path_reaches_the_windows_script() {
         let run = execute_with(
             &targeting("keys", windows(invocation())),
             files(),
             true,
             false,
-            FakeSsh::new().probe(255, DENIED),
+            FakeSsh::new()
+                .probe(255, DENIED)
+                .installs("ssh-copy-id: key=1 result=added path=keys\nssh-copy-id: result=installed added=1\n")
+                .probe(0, ACCEPTED),
         );
-        assert_eq!(run.status, 1);
-        assert_eq!(run.ssh.kinds(), ["version", "config", "probe"]);
-        assert!(
-            run.err.ends_with(
-                "ssh-copy-id: ERROR: -t is not available for Windows destinations \
-                 in this release; nothing was written\n"
-            ),
-            "{}",
-            run.err
+        assert_eq!(run.status, 0, "{}", run.err);
+        let (args, stdin, _) = run.ssh.call("install");
+        assert_eq!(args.last().unwrap(), &windows_install_command());
+        assert_eq!(
+            stdin,
+            windows_install_input(
+                Some(&TargetPath::new("keys").unwrap()),
+                format!("{KEY}\n").as_bytes()
+            )
+            .as_slice()
         );
     }
 
