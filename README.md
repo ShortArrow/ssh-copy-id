@@ -57,9 +57,10 @@ shared `administrators_authorized_keys` under `%ProgramData%\ssh`, which sshd re
 for every administrator account of that host under its default configuration;
 the command says so before writing. A host whose `sshd_config` has
 administrators use their own profile's `authorized_keys` instead does not read
-that file, and the run reports the key rejected; naming the target with `-t`,
-which is not yet supported on Windows destinations, is the planned way to
-install there.
+that file, and the run reports the key rejected; there, name the profile's file
+with `-t .ssh\authorized_keys`. On a Windows destination a relative `-t` path is
+relative to the profile, and a key file the run creates allows only the
+account, SYSTEM, and Administrators.
 
 Install one key file, or list what would be installed without writing anything:
 
