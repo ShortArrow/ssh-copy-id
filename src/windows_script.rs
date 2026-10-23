@@ -410,6 +410,20 @@ mod tests {
             ))
         }
 
+        /// The access rules of `path`, each as its SID, rights and type,
+        /// sorted; SDDL would print a well-known account by its alias.
+        fn access_rules(path: &std::path::Path) -> Vec<String> {
+            let mut rules: Vec<String> = powershell(&format!(
+                "(Get-Item -LiteralPath '{}').GetAccessControl('Access').GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|%{{[Console]::Out.Write(\"$($_.IdentityReference) $($_.FileSystemRights) $($_.AccessControlType)`n\")}}",
+                path.display()
+            ))
+            .lines()
+            .map(str::to_string)
+            .collect();
+            rules.sort();
+            rules
+        }
+
         /// The SID of the account running the tests.
         fn user_sid() -> String {
             powershell(
@@ -462,10 +476,13 @@ mod tests {
             assert_eq!(report.outcome, Outcome::Installed, "{stdout}");
             let file = sddl(&target);
             assert!(file.starts_with("D:PAI"), "{file}");
-            for sid in [user_sid().as_str(), "SY", "BA"] {
-                assert!(file.contains(&format!("(A;;FA;;;{sid})")), "{file}");
-            }
-            assert_eq!(file.matches('(').count(), 3, "{file}");
+            let mut expected = vec![
+                format!("{} FullControl Allow", user_sid()),
+                "S-1-5-18 FullControl Allow".to_string(),
+                "S-1-5-32-544 FullControl Allow".to_string(),
+            ];
+            expected.sort();
+            assert_eq!(access_rules(&target), expected, "{file}");
             let directory = sddl(&profile.file("outside\\deep"));
             assert!(!directory.starts_with("D:P"), "{directory}");
         }
