@@ -195,10 +195,27 @@ impl Guest {
         user: &str,
         known_hosts: &Path,
     ) -> Output {
+        self.copy_id_with(password, key, user, known_hosts, &[])
+    }
+
+    /// Runs the CLI as [`Guest::copy_id`] does, with `-t target`.
+    fn copy_id_to(&self, key: &Path, user: &str, target: &str) -> Output {
+        self.copy_id_with(PASSWORD, key, user, &self.known_hosts, &["-t", target])
+    }
+
+    fn copy_id_with(
+        &self,
+        password: &str,
+        key: &Path,
+        user: &str,
+        known_hosts: &Path,
+        options: &[&str],
+    ) -> Output {
         let mut path =
             std::env::split_paths(&std::env::var_os("PATH").unwrap()).collect::<Vec<_>>();
         path.insert(0, openssh(""));
         let child = Command::new(env!("CARGO_BIN_EXE_ssh-copy-id"))
+            .args(options)
             .arg("-i")
             .arg(key)
             .args(["-F", "none"])
@@ -548,4 +565,156 @@ fn v09_an_administrator_s_ssh_session_holds_a_high_integrity_token() {
     let groups = guest.admin("whoami.exe /groups");
     assert!(groups.contains("S-1-16-12288"), "{groups}");
     assert!(!groups.contains("S-1-16-8192"), "{groups}");
+}
+
+/// A directory under `C:\`, where Authenticated Users may modify what
+/// inherits from it, removed before and after the test.
+const OUTSIDE: &str = r"C:\ssh-copy-id-w08";
+
+struct Outside<'a>(&'a Guest);
+
+impl<'a> Outside<'a> {
+    fn clear(guest: &'a Guest) -> Outside<'a> {
+        remove_outside(guest);
+        Outside(guest)
+    }
+}
+
+impl Drop for Outside<'_> {
+    fn drop(&mut self) {
+        remove_outside(self.0);
+    }
+}
+
+fn remove_outside(guest: &Guest) {
+    guest.admin(&format!(
+        "if(Test-Path -LiteralPath '{OUTSIDE}'){{Remove-Item -Recurse -Force -LiteralPath '{OUTSIDE}'}};'ok'"
+    ));
+}
+
+impl Guest {
+    /// The access rules of a guest path, each as its SID, rights and type,
+    /// sorted, and whether inheritance is removed.
+    fn access_rules(&self, path: &str) -> (bool, Vec<String>) {
+        let reply = self.admin(&format!(
+            "$c=(Get-Item -LiteralPath '{path}').GetAccessControl('Access');\
+             [Console]::Out.Write(\"$($c.AreAccessRulesProtected)`n\");\
+             $c.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|\
+             %{{[Console]::Out.Write(\"$($_.IdentityReference) $($_.FileSystemRights) $($_.AccessControlType)`n\")}}"
+        ));
+        let mut lines = reply.lines();
+        let protected = lines.next() == Some("True");
+        let mut rules: Vec<String> = lines.map(str::to_string).collect();
+        rules.sort();
+        (protected, rules)
+    }
+
+    fn sid_of(&self, account: &str) -> String {
+        self.admin(&format!(
+            "(New-Object Security.Principal.NTAccount '{account}').Translate([Security.Principal.SecurityIdentifier]).Value"
+        ))
+        .trim()
+        .to_string()
+    }
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture whose sshd reads C:/ssh-copy-id-w08/keys for fixtureuser"]
+fn v11_a_target_outside_the_profile_is_created_for_the_account_system_and_administrators() {
+    let guest = Guest::start();
+    let _outside = Outside::clear(&guest);
+    let target = format!(r"{OUTSIDE}\keys");
+    let key = guest.key("new", "new@test");
+    let run = guest.copy_id_to(&key, "fixtureuser", &target);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert!(
+        text(&run.stderr).contains("the key authenticates: it is installed and verified"),
+        "{}",
+        text(&run.stderr)
+    );
+    let (protected, rules) = guest.access_rules(&target);
+    assert!(protected);
+    let mut expected = vec![
+        format!("{} FullControl Allow", guest.sid_of("fixtureuser")),
+        "S-1-5-18 FullControl Allow".to_string(),
+        "S-1-5-32-544 FullControl Allow".to_string(),
+    ];
+    expected.sort();
+    assert_eq!(rules, expected);
+    let (protected, rules) = guest.access_rules(OUTSIDE);
+    assert!(!protected);
+    assert!(
+        rules.iter().any(|rule| rule.starts_with("S-1-5-11 ")),
+        "{rules:?}"
+    );
+    assert_eq!(
+        String::from_utf8(guest.read(&target).unwrap()).unwrap(),
+        public_entry(&key)
+    );
+    assert!(guest.logs_in_with(&key, "fixtureuser"));
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture whose sshd reads C:/ssh-copy-id-w08/keys for fixtureuser"]
+fn v12_an_existing_target_inheriting_authenticated_users_keeps_its_acl_and_is_refused() {
+    let guest = Guest::start();
+    let _outside = Outside::clear(&guest);
+    let target = format!(r"{OUTSIDE}\keys");
+    guest.admin(&format!(
+        "$null=New-Item -ItemType Directory '{OUTSIDE}';[IO.File]::WriteAllText('{target}','');'ok'"
+    ));
+    let before = guest.access_rules(&target);
+    let key = guest.key("new", "new@test");
+    let run = guest.copy_id_to(&key, "fixtureuser", &target);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert!(
+        text(&run.stderr).contains(&format!(
+            "check that the server's AuthorizedKeysFile setting reads {target}"
+        )),
+        "{}",
+        text(&run.stderr)
+    );
+    assert_eq!(guest.access_rules(&target), before);
+    assert_eq!(
+        String::from_utf8(guest.read(&target).unwrap()).unwrap(),
+        public_entry(&key)
+    );
+    assert!(!guest.logs_in_with(&key, "fixtureuser"));
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v13_an_administrator_s_target_is_the_profile_file_and_the_shared_file_is_untouched() {
+    const ADMIN_PROFILE_KEYS: &str = r"C:\Users\fixtureadmin\.ssh\authorized_keys";
+    let guest = Guest::start();
+    let saved = SharedFile::save(&guest);
+    let profile_keys = guest.read(ADMIN_PROFILE_KEYS);
+    let key = guest.key("new", "new@test");
+    let run = guest.copy_id_to(&key, "fixtureadmin", r".ssh\authorized_keys");
+    let after = guest.read(ADMIN_PROFILE_KEYS);
+    match &profile_keys {
+        Some(bytes) => guest.admin(&format!(
+            "[IO.File]::WriteAllBytes('{ADMIN_PROFILE_KEYS}',[Convert]::FromBase64String('{}'));'ok'",
+            base64(bytes)
+        )),
+        None => guest.admin(&format!(
+            "Remove-Item -LiteralPath '{ADMIN_PROFILE_KEYS}';'ok'"
+        )),
+    };
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    let stderr = text(&run.stderr);
+    assert!(
+        !stderr.contains("ssh-copy-id: INFO: writing to"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            r"check that the server's AuthorizedKeysFile setting reads .ssh\authorized_keys"
+        ),
+        "{stderr}"
+    );
+    let mut expected = profile_keys.unwrap_or_default();
+    expected.extend_from_slice(public_entry(&key).as_bytes());
+    assert_eq!(after.unwrap(), expected);
+    assert_eq!(guest.read(ADMIN_KEYS).unwrap(), saved.bytes);
 }

@@ -30,7 +30,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W05 | Windows PowerShell as the sshd default shell | Passed | [Cloned fixture](#windows-powershell-default-shell-2026-09-23), both account tests; a native child command's nonzero exit code reaches the client as 1. |
 | W06 | pwsh as the sshd default shell | Passed | [Cloned fixture with PowerShell 7.6.7](#pwsh-default-shell-w06-2026-10-14), both account tests; exit statuses as under Windows PowerShell (W05). |
 | W07 | Default administrator shared key-file scope and invalid ACL rejection | Shared file passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. [The shared file](#shared-administrator-file-w07-2026-10-22) is appended to with its ACL kept, or created with Administrators and SYSTEM only, and the keys log in. [A second administrator](#release-review-for-020-w07-w11-2026-10-22) appends to a file the first one created, and both keys log in. Pending: an existing shared file with an extra writable entry, and an extra read-only ACE. |
-| W08 | Custom authorized-key paths and existing parent ACL preservation | Pending | Cover D03 and Windows-specific ACL prerequisites: that sshd accepts a created key file under a directory outside the profile that Authenticated Users may modify, and refuses one that inherits from it. |
+| W08 | Custom authorized-key paths and existing parent ACL preservation | Passed | [With sshd reading a file outside the profile](#custom-target-on-a-windows-destination-w08-2026-10-24), a key file `-t` creates there gets three entries and logs in while its directory lets Authenticated Users modify it; an existing file inheriting that entry keeps its ACL and sshd refuses it for that entry. An administrator's `-t .ssh\authorized_keys` appends to the profile file and leaves the shared file alone. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Passed | [Probe outputs](#shell-family-probe-w09-2026-10-14) under each, also `tcsh`, `pwsh` as a Linux login shell, and startup steps that print a line. |
 | W10 | A Windows sshd whose default shell starts WSL, and an sshd inside WSL | Passed | [Probe outputs and key files](#wsl-default-shell-and-sshd-inside-wsl-w10-2026-10-15): with `wsl.exe` or `bash.exe` as the default shell the probe stops the run, and a key in the WSL home does not authenticate; an sshd inside WSL answers as a Unix-like shell and reads the WSL home. |
 | W11 | Windows key input past about 4 KB on stdin | Passed | [The end of input does not arrive; the loader stops at its terminator](#release-review-for-020-w07-w11-2026-10-22). |
@@ -504,6 +504,39 @@ whose probe reply has no marker line; it failed with the code from before the
 change. The `pwsh` default shell was not rerun: its probe reply has the Windows
 PowerShell form, `%OS%:` and a Windows home path (W09), and the command sent
 after detection is the one both runs above passed.
+
+## Custom Target on a Windows Destination (W08): 2026-10-24
+
+`-t` now installs on a Windows destination
+([design](design.md#custom-target-on-windows-destinations)). Host, client, and
+guest are as in the [shared-file run](#shared-administrator-file-w07-2026-10-22):
+the `cmd.exe` copy on the second Linux host, Windows build 26200,
+`OpenSSH_9.5p2 for Windows`.
+
+| Tests | `sshd_config` | Result |
+| --- | --- | --- |
+| `windows_destination` v13 | as shipped | passed |
+| `windows_destination` v11, v12 | plus `Match User fixtureuser` with `AuthorizedKeysFile C:/ssh-copy-id-w08/keys` | 2 passed |
+
+- v11: `-t C:\ssh-copy-id-w08\keys` for `fixtureuser` creates the directory,
+  which inherits Authenticated Users (S-1-5-11) from `C:\`, and the file, whose
+  inheritance is removed and whose only entries give full control to the
+  account, SYSTEM, and Administrators. The key logs in; sshd logs
+  `Accepted publickey`, so its check reads the file and not its directory.
+- v12: an existing empty file there, inheriting the Authenticated Users entry,
+  gets the key appended and keeps its access rules. The key does not log in;
+  sshd logs `Bad permissions. Try removing permissions for user:
+  NT AUTHORITY\\Authenticated Users (S-1-5-11) on file C:/ssh-copy-id-w08/keys`,
+  and the warning asks to check that `AuthorizedKeysFile` reads that path.
+- v13: `-t .ssh\authorized_keys` for `fixtureadmin` prints no shared-file
+  notice, appends to `C:\Users\fixtureadmin\.ssh\authorized_keys`, and leaves
+  `administrators_authorized_keys` unchanged; under the shipped `Match Group
+  administrators` block the key is rejected, and the warning names that path.
+  The test puts the profile file back.
+- Without the `Match User` block, sshd never reads `C:\ssh-copy-id-w08\keys`, so
+  v11 fails and v12's refusal shows nothing. The block was added for one run,
+  checked with `sshd -t`, and removed; the restored file's SHA-256 matches the
+  one taken before, and `C:\ssh-copy-id-w08` is gone.
 
 ## Stage 1.5 on a Unix-like Destination: 2026-10-11
 

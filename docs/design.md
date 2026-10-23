@@ -836,7 +836,7 @@ inheriting from a directory outside the profile, such as one under `C:\` where
 Authenticated Users may modify, would be refused, while under a default profile
 the three entries are the ones it would inherit anyway. Existing directories and
 files keep their ACLs. That sshd checks the file and not its directories comes
-from the Win32 source as U-11 reads it and is confirmed by row W08.
+from the Win32 source as U-11 reads it, and row W08 shows it on a guest.
 
 ## Windows Permissions and Services
 
