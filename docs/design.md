@@ -829,8 +829,17 @@ every account. The path travels inside the script as a single-quoted literal of
 its UTF-8 bytes in base64, so the script stays ASCII and every character of the
 path is data. The result lines report the path as given, in the `%XX` form.
 
-Not yet decided: the ACL of a directory or file the script creates for a `-t`
-path, and whether missing parent directories are created.
+Missing parent directories are created, as on a Unix-like destination, and get
+no ACL set, so each keeps the one it inherits, as a folder created in File
+Explorer does. A key file the script creates is given an ACL with inheritance
+removed and full control for the account, SYSTEM, and Administrators only,
+named by SID, before any key goes in; its owner is left as Windows sets it. This
+plays the part of `umask 077`: sshd checks the key file's own ACL, and a file
+inheriting from a directory outside the profile, such as one under `C:\` where
+Authenticated Users may modify, would be refused, while under a default profile
+the three entries are the ones it would inherit anyway. Existing directories and
+files keep their ACLs. That sshd checks the file and not its directories comes
+from the Win32 source as U-11 reads it and is confirmed by row W08.
 
 ## Windows Permissions and Services
 
