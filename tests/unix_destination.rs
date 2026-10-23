@@ -13,7 +13,9 @@
 
 mod common;
 
-use common::{Agent, Fixture, keygen, public_entry, public_line, text, wait_with_deadline};
+use common::{
+    Agent, Fixture, keygen, public_entry, public_line, text, wait_with_deadline, without_agent,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -45,23 +47,11 @@ impl Fixture {
     }
 
     fn run_copy_id(&self, password: &str, key: &Path, user: &str, extra: &[&str]) -> Output {
-        let mut args: Vec<String> = vec![
-            "-i".into(),
-            key.display().to_string(),
-            "-p".into(),
-            self.port.clone(),
-            "-F".into(),
-            "none".into(),
-            "-o".into(),
-            format!("UserKnownHostsFile={}", self.known_hosts().display()),
-            "-o".into(),
-            "StrictHostKeyChecking=accept-new".into(),
-            "-o".into(),
-            "ConnectTimeout=5".into(),
-        ];
+        let mut args: Vec<String> = vec!["-i".into(), key.display().to_string()];
+        args.extend(self.base_ssh_args());
         args.extend(extra.iter().map(|s| s.to_string()));
         args.push(format!("{user}@127.0.0.1"));
-        let child = Command::new(env!("CARGO_BIN_EXE_ssh-copy-id"))
+        let child = without_agent(&mut Command::new(env!("CARGO_BIN_EXE_ssh-copy-id")))
             .args(&args)
             .env("SSH_ASKPASS", self.askpass(password))
             .env("SSH_ASKPASS_REQUIRE", "force")
@@ -74,7 +64,7 @@ impl Fixture {
     }
 
     /// Runs the CLI as `copy_id` does, with `identity` in place of `-i <key>`,
-    /// `HOME` and `USERPROFILE` set to `home`, and `SSH_AUTH_SOCK` set to `agent` or removed, and
+    /// `HOME` and `USERPROFILE` set to `home`, and `SSH_AUTH_SOCK` set to `agent` or no agent reachable, and
     /// fails the test when a scratch directory remains in `home/.ssh`.
     fn copy_id_from_home(
         &self,
@@ -98,7 +88,7 @@ impl Fixture {
             .stderr(Stdio::piped());
         match agent {
             Some(socket) => command.env("SSH_AUTH_SOCK", socket),
-            None => command.env_remove("SSH_AUTH_SOCK"),
+            None => without_agent(&mut command),
         };
         let output = wait_with_deadline(command.spawn().unwrap(), COPY_ID_TIMEOUT);
         let left: Vec<String> = fs::read_dir(home.join(".ssh"))

@@ -89,7 +89,7 @@ impl Fixture {
     }
 
     pub fn base_ssh_args(&self) -> Vec<String> {
-        base_ssh_args(&self.port, &self.known_hosts())
+        base_ssh_args(&self.port, &self.work)
     }
 
     pub fn askpass(&self, password: &str) -> PathBuf {
@@ -181,17 +181,33 @@ pub fn run_container(image: &str, env: &[String], run_args: &[&str]) -> (String,
     (container, port)
 }
 
+/// Keeps `command`'s `ssh` and `ssh-add` from any agent: removes
+/// `SSH_AUTH_SOCK`, or on Windows names a pipe that does not exist, since
+/// Windows OpenSSH without the variable reaches the account's own agent.
+pub fn without_agent(command: &mut Command) -> &mut Command {
+    if cfg!(windows) {
+        command.env("SSH_AUTH_SOCK", r"\\.\pipe\ssh-copy-id-test-no-agent")
+    } else {
+        command.env_remove("SSH_AUTH_SOCK")
+    }
+}
+
 /// The `ssh` options of every fixture connection: no configuration file,
-/// `known_hosts` as the known-hosts file, a new host key accepted, and a
-/// five-second connection timeout.
-pub fn base_ssh_args(port: &str, known_hosts: &Path) -> Vec<String> {
+/// `work/known_hosts` as the known-hosts file, a new host key accepted, a
+/// five-second connection timeout, and as the only configured identity a file
+/// in `work` that does not exist, so that `ssh` loads none of the default key
+/// files, which Windows OpenSSH reads from the real profile whatever
+/// `USERPROFILE` says.
+pub fn base_ssh_args(port: &str, work: &Path) -> Vec<String> {
     vec![
         "-F".into(),
         "none".into(),
         "-p".into(),
         port.to_string(),
         "-o".into(),
-        format!("UserKnownHostsFile={}", known_hosts.display()),
+        format!("UserKnownHostsFile={}", work.join("known_hosts").display()),
+        "-o".into(),
+        format!("IdentityFile={}", work.join("no-identity").display()),
         "-o".into(),
         "StrictHostKeyChecking=accept-new".into(),
         "-o".into(),

@@ -15,7 +15,7 @@ mod common;
 
 use common::{
     base_ssh_args, command, keygen, public_entry, public_line, run_container, text,
-    wait_with_deadline, write_askpass,
+    wait_with_deadline, without_agent, write_askpass,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -86,7 +86,7 @@ impl OpenWrt {
     }
 
     fn ssh_args(&self) -> Vec<String> {
-        base_ssh_args(&self.port, &self.work.join("known_hosts"))
+        base_ssh_args(&self.port, &self.work)
     }
 
     fn logs_in_with(&self, key: &Path) -> bool {
@@ -110,7 +110,7 @@ impl OpenWrt {
         args.extend(self.ssh_args());
         args.extend(extra.iter().map(|s| s.to_string()));
         args.push("root@127.0.0.1".into());
-        let child = Command::new(env!("CARGO_BIN_EXE_ssh-copy-id"))
+        let child = without_agent(&mut Command::new(env!("CARGO_BIN_EXE_ssh-copy-id")))
             .args(&args)
             .env("SSH_ASKPASS", write_askpass(&self.work, &self.password))
             .env("SSH_ASKPASS_REQUIRE", "force")
