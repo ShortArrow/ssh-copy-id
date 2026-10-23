@@ -8,6 +8,13 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+### Changed
+
+- The documentation says that an administrator on a Windows host whose
+  `sshd_config` has administrators use their own profile's `authorized_keys`
+  cannot be served yet: the key goes to the shared file, which that server does
+  not read, and the run reports it rejected.
+
 ## [0.1.1] - 2026-10-23
 
 ### Added
