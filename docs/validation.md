@@ -538,6 +538,25 @@ the `cmd.exe` copy on the second Linux host, Windows build 26200,
   checked with `sshd -t`, and removed; the restored file's SHA-256 matches the
   one taken before, and `C:\ssh-copy-id-w08` is gone.
 
+## Windows Clients Without the Account's Agent: 2026-10-24
+
+Windows OpenSSH reaches the account's own agent when `SSH_AUTH_SOCK` is unset,
+and reads the default key files from the real profile whatever `USERPROFILE`
+says, so i20 had not run with it. The L02 tests now set `SSH_AUTH_SOCK` to a
+pipe that does not exist on Windows, and every connection names a missing file
+as its only `IdentityFile`. With that variable, Windows `ssh-add -L` ends with
+`Error connecting to agent: No such file or directory` and status 2. Host:
+Windows 11 Pro build 26300, Docker Desktop, L02 image.
+
+| Client first on `PATH` | Result |
+| --- | --- |
+| Git for Windows `OpenSSH_10.0p2` | 36 passed |
+| `OpenSSH_for_Windows_9.5p2` | 35 passed; i22 not run |
+
+i20 with Windows OpenSSH reports the default key file of its scratch home as the
+source, which it would not if `ssh-add -L` had listed keys. i22 still needs a
+socket agent, which Windows OpenSSH does not use; A02 covers its agent.
+
 ## Stage 1.5 on a Unix-like Destination: 2026-10-11
 
 Host: Windows 11 Pro 26300, rustc 1.97.1, Docker Engine 28.5.1. Destination:
