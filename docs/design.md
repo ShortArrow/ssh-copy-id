@@ -831,6 +831,19 @@ the shared file when it is; it never reads `sshd_config`, as upstream never does
 A custom `AuthorizedKeysFile` is honored only through `-t`, and a mismatch is
 reported by the post-installation verification (D-06).
 
+A server whose administrators each use their own profile's
+`authorized_keys`, because its `sshd_config` drops or changes the
+`Match Group administrators` block, is such a case: the shared file is
+written, sshd does not read it, and the verification reports the key
+rejected. `-t` naming the profile's file is the way to install there; until
+`-t` works on Windows destinations (W08), such an administrator account cannot
+be served. Reading `sshd_config` to choose the file is not done: upstream reads
+no server configuration, and choosing correctly would mean evaluating `Match`
+criteria and `Include` files as sshd does, with the result still unconfirmed
+until the verification. A dedicated option to skip the shared file is not
+added either: it would be one more difference from upstream while selecting no
+file that `-t` cannot name.
+
 The shared file is written with the token the SSH session already holds. The
 tool never elevates on the destination: it runs neither `sudo.exe` nor
 `Start-Process -Verb RunAs`, nor anything else that asks for consent, since a

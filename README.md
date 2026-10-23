@@ -55,7 +55,11 @@ ssh-copy-id user@host
 For a member of a Windows host's Administrators group, the keys go to the
 shared `administrators_authorized_keys` under `%ProgramData%\ssh`, which sshd reads
 for every administrator account of that host under its default configuration;
-the command says so before writing.
+the command says so before writing. A host whose `sshd_config` has
+administrators use their own profile's `authorized_keys` instead does not read
+that file, and the run reports the key rejected; naming the target with `-t`,
+which is not yet supported on Windows destinations, is the planned way to
+install there.
 
 Install one key file, or list what would be installed without writing anything:
 
