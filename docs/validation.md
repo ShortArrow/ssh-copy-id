@@ -28,7 +28,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W03 | Standard-user CRLF/LF stdin and explicit cmd exit 37 | Passed | Same script; default shell remains cmd. |
 | W04 | Standard-user SFTP binary upload, download, byte comparison, deletion | Passed | Same script; not an append or atomic-replacement test. |
 | W05 | Windows PowerShell as the sshd default shell | Passed | [Cloned fixture](#windows-powershell-default-shell-2026-09-23), both account tests; a native child command's nonzero exit code reaches the client as 1. |
-| W06 | pwsh as the sshd default shell | Passed | [Cloned fixture with PowerShell 7.6.7](#pwsh-default-shell-w06-2026-10-14), both account tests; exit statuses as under Windows PowerShell (W05). |
+| W06 | pwsh as the sshd default shell | Passed | [Cloned fixture with PowerShell 7.6.7](#pwsh-default-shell-w06-2026-10-14), both account tests; exit statuses as under Windows PowerShell (W05). [The shared file and `-t`](#pwsh-default-shell-on-the-shared-file-guest-2026-10-24) pass under it too. |
 | W07 | Default administrator shared key-file scope and invalid ACL rejection | Passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. [The shared file](#shared-administrator-file-w07-2026-10-22) is appended to with its ACL kept, or created with Administrators and SYSTEM only, and the keys log in. [A second administrator](#release-review-for-020-w07-w11-2026-10-22) appends to a file the first one created, and both keys log in. [An existing shared file](#extra-entries-on-the-shared-file-w07-2026-10-24) keeps an extra entry for Users: with write access sshd refuses it, with read access only it accepts it. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Passed | [With sshd reading a file outside the profile](#custom-target-on-a-windows-destination-w08-2026-10-24), a key file `-t` creates there gets three entries and logs in while its directory lets Authenticated Users modify it; an existing file inheriting that entry keeps its ACL and sshd refuses it for that entry. An administrator's `-t .ssh\authorized_keys` appends to the profile file and leaves the shared file alone. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Passed | [Probe outputs](#shell-family-probe-w09-2026-10-14) under each, also `tcsh`, `pwsh` as a Linux login shell, and startup steps that print a line. |
@@ -581,6 +581,28 @@ shared file allowed full control to SYSTEM and Administrators only.
   sshd's check.
 - Both tests put the file's bytes and DACL back through a password login;
   afterwards `icacls` lists SYSTEM and Administrators with full control only.
+
+## pwsh Default Shell on the Shared-File Guest: 2026-10-24
+
+The shared administrator file (W07) and `-t` (W08) had run only under the
+`cmd.exe` default shell. The `cmd.exe` copy on the second Linux host, as in the
+[shared-file run](#shared-administrator-file-w07-2026-10-22), got PowerShell
+7.6.7 from `PowerShell-7.6.7-win-x64.msi` of the GitHub release, whose SHA-256
+`ec575cef9ec56fcd905de0d5eeac9cb7f81a0a65abb87bb5cd0e87fdfe2b8cc0` matched the
+release's digest and whose Authenticode signature was valid for Microsoft
+Corporation. `Set-DefaultShell.ps1 -Shell pwsh` made it the default shell, and
+a session reported `Core 7.6.7`.
+
+| Tests | Default shell | Result |
+| --- | --- | --- |
+| `windows_destination` except v11 and v12 | `pwsh` 7.6.7 | 13 passed |
+
+v11 and v12 need a temporary `Match User` block in `sshd_config` and were not
+run; the command that carries the script is the same under every default shell
+(O-03), and v13 covers `-t` under `pwsh`. Afterwards the default shell was set
+back to `cmd.exe`, a session expanded `%OS%` to `Windows_NT`, and the shared
+file listed SYSTEM and Administrators with full control only. PowerShell 7
+stays installed on this copy.
 
 ## Stage 1.5 on a Unix-like Destination: 2026-10-11
 
