@@ -718,3 +718,72 @@ fn v13_an_administrator_s_target_is_the_profile_file_and_the_shared_file_is_unto
     assert_eq!(after.unwrap(), expected);
     assert_eq!(guest.read(ADMIN_KEYS).unwrap(), saved.bytes);
 }
+
+impl Guest {
+    /// Adds an entry allowing Users (`S-1-5-32-545`) `rights` on the shared
+    /// administrator file, and returns its DACL afterwards.
+    fn allow_users_on_shared_file(&self, rights: &str) -> String {
+        self.admin_by_password(&format!(
+            "$s=[IO.File]::GetAccessControl('{ADMIN_KEYS}');\
+             $s.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(\
+             (New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-545'),'{rights}','Allow')));\
+             [IO.File]::SetAccessControl('{ADMIN_KEYS}',$s);'ok'"
+        ));
+        self.shared_acl()
+    }
+
+    /// The shared administrator file's bytes, read through a password login.
+    fn shared_bytes(&self) -> Vec<u8> {
+        decoded(
+            self.admin_by_password(&format!(
+                "[Convert]::ToBase64String([IO.File]::ReadAllBytes('{ADMIN_KEYS}'))"
+            ))
+            .trim(),
+        )
+    }
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v14_a_shared_file_users_may_write_is_appended_to_unchanged_and_refused() {
+    let guest = Guest::start();
+    let saved = SharedFile::save(&guest);
+    let sddl = guest.allow_users_on_shared_file("Write");
+    let key = guest.key("new", "new@test");
+    let run = guest.copy_id(&key, "fixtureadmin");
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains(SHARED_NOTICE), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "check that the server's AuthorizedKeysFile setting reads {ADMIN_KEYS} for administrators"
+        )),
+        "{stderr}"
+    );
+    assert_eq!(guest.shared_acl(), sddl);
+    let mut expected = saved.bytes.clone();
+    expected.extend_from_slice(public_entry(&key).as_bytes());
+    assert_eq!(guest.shared_bytes(), expected);
+    assert!(!guest.logs_in_with(&key, "fixtureadmin"));
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v15_a_shared_file_users_may_read_is_appended_to_unchanged_and_accepted() {
+    let guest = Guest::start();
+    let saved = SharedFile::save(&guest);
+    let sddl = guest.allow_users_on_shared_file("Read");
+    let key = guest.key("new", "new@test");
+    let run = guest.copy_id(&key, "fixtureadmin");
+    let stderr = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("the key authenticates: it is installed and verified"),
+        "{stderr}"
+    );
+    assert_eq!(guest.shared_acl(), sddl);
+    let mut expected = saved.bytes.clone();
+    expected.extend_from_slice(public_entry(&key).as_bytes());
+    assert_eq!(guest.shared_bytes(), expected);
+    assert!(guest.logs_in_with(&key, "fixtureadmin"));
+}
