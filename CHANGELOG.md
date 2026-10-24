@@ -8,6 +8,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-25
+
 ### Added
 
 - `-t target_path` works on a Windows destination. A path that is not fully
