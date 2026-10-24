@@ -554,7 +554,7 @@ fn v08_a_missing_shared_file_is_created_for_administrators_and_system_only() {
             .trim_end(),
         public_entry(&key).trim_end()
     );
-    assert_eq!(guest.shared_acl(), "D:PAI(A;;FA;;;SY)(A;;FA;;;BA)");
+    assert_eq!(guest.shared_acl(), "D:P(A;;FA;;;SY)(A;;FA;;;BA)");
     assert!(guest.logs_in_with(&key, "fixtureadmin"));
 }
 
@@ -786,4 +786,15 @@ fn v15_a_shared_file_users_may_read_is_appended_to_unchanged_and_accepted() {
     expected.extend_from_slice(public_entry(&key).as_bytes());
     assert_eq!(guest.shared_bytes(), expected);
     assert!(guest.logs_in_with(&key, "fixtureadmin"));
+}
+
+#[test]
+#[ignore = "needs the dockur Windows fixture"]
+fn v16_an_administrator_s_target_for_another_account_lets_that_account_log_in() {
+    let guest = Guest::start();
+    let key = guest.key("new", "new@test");
+    let run = guest.copy_id_to(&key, "fixtureadmin", USER_KEYS);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert_eq!(guest.user_keys(), Some(public_entry(&key)));
+    assert!(guest.logs_in_with(&key, "fixtureuser"));
 }

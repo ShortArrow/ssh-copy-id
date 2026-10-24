@@ -818,7 +818,8 @@ whether or not the account is an administrator. A path rooted without a drive,
 such as `\keys`, or a drive without a root, such as `C:keys`, means a different
 file depending on the session's current drive and directory, so it gets nothing
 written and every key reported `failed`, as a `$env:ProgramData` that is not
-absolute does.
+absolute does. So does a path with a character Windows does not allow in one,
+such as `|`.
 
 With `-t`, membership in the Administrators group does not choose the file, and
 the shared-file `INFO` line is not printed: the named file is the target for
@@ -828,14 +829,20 @@ path is data. The result lines report the path as given, in the `%XX` form.
 
 Missing parent directories are created, as on a Unix-like destination, and get
 no ACL set, so each keeps the one it inherits, as a folder created in File
-Explorer does. A key file the script creates is given an ACL with inheritance
-removed and full control for the account, SYSTEM, and Administrators only,
-named by SID, before any key goes in; its owner is left as Windows sets it. This
-plays the part of `umask 077`: sshd checks the key file's own ACL, and a file
-inheriting from a directory outside the profile, such as one under `C:\` where
-Authenticated Users may modify, would be refused, while under a default profile
-the three entries are the ones it would inherit anyway. Existing directories and
-files keep their ACLs. That sshd checks the file and not its directories comes
+Explorer does. A key file the script creates is created with its ACL:
+inheritance removed and full control for SYSTEM, Administrators and, when the
+account is not an administrator, the account, named by SID. The ACL is part of
+the creation, so no handle can be opened on the file under the ACL it would
+inherit. Its owner is left as Windows sets it. This plays the part of `umask
+077`: sshd checks the key file's own ACL, and a file inheriting from a directory
+outside the profile, such as one under `C:\` where Authenticated Users may
+modify, would be refused, while under a default profile a standard account's
+file gets the entries it would inherit anyway. An administrator gets no entry of
+its own: Administrators covers it, and sshd refuses a key file that any account
+other than the one logging in, Administrators, or SYSTEM may write, so an
+administrator who names another account's file, such as
+`C:\Users\svc\.ssh\authorized_keys`, leaves a file that account can use.
+Existing directories and files keep their ACLs. That sshd checks the file and not its directories comes
 from the Win32 source as U-11 reads it, and row W08 shows it on a guest.
 
 ## Windows Permissions and Services
@@ -853,8 +860,7 @@ A shared file that does not exist is created empty and given the ACL that
 Microsoft's [key management guide](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement) sets with `icacls`: inheritance removed and
 full control for Administrators and SYSTEM only. The entries name the SIDs
 `S-1-5-32-544` and `S-1-5-18`, so a localized group name does not matter. The
-keys are appended after the ACL is set, so no key is in the file while it holds
-the inherited one. An existing shared file keeps its ACL, as a key file under a
+file is created with that ACL, so it never holds the inherited one. An existing shared file keeps its ACL, as a key file under a
 profile does. The script does not create `%ProgramData%\ssh`: sshd creates it
 when it first starts, so a missing directory reports every key `failed`. So
 does a `$env:ProgramData` that is not an absolute path, which would otherwise
