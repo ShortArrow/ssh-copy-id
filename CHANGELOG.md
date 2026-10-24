@@ -13,12 +13,14 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 - `-t target_path` works on a Windows destination. A path that is not fully
   qualified is relative to the profile, and no variable in it is expanded; a
   path whose meaning depends on the current drive, such as `\keys` or
-  `C:keys`, gets nothing written. Missing parent directories are created and
-  keep the ACL they inherit; a key file the run creates gets full control for
-  the account, SYSTEM, and Administrators only, with no inherited entries, and
-  an existing one keeps its ACL. With `-t`, an administrator's keys go to the
+  `C:keys`, or that holds a character Windows does not allow, gets nothing
+  written. Missing parent directories are created and keep the ACL they
+  inherit; a key file the run creates is created with no inherited entries
+  and full control for SYSTEM, Administrators, and the account unless it is an
+  administrator, so an administrator can name another account's file; an
+  existing one keeps its ACL. With `-t`, an administrator's keys go to the
   named file, so `-t .ssh\authorized_keys` serves a host whose `sshd_config`
-  has administrators use their own profile's `authorized_keys`.
+  has administrators use their own profile's `authorized_keys` (D-11).
 
 ### Changed
 
@@ -27,6 +29,8 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   server's `AuthorizedKeysFile` setting reads that file for administrators, as
   the default `Match Group administrators` block does, as well as its
   permissions (D-06).
+- A shared `administrators_authorized_keys` the run creates gets its ACL as
+  it is created rather than just after.
 
 ## [0.1.1] - 2026-10-23
 

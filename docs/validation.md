@@ -30,7 +30,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W05 | Windows PowerShell as the sshd default shell | Passed | [Cloned fixture](#windows-powershell-default-shell-2026-09-23), both account tests; a native child command's nonzero exit code reaches the client as 1. |
 | W06 | pwsh as the sshd default shell | Passed | [Cloned fixture with PowerShell 7.6.7](#pwsh-default-shell-w06-2026-10-14), both account tests; exit statuses as under Windows PowerShell (W05). [The shared file and `-t`](#pwsh-default-shell-on-the-shared-file-guest-2026-10-24) pass under it too. |
 | W07 | Default administrator shared key-file scope and invalid ACL rejection | Passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. [The shared file](#shared-administrator-file-w07-2026-10-22) is appended to with its ACL kept, or created with Administrators and SYSTEM only, and the keys log in. [A second administrator](#release-review-for-020-w07-w11-2026-10-22) appends to a file the first one created, and both keys log in. [An existing shared file](#extra-entries-on-the-shared-file-w07-2026-10-24) keeps an extra entry for Users: with write access sshd refuses it, with read access only it accepts it. |
-| W08 | Custom authorized-key paths and existing parent ACL preservation | Passed | [With sshd reading a file outside the profile](#custom-target-on-a-windows-destination-w08-2026-10-24), a key file `-t` creates there gets three entries and logs in while its directory lets Authenticated Users modify it; an existing file inheriting that entry keeps its ACL and sshd refuses it for that entry. An administrator's `-t .ssh\authorized_keys` appends to the profile file and leaves the shared file alone. |
+| W08 | Custom authorized-key paths and existing parent ACL preservation | Passed | [With sshd reading a file outside the profile](#custom-target-on-a-windows-destination-w08-2026-10-24), a key file `-t` creates there gets three entries and logs in while its directory lets Authenticated Users modify it; an existing file inheriting that entry keeps its ACL and sshd refuses it for that entry. An administrator's `-t .ssh\authorized_keys` appends to the profile file and leaves the shared file alone. [An administrator's created file for another account](#release-review-for-012-w08-2026-10-25) lets that account log in. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Passed | [Probe outputs](#shell-family-probe-w09-2026-10-14) under each, also `tcsh`, `pwsh` as a Linux login shell, and startup steps that print a line. |
 | W10 | A Windows sshd whose default shell starts WSL, and an sshd inside WSL | Passed | [Probe outputs and key files](#wsl-default-shell-and-sshd-inside-wsl-w10-2026-10-15): with `wsl.exe` or `bash.exe` as the default shell the probe stops the run, and a key in the WSL home does not authenticate; an sshd inside WSL answers as a Unix-like shell and reads the WSL home. |
 | W11 | Windows key input past about 4 KB on stdin | Passed | [The end of input does not arrive; the loader stops at its terminator](#release-review-for-020-w07-w11-2026-10-22). |
@@ -603,6 +603,35 @@ run; the command that carries the script is the same under every default shell
 back to `cmd.exe`, a session expanded `%OS%` to `Windows_NT`, and the shared
 file listed SYSTEM and Administrators with full control only. PowerShell 7
 stays installed on this copy.
+
+## Release Review for 0.1.2 (W08): 2026-10-25
+
+Three refuting reviewers examined commit dc6a6c1, one of them on the same
+`cmd.exe` copy; each finding below was reproduced again before the fix.
+
+- A key file `-t` created for another account was refused. With `fixtureadmin`
+  naming `C:\Users\fixtureuser\.ssh\authorized_keys`, the created file allowed
+  SYSTEM, Administrators, and `fixtureadmin`; `fixtureuser` could not log in
+  with the key, and the OpenSSH log read "Bad permissions. Try removing
+  permissions for user: ...\fixtureadmin". An administrator's created file now
+  allows SYSTEM and Administrators only, and v16 shows `fixtureuser` logging in.
+- The created file got its ACL just after creation, under the ACL it inherited
+  until then. A local probe on this host showed that a write handle opened in
+  that interval still wrote after the DACL was replaced, while a new open was
+  denied. The file is now created with its ACL; unit test w44 checks that its
+  DACL lacks the auto-inherited flag a later `SetAccessControl` sets.
+- A relative `-t` path with a character Windows does not allow, such as `|` or
+  `"`, stopped the script, and the run reported that the file might have
+  changed although nothing was written. It now gets nothing written and every
+  key reported `failed` (w45).
+
+| Tests | Default shell | Result |
+| --- | --- | --- |
+| `windows_destination` except v11 and v12 | `cmd.exe` | 14 passed |
+
+v16 failed against dc6a6c1 and passed after the fix. A created shared file's
+DACL now reads `D:P(A;;FA;;;SY)(A;;FA;;;BA)` (v08), with the same entries as
+before and without the auto-inherited flag.
 
 ## Stage 1.5 on a Unix-like Destination: 2026-10-11
 
