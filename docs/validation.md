@@ -29,7 +29,7 @@ the U rows. Behavioral differences remain indexed in [compatibility](compatibili
 | W04 | Standard-user SFTP binary upload, download, byte comparison, deletion | Passed | Same script; not an append or atomic-replacement test. |
 | W05 | Windows PowerShell as the sshd default shell | Passed | [Cloned fixture](#windows-powershell-default-shell-2026-09-23), both account tests; a native child command's nonzero exit code reaches the client as 1. |
 | W06 | pwsh as the sshd default shell | Passed | [Cloned fixture with PowerShell 7.6.7](#pwsh-default-shell-w06-2026-10-14), both account tests; exit statuses as under Windows PowerShell (W05). |
-| W07 | Default administrator shared key-file scope and invalid ACL rejection | Shared file passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. [The shared file](#shared-administrator-file-w07-2026-10-22) is appended to with its ACL kept, or created with Administrators and SYSTEM only, and the keys log in. [A second administrator](#release-review-for-020-w07-w11-2026-10-22) appends to a file the first one created, and both keys log in. Pending: an existing shared file with an extra writable entry, and an extra read-only ACE. |
+| W07 | Default administrator shared key-file scope and invalid ACL rejection | Passed | [An inherited profile ACL alone passes sshd's check](#inherited-profile-acl-w07-first-check-2026-10-13), and an extra writable entry for `BUILTIN\Users` fails it. [The shared file](#shared-administrator-file-w07-2026-10-22) is appended to with its ACL kept, or created with Administrators and SYSTEM only, and the keys log in. [A second administrator](#release-review-for-020-w07-w11-2026-10-22) appends to a file the first one created, and both keys log in. [An existing shared file](#extra-entries-on-the-shared-file-w07-2026-10-24) keeps an extra entry for Users: with write access sshd refuses it, with read access only it accepts it. |
 | W08 | Custom authorized-key paths and existing parent ACL preservation | Passed | [With sshd reading a file outside the profile](#custom-target-on-a-windows-destination-w08-2026-10-24), a key file `-t` creates there gets three entries and logs in while its directory lets Authenticated Users modify it; an existing file inheriting that entry keeps its ACL and sshd refuses it for that entry. An administrator's `-t .ssh\authorized_keys` appends to the profile file and leaves the shared file alone. |
 | W09 | Destination shell-family probe outputs under `cmd.exe`, Windows PowerShell, `pwsh`, `sh`, `bash`, and `dash` | Passed | [Probe outputs](#shell-family-probe-w09-2026-10-14) under each, also `tcsh`, `pwsh` as a Linux login shell, and startup steps that print a line. |
 | W10 | A Windows sshd whose default shell starts WSL, and an sshd inside WSL | Passed | [Probe outputs and key files](#wsl-default-shell-and-sshd-inside-wsl-w10-2026-10-15): with `wsl.exe` or `bash.exe` as the default shell the probe stops the run, and a key in the WSL home does not authenticate; an sshd inside WSL answers as a Unix-like shell and reads the WSL home. |
@@ -556,6 +556,31 @@ Windows 11 Pro build 26300, Docker Desktop, L02 image.
 i20 with Windows OpenSSH reports the default key file of its scratch home as the
 source, which it would not if `ssh-add -L` had listed keys. i22 still needs a
 socket agent, which Windows OpenSSH does not use; A02 covers its agent.
+
+## Extra Entries on the Shared File (W07): 2026-10-24
+
+Host, client, and guest are as in the
+[shared-file run](#shared-administrator-file-w07-2026-10-22): the `cmd.exe`
+copy on the second Linux host, Windows build 26200,
+`OpenSSH_9.5p2 for Windows`, with the shipped `sshd_config`. Before the run the
+shared file allowed full control to SYSTEM and Administrators only.
+
+| Tests | Result |
+| --- | --- |
+| `windows_destination` v14, v15 | 2 passed |
+
+- v14: with an added entry allowing Users (S-1-5-32-545) `Write`, the run
+  prints the shared-file notice, appends the key, and leaves the DACL as it
+  found it. The key does not log in; sshd logs `Bad permissions. Try removing
+  permissions for user: BUILTIN\\Users (S-1-5-32-545) on file
+  C:/ProgramData/ssh/administrators_authorized_keys`, and the warning asks to
+  check that `AuthorizedKeysFile` reads that file for administrators.
+- v15: with an added entry allowing Users `Read` only, the run appends the key,
+  leaves the DACL as it found it, and verifies the key, which logs in; sshd logs
+  `Accepted publickey`. A read-only entry for another account does not fail
+  sshd's check.
+- Both tests put the file's bytes and DACL back through a password login;
+  afterwards `icacls` lists SYSTEM and Administrators with full control only.
 
 ## Stage 1.5 on a Unix-like Destination: 2026-10-11
 
