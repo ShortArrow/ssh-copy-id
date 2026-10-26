@@ -62,6 +62,14 @@ with `-t .ssh\authorized_keys`. On a Windows destination a relative `-t` path is
 relative to the profile, and a key file the run creates allows only the
 account, SYSTEM, and Administrators.
 
+The client's shell can change a `-t` path before the command sees it. Git Bash
+drops the backslashes of an unquoted Windows path, so put it in single quotes or
+write it with `/`. It also rewrites a path starting with `/`, quoted or not, and
+an unquoted `~/`, into a path on the client, such as `C:/Program
+Files/Git/etc/ssh/keys` for `/etc/ssh/keys`; set `MSYS_NO_PATHCONV=1` (or
+`MSYS2_ARG_CONV_EXCL='*'` under MSYS2) to pass it as written. PowerShell 7.6
+expands an unquoted leading `~` to the client's home, so quote it there.
+
 Install one key file, or list what would be installed without writing anything:
 
 ```powershell
