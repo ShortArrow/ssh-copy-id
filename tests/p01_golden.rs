@@ -19,7 +19,7 @@
 
 mod common;
 
-use common::{Agent, Fixture, keygen, public_line, text, wait_with_deadline};
+use common::{Agent, Fixture, keygen, public_line, text, wait_with_deadline, without_agent};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1123,15 +1123,19 @@ impl Harness {
                 }
                 Tool::Cli => Command::new(&self.cli),
             };
-            let child = command
+            command
                 .args(&arguments)
                 .env_clear()
                 .env("PATH", std::env::var_os("PATH").unwrap_or_default())
                 .env("HOME", &home)
                 .env("LC_ALL", "C")
                 .env("SSH_ASKPASS", &askpass)
-                .env("SSH_ASKPASS_REQUIRE", "force")
-                .envs(agent.iter().map(|agent| ("SSH_AUTH_SOCK", &agent.socket)))
+                .env("SSH_ASKPASS_REQUIRE", "force");
+            match &agent {
+                Some(agent) => command.env("SSH_AUTH_SOCK", &agent.socket),
+                None => without_agent(&mut command),
+            };
+            let child = command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
