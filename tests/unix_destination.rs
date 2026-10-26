@@ -1,7 +1,7 @@
 //! Behavior against the L02 Linux fixture: requirements 1, 2, 3, 4, 5, 7, and 8,
 //! design D-01, D-03, D-11, D-14, D-15, D-16, D-17, D-18, and D-20, and default key selection.
-//! Every run of the CLI must leave no `ssh-copy-id.*` scratch directory in the
-//! local `~/.ssh` it uses.
+//! Every run of the CLI uses a home in the work directory and must leave no
+//! `ssh-copy-id.*` scratch directory in its `.ssh`.
 //!
 //! Each test starts its own container from the `ssh-copy-id-l02:local` image on a
 //! free loopback port. Build the image first and run these tests explicitly:
@@ -28,31 +28,35 @@ impl Fixture {
         self.copy_id_answering(&self.password, key, user, extra)
     }
 
-    /// Runs the CLI with an askpass program that answers `password`, and fails the
+    /// Runs the CLI with an askpass program that answers `password` and `HOME` and
+    /// `USERPROFILE` set to an empty home in the work directory, and fails the
     /// test when the run takes longer than `COPY_ID_TIMEOUT` or leaves a scratch
-    /// directory behind in the local `~/.ssh`.
+    /// directory behind in that home's `.ssh`.
     fn copy_id_answering(&self, password: &str, key: &Path, user: &str, extra: &[&str]) -> Output {
-        let before = scratch_entries();
-        let output = self.run_copy_id(password, key, user, extra);
-        let left: Vec<String> = scratch_entries()
-            .into_iter()
-            .filter(|name| !before.contains(name))
-            .collect();
-        assert!(
-            left.is_empty(),
-            "scratch directories left in {}: {left:?}",
-            local_ssh_directory().display()
-        );
+        let home = self.work.join("client-home");
+        fs::create_dir_all(home.join(".ssh")).unwrap();
+        let output = self.run_copy_id(&home, password, key, user, extra);
+        let left = scratch_entries(&home);
+        assert!(left.is_empty(), "scratch directories left: {left:?}");
         output
     }
 
-    fn run_copy_id(&self, password: &str, key: &Path, user: &str, extra: &[&str]) -> Output {
+    fn run_copy_id(
+        &self,
+        home: &Path,
+        password: &str,
+        key: &Path,
+        user: &str,
+        extra: &[&str],
+    ) -> Output {
         let mut args: Vec<String> = vec!["-i".into(), key.display().to_string()];
         args.extend(self.base_ssh_args());
         args.extend(extra.iter().map(|s| s.to_string()));
         args.push(format!("{user}@127.0.0.1"));
         let child = without_agent(&mut Command::new(env!("CARGO_BIN_EXE_ssh-copy-id")))
             .args(&args)
+            .env("HOME", home)
+            .env("USERPROFILE", home)
             .env("SSH_ASKPASS", self.askpass(password))
             .env("SSH_ASKPASS_REQUIRE", "force")
             .stdin(Stdio::null())
@@ -91,11 +95,7 @@ impl Fixture {
             None => without_agent(&mut command),
         };
         let output = wait_with_deadline(command.spawn().unwrap(), COPY_ID_TIMEOUT);
-        let left: Vec<String> = fs::read_dir(home.join(".ssh"))
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with("ssh-copy-id."))
-            .collect();
+        let left = scratch_entries(home);
         assert!(left.is_empty(), "scratch directories left: {left:?}");
         output
     }
@@ -134,22 +134,13 @@ impl Fixture {
     }
 }
 
-/// The local `~/.ssh`, from the variable the CLI reads its home directory from.
-fn local_ssh_directory() -> PathBuf {
-    let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    PathBuf::from(std::env::var_os(variable).unwrap()).join(".ssh")
-}
-
-/// The names in the local `~/.ssh` that start with `ssh-copy-id.`.
-fn scratch_entries() -> Vec<String> {
-    fs::read_dir(local_ssh_directory())
-        .map(|entries| {
-            entries
-                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-                .filter(|name| name.starts_with("ssh-copy-id."))
-                .collect()
-        })
-        .unwrap_or_default()
+/// The names in `home/.ssh` that start with `ssh-copy-id.`.
+fn scratch_entries(home: &Path) -> Vec<String> {
+    fs::read_dir(home.join(".ssh"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("ssh-copy-id."))
+        .collect()
 }
 
 #[test]
