@@ -115,10 +115,6 @@ ships: 0.0.2 before stage 2, and after 0.1.0 a minor bump if it changes existing
 command-line behavior, such as messages or default key selection, otherwise a
 patch bump.
 
-The Windows fixture runs Windows 11 Enterprise Evaluation. On 2026-09-30 its
-license reported a grace period of 114,769 minutes, which ends on 2026-12-18; the
-stage 2 fixture scenarios run before then or on a rebuilt guest.
-
 ### Out of Scope
 
 - Generating key pairs, copying or backing up private keys, issuing certificates, or managing a certificate authority.

@@ -155,25 +155,6 @@ exit code without assuming the default shell is tracked in the design.
   control key through the documented fixture password. This is a host-side
   setup issue, not a guest or product finding.
 
-## Evaluation License: 2026-09-30
-
-The Windows guests run Windows 11 Enterprise Evaluation, whose license expires.
-On 2026-09-30 at 05:19 guest time, `ssh-copy-id-win11-ps` reported the following
-for the product with a partial product key and application ID
-`55c92734-d682-4d71-983e-d6ec3f16059f`, read with
-`Get-CimInstance SoftwareLicensingProduct` over SSH:
-
-| Field | Value |
-| --- | --- |
-| Name | `Windows(R), EnterpriseEval edition` |
-| GracePeriodRemaining | 114,769 minutes |
-| OS install date | 2026-09-19 22:07 |
-
-The grace period ends on 2026-12-18 at about 22:08 guest time, which matches the
-install date plus 90 days. The baseline guest shares the install,
-because the second guest is a copy of its disk. Rerun the query before relying on
-this date; activation state can change after a rebuild.
-
 ## Stage 1 on a Unix-like Destination: 2026-10-01
 
 Host: Windows 11 Pro 26200, rustc 1.97.1, Docker Engine 28.5.1. Destination: the
