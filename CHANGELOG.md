@@ -14,6 +14,12 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
   or `/`, such as `//server/share/keys`, is used as given, as one starting with
   `\\` is; one starting with `//` got nothing written.
 
+### Fixed
+
+- On a Windows destination, a read-only key file is reported `failed`, with the
+  key not written, instead of as a write whose partial line could not be
+  removed; the file was never changed.
+
 ## [0.1.2] - 2026-10-25
 
 ### Added

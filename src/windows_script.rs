@@ -118,7 +118,7 @@ function _w([byte[]]$b){try{$s=New-Object IO.FileStream($f,'Append',[Security.Ac
 function _l{$s=New-Object IO.FileStream($f,'Open','Read','ReadWrite',1);try{$null=$s.Seek(-1,'End');$s.ReadByte()}finally{$s.Dispose()}}
 function _a([byte[]]$l){try{if(!$w -and (_s) -gt 0 -and (_l) -ne 10){$t.Add(10);if(!(_w @(10))){return 0}};$t.AddRange($l);$t.Add(10);_w ([byte[]]($l+[byte[]]@(10)))}catch{0}}
 function _c($m){$s=New-Object Security.AccessControl.FileSecurity;$s.SetAccessRuleProtection($true,$false);$m|%{$s.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier $_),'FullControl','Allow')))};(New-Object IO.FileStream($f,'CreateNew',[Security.AccessControl.FileSystemRights]::Write,'ReadWrite',4096,'None',$s)).Dispose()}
-function _r{try{$n=_s;if($n -eq $null){return $z -eq $null};$b=[long]$z;$k=New-Object byte[] ($n-$b);$s=New-Object IO.FileStream($f,'Open','Read','ReadWrite',1);try{$null=$s.Seek($b,'Begin');$q=0;while($q -lt $k.Length){$c=$s.Read($k,$q,$k.Length-$q);if(!$c){break};$q+=$c}}finally{$s.Dispose()};for($j=0;$j -lt $k.Length;$j++){if($k[$j] -ne $t[$j]){return $false}};if($z -eq $null){[IO.File]::Delete($f)}else{$s=[IO.File]::Open($f,'Open','Write','ReadWrite');try{$s.SetLength($z)}finally{$s.Dispose()}};(_s) -eq $z}catch{$false}}"#;
+function _r{try{$n=_s;if($n -eq $null){return $z -eq $null};if($n -eq $z){return $true};$b=[long]$z;$k=New-Object byte[] ($n-$b);$s=New-Object IO.FileStream($f,'Open','Read','ReadWrite',1);try{$null=$s.Seek($b,'Begin');$q=0;while($q -lt $k.Length){$c=$s.Read($k,$q,$k.Length-$q);if(!$c){break};$q+=$c}}finally{$s.Dispose()};for($j=0;$j -lt $k.Length;$j++){if($k[$j] -ne $t[$j]){return $false}};if($z -eq $null){[IO.File]::Delete($f)}else{$s=[IO.File]::Open($f,'Open','Write','ReadWrite');try{$s.SetLength($z)}finally{$s.Dispose()}};(_s) -eq $z}catch{$false}}"#;
 
 /// Appends the lines in `$i` to the `-t` path in `$tp`, or else to the profile's
 /// key file, or to the shared administrator file when `$a` is set, and reports
@@ -935,6 +935,26 @@ mod tests {
                 unchanged(vec![key(1, KeyStatus::Failed, DEFAULT_PATH)])
             );
             drop(_held);
+            assert_eq!(fs::read_to_string(profile.keys()).unwrap(), "existing\n");
+        }
+
+        #[test]
+        fn w47_a_read_only_target_gets_nothing_written() {
+            let profile = Profile::new();
+            fs::create_dir_all(profile.file(".ssh")).unwrap();
+            fs::write(profile.keys(), "existing\n").unwrap();
+            let mut permissions = fs::metadata(profile.keys()).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(profile.keys(), permissions.clone()).unwrap();
+            let (report, stdout) = profile.run(format!("{KEY_A}\n").as_bytes());
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            fs::set_permissions(profile.keys(), permissions).unwrap();
+            assert_eq!(
+                report,
+                unchanged(vec![key(1, KeyStatus::Failed, DEFAULT_PATH)]),
+                "{stdout}"
+            );
             assert_eq!(fs::read_to_string(profile.keys()).unwrap(), "existing\n");
         }
 
