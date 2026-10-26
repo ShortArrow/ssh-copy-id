@@ -8,6 +8,12 @@ Entries name the [differences from upstream](docs/compatibility.md) they add or 
 
 ## [Unreleased]
 
+### Changed
+
+- On a Windows destination, a `-t` path starting with two separators, each `\`
+  or `/`, such as `//server/share/keys`, is used as given, as one starting with
+  `\\` is; one starting with `//` got nothing written.
+
 ## [0.1.2] - 2026-10-25
 
 ### Added

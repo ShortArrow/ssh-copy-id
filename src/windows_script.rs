@@ -128,7 +128,7 @@ function _r{try{$n=_s;if($n -eq $null){return $z -eq $null};$b=[long]$z;$k=New-O
 /// before the current group (`$null` when it did not exist) and `$t` the bytes
 /// tried in the group.
 const INSTALL_MAIN: &str = r#"$f=[IO.Path]::Combine($HOME,'.ssh','authorized_keys');$p='.ssh/authorized_keys';$x=0;$d=0;$m=$null
-if($tp -ne $null){$m=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544';if($a){$m='S-1-5-32-544','S-1-5-18'};$a=$false;$p=_e $tp;try{if($tp -match '^([A-Za-z]:[\\/]|\\\\)'){$f=$tp}elseif([IO.Path]::IsPathRooted($tp)){$x=1}else{$f=[IO.Path]::Combine($HOME,$tp)}}catch{$x=1}}
+if($tp -ne $null){$m=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544';if($a){$m='S-1-5-32-544','S-1-5-18'};$a=$false;$p=_e $tp;try{if($tp -match '^([A-Za-z]:[\\/]|[\\/]{2})'){$f=$tp}elseif([IO.Path]::IsPathRooted($tp)){$x=1}else{$f=[IO.Path]::Combine($HOME,$tp)}}catch{$x=1}}
 elseif($a){$f=[IO.Path]::Combine($env:ProgramData,'ssh','administrators_authorized_keys');$p=_e $f;$m='S-1-5-32-544','S-1-5-18'}
 if(!$x){try{if($a){if(![IO.Path]::IsPathRooted($env:ProgramData) -or ![IO.Directory]::Exists([IO.Path]::GetDirectoryName($f))){throw 1}}else{if(![IO.Directory]::Exists($HOME)){throw 1};$null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($f))};if((_s) -gt 0){[IO.File]::Open($f,'Open','Read','ReadWrite').Dispose()}}catch{$x=1}}
 if(!$x -and $a){[Console]::Error.WriteLine("ssh-copy-id: INFO: writing to $f, which every administrator account on this host shares")}
@@ -547,6 +547,19 @@ mod tests {
         fn w42_a_path_starting_with_two_backslashes_is_used_as_given() {
             let profile = Profile::new();
             let target = format!("\\\\?\\{}", profile.file("unc\\keys").display());
+            let (report, stdout, _) =
+                profile.run_target(false, &target, "", format!("{KEY_A}\n").as_bytes());
+            assert_eq!(report.outcome, Outcome::Installed, "{stdout}");
+            assert_eq!(
+                fs::read_to_string(profile.file("unc\\keys")).unwrap(),
+                format!("{KEY_A}\n")
+            );
+        }
+
+        #[test]
+        fn w46_a_path_starting_with_two_slashes_is_used_as_given() {
+            let profile = Profile::new();
+            let target = format!("//?/{}", profile.file("unc\\keys").display()).replace('\\', "/");
             let (report, stdout, _) =
                 profile.run_target(false, &target, "", format!("{KEY_A}\n").as_bytes());
             assert_eq!(report.outcome, Outcome::Installed, "{stdout}");
