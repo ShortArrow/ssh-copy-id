@@ -809,17 +809,22 @@ script.
 ### Custom Target on Windows Destinations
 
 The path is read by the same rule as on a Unix-like destination. A fully
-qualified path, a drive letter followed by `\` or `/`, or a UNC path starting
-with `\\`, is used as given; any other path is relative to the profile
-directory. No variable is expanded, as on a Unix-like destination, so
-`%USERPROFILE%\.ssh\authorized_keys` names a directory called `%USERPROFILE%`
+qualified path is used as given: a drive letter followed by `\` or `/`, or a
+path starting with two separators, each `\` or `/`, which is a UNC path such as
+`\\server\share` or `//server/share`, or a `\\?\` or `\\.\` device path. Any
+other path is relative to the profile directory. No variable is expanded, as
+on a Unix-like destination, so `%USERPROFILE%\.ssh\authorized_keys` names a directory called `%USERPROFILE%`
 under the profile, and `.ssh\authorized_keys` names the profile's own file
 whether or not the account is an administrator. A path rooted without a drive,
 such as `\keys`, or a drive without a root, such as `C:keys`, means a different
 file depending on the session's current drive and directory, so it gets nothing
 written and every key reported `failed`, as a `$env:ProgramData` that is not
 absolute does. So does a path with a character Windows does not allow in one,
-such as `|`.
+such as `|`. Windows resolves the name as it resolves any other: it drops
+trailing dots and spaces, so `keys.` writes `keys`, the file sshd opens for
+`AuthorizedKeysFile keys.` as well. A `\\?\` path skips that step, so its
+trailing dot stays in the file name, and sshd, which opens the name without the
+prefix, does not find the file.
 
 With `-t`, membership in the Administrators group does not choose the file, and
 the shared-file `INFO` line is not printed: the named file is the target for
@@ -829,8 +834,9 @@ path is data. The result lines report the path as given, in the `%XX` form.
 
 Missing parent directories are created, as on a Unix-like destination, and get
 no ACL set, so each keeps the one it inherits, as a folder created in File
-Explorer does. A key file the script creates is created with its ACL:
-inheritance removed and full control for SYSTEM, Administrators and, when the
+Explorer does. A run that then writes nothing leaves them in place, as
+upstream's `mkdir -p` does. A key file the script creates is created with its
+ACL: inheritance removed and full control for SYSTEM, Administrators and, when the
 account is not an administrator, the account, named by SID. The ACL is part of
 the creation, so no handle can be opened on the file under the ACL it would
 inherit. Its owner is left as Windows sets it. This plays the part of `umask
