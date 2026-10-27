@@ -21,7 +21,7 @@ Windows is the primary client platform; Linux distribution is planned.
 
 [Design and implementation plan](docs/design.md).
 
-Documentation structure and update policy: [docs/README.md](docs/README.md).
+Documentation structure: [docs/README.md](docs/README.md).
 
 [Differences from upstream](docs/compatibility.md).
 

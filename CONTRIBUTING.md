@@ -12,7 +12,7 @@ cuts a release. The reasons are recorded in the
 Commits are signed. A commit message states why the change was made in one or
 two sentences and names any difference (`D-xx`, `O-xx`) it adds or changes. The
 design documents state only the current design; see
-[docs/README.md](docs/README.md).
+[Documentation](#documentation).
 
 ## Checks
 
@@ -26,6 +26,25 @@ cargo test --locked
 
 The Windows destination fixture is run by hand; see
 [tests/environments/windows](tests/environments/windows/README.md).
+
+## Documentation
+
+The roles of the documents under `docs/` are listed in
+[docs/README.md](docs/README.md).
+
+- Write primary documentation in English. Keep existing Japanese translations in sync when changing the corresponding English documents.
+- A document without translations, such as `docs/README.md`, links a translated document by its English version only, and a translation links the versions in its own language. Each language version starts with one language line naming every version, the current one unlinked (`English | [日本語](design.jp.md)`), so adding a language changes only those lines. Links to other documents go on a separate line.
+- Keep detailed decisions in the design document. The differences list contains summaries and links, not duplicated explanations of rationale, scope, implementation, or open questions.
+- A decision in the design states the forces it weighs and the alternatives it refuses, each with the reason that still holds, so a later reader can tell whether that reason has expired before keeping or reversing the decision. When a reason stops holding, rewrite the decision.
+- When the design defines a behavior the standards or the OpenSSH documentation leave open, add or update its `U-xx` row in both language versions of [definitions.md](docs/definitions.md), citing the source section.
+- When a difference is accepted, update the design document and add or update its comparison row in both language versions of the differences list. Preserve its ID and link to the detailed decision.
+- If a decision originated in the review, record its disposition there and link to the design. Keep unaccepted proposals distinct from accepted requirements.
+- Describe upstream differences neutrally; do not label them as defects or bug fixes without an explicit decision to do so. Each difference states the apparent upstream intent and the reason to differ, taken from the design stance list.
+- Distinguish accepted designs from implemented and verified behavior. Record verification narratives in the validation document; the design document names the validation matrix rows it depends on.
+- The design and the differences list are living documents: when a decision changes, edit the section so it states the current design. Do not add decision dates, "superseded" notes, or former behavior; the history is in git.
+- What is not decided goes in [open-questions.md](docs/open-questions.md), not in the design. When an item is decided, remove it there and state the result in the design.
+- Living documents do not link to dated records such as validation result sections or the review; records may link to living documents. The validation matrix states current status and may be linked.
+- Check relative links and section anchors when moving or renaming documents or headings.
 
 ## Changelog
 
