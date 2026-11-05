@@ -614,6 +614,40 @@ v16 failed against dc6a6c1 and passed after the fix. A created shared file's
 DACL now reads `D:P(A;;FA;;;SY)(A;;FA;;;BA)` (v08), with the same entries as
 before and without the auto-inherited flag.
 
+## Release Review for 0.1.3 (W08): 2026-11-05
+
+Three refuting reviewers examined commit daaf9d4, two of them on the same
+`cmd.exe` copy and one on the changes since v0.1.2. None found a defect in the
+two changes. Each finding below was reproduced on the guest with Windows
+PowerShell.
+
+- A `-t` path starting with `//?/` drops trailing dots and spaces as any other
+  path does: `//?/C:/review-b/fdot.` wrote `fdot`, while
+  `\\?\C:\review-b\qdot.` wrote `qdot.`. `[IO.Path]::GetFullPath` returns
+  `\\?\C:\review-b\fdot` for the first. The design now says that only the
+  backslash spelling keeps the name as written.
+- `-t //?/C:/review-b/a/../up` got nothing written and left `C:\review-b\a`.
+  The script creates the directory `GetDirectoryName` returns,
+  `\\?\C:\review-b\a\..`, which creates `a` and then fails on `..`. The key is
+  reported `failed`, and the directory left is one the path names, as with any
+  parent directory a run that writes nothing leaves.
+
+These shapes got nothing written and created nothing: `//`, `///x`,
+`//localhost`, `//localhost/C$`, `//?/`, `\\.\`, `//?/C:`, `//?/UNC/localhost`,
+and `//./NUL`. A read-only key file, named by the default path, by `-t`, by
+`\\?\`, or by `//localhost/C$`, and a file whose ACL denies writing or
+appending, were each reported `failed` with their bytes, attributes, and DACL
+unchanged; one without a final newline was left without one.
+
+| Tests | `sshd_config` | Result |
+| --- | --- | --- |
+| `windows_destination` v11 and v12 | `Match User fixtureuser` with `AuthorizedKeysFile C:/ssh-copy-id-w08/keys` appended | 2 passed |
+| `windows_destination` except v11 and v12 | As shipped | 14 passed |
+
+The default shell was `cmd.exe` for both. With the appended block, the five
+tests in which `fixtureuser` logs in through the profile's `authorized_keys`
+fail, so the two groups run under separate configurations.
+
 ## Stage 1.5 on a Unix-like Destination: 2026-10-11
 
 Host: Windows 11 Pro 26300, rustc 1.97.1, Docker Engine 28.5.1. Destination:
