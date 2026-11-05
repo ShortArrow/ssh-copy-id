@@ -818,9 +818,10 @@ written and every key reported `failed`, as a `$env:ProgramData` that is not
 absolute does. So does a path with a character Windows does not allow in one,
 such as `|`. Windows resolves the name as it resolves any other: it drops
 trailing dots and spaces, so `keys.` writes `keys`, the file sshd opens for
-`AuthorizedKeysFile keys.` as well. A `\\?\` path skips that step, so its
-trailing dot stays in the file name, and sshd, which opens the name without the
-prefix, does not find the file.
+`AuthorizedKeysFile keys.` as well. A path starting with `\\?\`, written with
+backslashes, skips that step, so its trailing dot stays in the file name, and
+sshd, which opens the name without the prefix, does not find the file. Written
+with slashes, as `//?/`, the prefix does not skip it.
 
 With `-t`, membership in the Administrators group does not choose the file, and
 the shared-file `INFO` line is not printed: the named file is the target for
