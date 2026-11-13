@@ -254,37 +254,7 @@ fn install(
         check(ssh, env, &args, &log, others)
     };
 
-    info(
-        err,
-        "attempting to log in with the new key(s), to filter out any that are already installed",
-    );
-    let mut remaining = Vec::new();
-    for (key, others) in candidates {
-        let checked = probe(ssh, key, &others, "check")?;
-        stop_if_interrupted(env, NOTHING_WRITTEN)?;
-        match checked {
-            CheckResult::Installed => continue,
-            CheckResult::NotAttempted { messages, .. } if !messages.is_empty() => {
-                return Err(Stop::Relayed(messages));
-            }
-            CheckResult::Failed(message)
-            | CheckResult::NotAttempted {
-                failure: message, ..
-            } => {
-                return stop(message);
-            }
-            CheckResult::Inconclusive(reason) => warn(
-                err,
-                &format!(
-                    "{}could not tell whether the key is already installed ({reason}); \
-                     installing it, which may add a duplicate",
-                    key.label
-                ),
-            ),
-            CheckResult::NotInstalled => {}
-        }
-        remaining.push((key, others));
-    }
+    let remaining = keys_not_installed(candidates, probe, ssh, env, err)?;
     if remaining.is_empty() {
         let _ = write!(
             err,
@@ -330,6 +300,53 @@ fn install(
 
     summary(out, added, &login);
     Ok(())
+}
+
+/// A selected key and the other identities that could authenticate in its check.
+type Candidate<'k> = (&'k SelectedKey, Vec<String>);
+
+/// The candidates the installed-key check does not find installed, in order:
+/// an inconclusive check keeps the key with a warning, and a check that relays
+/// `ssh`'s messages, fails, or is interrupted stops the run before anything is written.
+fn keys_not_installed<'k>(
+    candidates: Vec<Candidate<'k>>,
+    probe: impl Fn(&mut dyn Ssh, &SelectedKey, &[String], &str) -> Result<CheckResult, String>,
+    ssh: &mut dyn Ssh,
+    env: &Environment,
+    err: &mut dyn Write,
+) -> Result<Vec<Candidate<'k>>, Stop> {
+    info(
+        err,
+        "attempting to log in with the new key(s), to filter out any that are already installed",
+    );
+    let mut remaining = Vec::new();
+    for (key, others) in candidates {
+        let checked = probe(ssh, key, &others, "check")?;
+        stop_if_interrupted(env, NOTHING_WRITTEN)?;
+        match checked {
+            CheckResult::Installed => continue,
+            CheckResult::NotAttempted { messages, .. } if !messages.is_empty() => {
+                return Err(Stop::Relayed(messages));
+            }
+            CheckResult::Failed(message)
+            | CheckResult::NotAttempted {
+                failure: message, ..
+            } => {
+                return stop(message);
+            }
+            CheckResult::Inconclusive(reason) => warn(
+                err,
+                &format!(
+                    "{}could not tell whether the key is already installed ({reason}); \
+                     installing it, which may add a duplicate",
+                    key.label
+                ),
+            ),
+            CheckResult::NotInstalled => {}
+        }
+        remaining.push((key, others));
+    }
+    Ok(remaining)
 }
 
 /// Installs every selected key without the installed-key check or the
